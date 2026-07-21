@@ -389,7 +389,14 @@ const CENTERLINE_MATCH_TOLERANCE = 0.001;
 // - this is what actually produces component-to-component connectivity for
 // files (like AKSO's) that have no <Connection> elements inside their
 // PipingNetworkSegments at all. This is the primary source of the
-// upstream/downstream buckets.
+// upstream/downstream buckets. The two components are only cross-linked to
+// EACH OTHER when BOTH ends resolve; if only one end matches a component (the
+// other end's Coordinate doesn't land on any component's connection point,
+// and there's no PipeOffPageConnector to fall back to either), that one match
+// is still kept rather than discarded - it's recorded on the CenterLine's own
+// synthetic sub-node (see makeCenterLineNode()) as a one-sided
+// upstream-only or downstream-only match, so a short stub segment with an
+// unresolved far end doesn't lose the connection info it does have.
 //
 // Rule 5 - Coincident connection points (position-based): two different
 // components' ConnectionPoints/Node entries sometimes sit at the exact same
@@ -431,6 +438,27 @@ const CENTERLINE_MATCH_TOLERANCE = 0.001;
 // here onto whichever component is actually referenced (the signal's
 // Source/Target), so selecting that component also surfaces the signal-wire
 // relationship, not just when selecting the wire itself.
+//
+// Rule 6 - InformationFlow CenterLine (position-based): same idea as rule 4,
+// applied to an InformationFlow (signal wire) element's own direct CenterLine
+// child instead of a PipingNetworkSegment's. The wire's first/last Coordinate
+// are matched against real components' ConnectionPoints/Node positions via
+// the same findOwner() index rule 4 uses, and the two matched components ARE
+// linked as genuine upstream/downstream - into the same buckets rule 4 feeds.
+// This is intentionally kept alongside, not instead of, the Signal
+// association info above: that reflects the file's DECLARED logical
+// endpoints, this reflects where the drawn wire geometry actually lands,
+// and the two do not always agree. As with rule 4, the two components are
+// only cross-linked to EACH OTHER when BOTH ends resolve; the InformationFlow
+// element itself gets whichever end(s) it has regardless - e.g. XMP_4985's
+// CenterLine showing a Downstream Node of XMP_3121 even on a wire whose other
+// end doesn't land on any component's connection point - so a one-sided match
+// isn't discarded just because the far end is unresolved.
+// buildConnectionPointIndex() deliberately excludes InformationFlow-owned
+// ConnectionPoints from the index this rule searches, since a wire's own
+// connection points sit at the exact same x/y as its own CenterLine ends and
+// would otherwise self-match, hiding the real neighbouring component behind
+// a self-reference to the wire itself.
 // ---------------------------------------------------------------------------
 
 function segmentItemElements(segEl) {
@@ -486,9 +514,19 @@ function makeCenterLineNode(objectId, pointCount, upstreamId, downstreamId, docO
 }
 
 // Indexes every component's <ConnectionPoints><Node><Position><Location X Y/>
-// by coordinate, for rule 4's tolerance-based matching. Uses a spatial hash
-// (grid bucketed at the tolerance size) so lookups stay fast even on large
-// files with thousands of connection points.
+// by coordinate, for rule 4's (and rule 6's) tolerance-based matching. Uses a
+// spatial hash (grid bucketed at the tolerance size) so lookups stay fast
+// even on large files with thousands of connection points.
+//
+// InformationFlow elements are deliberately excluded here: a signal wire's
+// own <ConnectionPoints> "From"/"To" Nodes mark its OWN CenterLine's two
+// endpoints, at the exact same x/y - not a second, different component to
+// connect to. Left in the index, a wire's own CenterLine would frequently
+// self-match its own connection point (a plain document-order tie against
+// the real neighbouring component's node at the same position, which the
+// wire's own point can win), silently hiding the genuine upstream/downstream
+// component behind a self-reference to the wire itself. See rule 6's doc
+// comment above deriveProteusFlowConnectivity() for how this index is used.
 function buildConnectionPointIndex(mainDoc) {
     const bucketOf = v => Math.round(v / CENTERLINE_MATCH_TOLERANCE);
     const bucketKey = (bx, by) => `${bx},${by}`;
@@ -497,7 +535,7 @@ function buildConnectionPointIndex(mainDoc) {
     qsa(mainDoc, "ConnectionPoints").forEach(cp => {
         const owner = cp.parentElement;
         const ownerId = owner && owner.getAttribute ? owner.getAttribute("ID") : null;
-        if (!ownerId) return;
+        if (!ownerId || owner.tagName === "InformationFlow") return;
         directChildrenByTag(cp, "Node").forEach(node => {
             const posEl = directChildrenByTag(node, "Position")[0];
             const loc = posEl ? directChildrenByTag(posEl, "Location")[0] : null;
@@ -668,9 +706,20 @@ function deriveProteusFlowConnectivity(mainDoc, nodesById) {
                     // See readSegmentOffPageConnectors()'s doc comment.
                     if (!foundUp && segOffPageConnectors.length) foundUp = nearestOffPageConnectorId(segOffPageConnectors, fx, fy);
                     if (!foundDown && segOffPageConnectors.length) foundDown = nearestOffPageConnectorId(segOffPageConnectors, lx, ly);
+                    // Record whichever end(s) resolved independently, rather than
+                    // requiring both - a CenterLine whose far end doesn't match any
+                    // component (e.g. a short stub segment with no PipeOffPageConnector
+                    // to fall back to) still has a perfectly good match at its OTHER
+                    // end, and that shouldn't be thrown away. upstreamId/downstreamId
+                    // feed makeCenterLineNode() below, which already independently
+                    // records whichever of the two it's given. The two real components
+                    // are only cross-linked to EACH OTHER (as one another's
+                    // Upstream/Downstream Node) when BOTH ends resolve, since that
+                    // link requires two distinct components to point at - a one-sided
+                    // match has only the CenterLine's own node to hang the ref off of.
+                    if (foundUp) upstreamId = foundUp;
+                    if (foundDown) downstreamId = foundDown;
                     if (foundUp && foundDown && foundUp !== foundDown) {
-                        upstreamId = foundUp;
-                        downstreamId = foundDown;
                         const upNode = nodesById.get(upstreamId);
                         const downNode = nodesById.get(downstreamId);
                         if (upNode) upNode.refs.push({ property: "downstream (CenterLine)", objects: [downstreamId] });
@@ -709,12 +758,69 @@ function deriveProteusFlowConnectivity(mainDoc, nodesById) {
     const REVERSE_SIGNAL_LABEL = { "has logical start": "is logical start of", "has logical end": "is logical end of" };
     qsa(mainDoc, "InformationFlow[ID]").forEach(ifEl => {
         const ifId = ifEl.getAttribute("ID");
+        const ifNode = nodesById.get(ifId);
+
         directChildrenByTag(ifEl, "Association").forEach(a => {
             const reverseLabel = REVERSE_SIGNAL_LABEL[a.getAttribute("Type") || ""];
             if (!reverseLabel) return;
             const targetId = a.getAttribute("ItemID");
             const targetNode = targetId ? nodesById.get(targetId) : null;
             if (targetNode) targetNode.refs.push({ property: reverseLabel, objects: [ifId] });
+        });
+
+        // Rule 6 - InformationFlow CenterLine (position-based), deliberately
+        // separate from the "has logical start"/"has logical end" Associations
+        // handled just above: those reflect the file's DECLARED logical
+        // endpoints, while this derives genuine x/y connectivity for the
+        // wire's own drawn route, the same way rule 4 does for a piping
+        // PipingNetworkSegment's CenterLine - matching the wire's first/last
+        // Coordinate against real components' ConnectionPoints/Node positions
+        // (via the same tolerance-based findOwner() index used by rule 4).
+        // Both pieces of information are kept side by side rather than one
+        // replacing the other, since a wire's declared logical endpoints and
+        // where its drawn geometry physically lands do not always agree
+        // (e.g. a redrawn/rerouted wire, or a logical Association pointing at
+        // a loop/function element with no ConnectionPoints of its own to match).
+        //
+        // Refs are recorded both on the two matched end components (mirroring
+        // rule 4 - so selecting either one shows the other as its
+        // Upstream/Downstream Node, and the Connectivity highlight lights up
+        // the physically-wired neighbour) AND on the InformationFlow element
+        // itself, so selecting the wire (or clicking its drawn line, which
+        // represents the InformationFlow - see buildProteusGraphics()'s
+        // isSegmentCenterLine handling) shows its own Upstream/Downstream
+        // Node too, e.g. XMP_4985's CenterLine showing a Downstream Node of
+        // XMP_3121. This depends on buildConnectionPointIndex() excluding
+        // InformationFlow-owned ConnectionPoints from findOwner() (see its
+        // doc comment) - otherwise a wire's own connection points, sitting
+        // at the exact same x/y as its own CenterLine ends, would self-match
+        // and hide the real neighbouring component behind a self-reference.
+        directChildrenByTag(ifEl, "CenterLine").forEach(clEl => {
+            const coords = directChildrenByTag(clEl, "Coordinate");
+            if (coords.length < 2) return;
+            const first = coords[0], last = coords[coords.length - 1];
+            const fx = parseFloat(first.getAttribute("X")), fy = parseFloat(first.getAttribute("Y"));
+            const lx = parseFloat(last.getAttribute("X")), ly = parseFloat(last.getAttribute("Y"));
+            if ([fx, fy, lx, ly].some(Number.isNaN)) return;
+            const foundUp = findOwner(fx, fy);
+            const foundDown = findOwner(lx, ly);
+            // As with rule 4: record whichever end(s) resolved independently
+            // rather than requiring both. The two real components are only
+            // cross-linked to each other when BOTH ends resolve (that link
+            // needs two distinct components to point at), but the
+            // InformationFlow element itself - the wire's own node - gets
+            // whichever of upstream/downstream it has, even if the other end
+            // of the wire doesn't land on any component's connection point.
+            if (foundUp && foundDown && foundUp !== foundDown) {
+                const upNode = nodesById.get(foundUp);
+                const downNode = nodesById.get(foundDown);
+                if (upNode) upNode.refs.push({ property: "downstream (CenterLine)", objects: [foundDown] });
+                if (downNode) downNode.refs.push({ property: "upstream (CenterLine)", objects: [foundUp] });
+            }
+            if (ifNode) {
+                if (foundUp) ifNode.refs.push({ property: "upstream (CenterLine)", objects: [foundUp] });
+                if (foundDown) ifNode.refs.push({ property: "downstream (CenterLine)", objects: [foundDown] });
+            }
         });
     });
 }

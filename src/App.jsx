@@ -627,7 +627,12 @@ export default function App() {
                     <div style={S.toolbar}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                             <div style={{ fontWeight: 700, fontSize: 15 }}>DEXPI 1.3.1 / DISC Profile Viewer</div>
-                            <button style={S.collapseBtn} onClick={() => setLeftCollapsed(true)}>{"<"}</button>
+                            <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+                                <a href="UserGuide.html" target="_blank" rel="noopener noreferrer"
+                                    style={{ width: 24, height: 24, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "50%", border: "1px solid #c7ced6", color: "#57606a", textDecoration: "none", fontSize: 12, fontWeight: 700 }}
+                                    title="Open user guide">?</a>
+                                <button style={S.collapseBtn} onClick={() => setLeftCollapsed(true)}>{"<"}</button>
+                            </div>
                         </div>
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                             <button style={{ ...S.btn, background: mainFileLoaded ? "#eaf2ff" : "white" }} onClick={() => mainInputRef.current?.click()}>{mainFileLoaded ? "✓ " : ""}Load Proteus XML</button>
