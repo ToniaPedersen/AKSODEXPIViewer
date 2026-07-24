@@ -84,6 +84,7 @@ Clicking any row selects that object: it highlights red in the drawing, scrolls 
 | Zoom | Scroll the mouse wheel over the drawing (zooms toward the cursor) |
 | Pan | Hold **Space** and drag |
 | Fit to window | Click the **Fit** button in the centre toolbar |
+| Export view | Click **Save PNG** / **Save PDF** in the centre toolbar (see 5.9, below) |
 
 ### 5.2 Selecting Objects
 
@@ -117,9 +118,12 @@ Click **BG Image** to overlay a reference image behind the drawing. Once one is 
 |---------|-------------|
 | Visible | Toggle the overlay on or off |
 | Opacity | 0–1 |
-| Scale | Scale factor |
-| X / Y | Pixel offset relative to the drawing origin |
+| Scale | Uniform scale factor applied to the auto-fit size (native aspect ratio is always preserved) |
+| X / Y | Offset, in drawing units, from the auto-fit (centered) position — not screen pixels, so the range scales with the drawing's own size |
+| Reset fit | Sets scale back to 1 and X/Y back to 0, returning to the auto-fit (centered, aspect-correct) placement |
 | Remove | Clear the background image |
+
+The image is placed inside the same coordinate space as the drawing, so it pans and zooms in lockstep with it — it stays aligned at any zoom level, not just the level it was set up at.
 
 ### 5.7 Profile Labels
 
@@ -132,6 +136,15 @@ When the loaded objects resolve to an active `HeatTracingType`, a dashed orange 
 - **Piping** — a dashed line offset alongside the pipe run.
 - **Inline components** (valves, fittings, nozzles) — a dashed line alongside the symbol, oriented to match the pipe direction.
 - **Instruments** (`ProcessInstrumentationFunction`) — a dashed outline following the symbol's actual boundary shape.
+
+### 5.9 Exporting the Drawing
+
+Use **Save PNG** or **Save PDF** in the centre toolbar to save exactly what's currently in the drawing viewport — the DEXPI drawing plus the BG image overlay, if one is loaded — as a file. Both buttons are disabled until a drawing is loaded, and while an export is in progress.
+
+- **Save PNG** — rasterizes the current view to a PNG at a fixed long-edge resolution, aspect ratio matching the current view.
+- **Save PDF** — the same rendering, embedded as a single full-page image in a PDF (long edge ~420mm, A3-ish). DEXPI/Proteus drawing coordinates aren't reliably tied to real-world units, so this is a print-friendly fit rather than a to-scale export.
+
+The downloaded file name is derived from the drawing number where available.
 
 ---
 
@@ -185,7 +198,10 @@ The loaded DiscProfile.xml doesn't cover every class used in the drawing. Confir
 The drawing file may not carry explicit `<Label>` XML for those symbols. Enable **Profile labels** to show labels synthesized from the DiscProfile's `LabelTemplate` definitions instead.
 
 **Background image is stretched or misaligned**
-Use the Scale and X/Y controls in BG Controls. The image is fit to preserve its native aspect ratio inside the viewport; only its scale and offset are adjustable, not its aspect ratio.
+Use the Scale and X/Y controls in BG Controls, or click **Reset fit** to snap back to the auto-fit (centered) placement. The image always preserves its native aspect ratio; only its uniform scale and X/Y offset are adjustable. It's rendered in the same coordinate space as the drawing, so once placed it stays aligned at any pan/zoom level.
+
+**Exported PNG/PDF is missing the background image**
+Make sure the BG image is loaded and **Visible** is checked before exporting — Save PNG/Save PDF capture exactly what's currently rendered in the drawing viewport, including the overlay only if it's currently shown.
 
 **Connectivity highlight doesn't show anything**
 Make sure an object is selected first — the Connectivity checkbox only highlights relative to the current selection, and only for objects that have upstream/downstream/group relationships in the parsed model.
