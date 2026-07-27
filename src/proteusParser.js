@@ -50,6 +50,29 @@ function ownGenericAttributes(el) {
     return directChildrenByTag(el, "GenericAttributes").flatMap(g => directChildrenByTag(g, "GenericAttribute"));
 }
 
+// Reads a single GenericAttribute's Value, scoped to a specific
+// GenericAttributes Set (e.g. "DexpiCustomAttributes") - unlike
+// ownGenericAttributes() above, this deliberately does NOT flatten across
+// every group, since custom attributes like SignalConveyingFunctionType-
+// Representation live only in the "DexpiCustomAttributes" group and a
+// same-named attribute could in principle also appear in an unrelated
+// vendor Set.
+// Dash pattern (SVG stroke-dasharray, world units) used to draw an
+// InformationFlow's CenterLine when its SignalConveyingFunctionType-
+// RepresentationAssignmentClass is the plain, unqualified "SignalConveying"
+// value (i.e. no more specific Electrical/Hydraulic/Bus/etc sub-type) - see
+// buildProteusGraphics() below.
+const SIGNAL_CONVEYING_DASH_ARRAY = "3 2";
+
+function ownGenericAttributeValue(el, setName, attrName) {
+    for (const group of directChildrenByTag(el, "GenericAttributes")) {
+        if (group.getAttribute("Set") !== setName) continue;
+        const ga = directChildrenByTag(group, "GenericAttribute").find(g => g.getAttribute("Name") === attrName);
+        if (ga) return ga.getAttribute("Value");
+    }
+    return null;
+}
+
 function coerceValue(raw, format) {
     if (raw === null || raw === undefined) return null;
     const f = (format || "").toLowerCase();
@@ -1160,6 +1183,24 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
         // downstream already comes from rule 2) keep the prior behaviour of
         // representing their owner element.
         const isSegmentCenterLine = el.tagName === "PipingNetworkSegment";
+        // InformationFlow elements represent signal/instrument wires; their
+        // drawn CenterLine is decorated per the DEXPI custom attribute
+        // SignalConveyingFunctionTypeRepresentationAssignmentClass
+        // (Set="DexpiCustomAttributes") - named with the "...AssignmentClass"
+        // suffix like this file's other GenericAttribute-Name lookups
+        // (TypeURIAssignmentClass, SymbolRegistrationNumberAssignmentClass).
+        // The raw value is carried through onto the graphics element below
+        // and interpreted by App.jsx's SIGNAL_CONVEYING_MARKS (e.g.
+        // "ElectricalSignalConveying" draws a repeated italic "E" along the
+        // line). Only read for InformationFlow so other element kinds
+        // (pipes, symbols) never pay this lookup cost.
+        const signalConveyingType = el.tagName === "InformationFlow"
+            ? ownGenericAttributeValue(el, "DexpiCustomAttributes", "SignalConveyingFunctionTypeRepresentationAssignmentClass")
+            : null;
+        // Plain "SignalConveying" (no more specific sub-type) is drawn as a
+        // dashed line rather than a repeated mark - see
+        // SIGNAL_CONVEYING_DASH_ARRAY.
+        const dashArray = signalConveyingType === "SignalConveying" ? SIGNAL_CONVEYING_DASH_ARRAY : "";
         directChildrenByTag(el, "CenterLine").forEach((clEl, ci) => {
             const points = directChildrenByTag(clEl, "Coordinate").map(c => ({
                 x: parseFloat(c.getAttribute("X")) || 0, y: -(parseFloat(c.getAttribute("Y")) || 0),
@@ -1168,7 +1209,8 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
             const representedId = isSegmentCenterLine ? resolveCenterLineId(clEl, id, ci) : id;
             elements.push({
                 kind: "primitive", key: `cl_${id}_${ci}`, representedId, elementRole: "connector",
-                primitive: { kind: "polyline", key: `clprim_${id}_${ci}`, points, stroke: { color: "#000000", width: 0.25, dashArray: "" } },
+                signalConveyingType: signalConveyingType || undefined,
+                primitive: { kind: "polyline", key: `clprim_${id}_${ci}`, points, stroke: { color: "#000000", width: 0.25, dashArray } },
                 // Bridges this polyline to its owning PipingNetworkSegment's own
                 // id for heat-trace lookup purposes only (see App.jsx's heat-trace
                 // overlay rendering) - the synthetic CenterLine tree node itself

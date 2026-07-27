@@ -84,7 +84,7 @@ Clicking any row selects that object: it highlights red in the drawing, scrolls 
 | Zoom | Scroll the mouse wheel over the drawing (zooms toward the cursor) |
 | Pan | Hold **Space** and drag |
 | Fit to window | Click the **Fit** button in the centre toolbar |
-| Export view | Click **Save PNG** / **Save PDF** in the centre toolbar (see 5.9, below) |
+| Export view | Click **Save PNG** / **Save PDF** in the centre toolbar (see 5.10, below) |
 
 ### 5.2 Selecting Objects
 
@@ -137,7 +137,25 @@ When the loaded objects resolve to an active `HeatTracingType`, a dashed orange 
 - **Inline components** (valves, fittings, nozzles) — a dashed line alongside the symbol, oriented to match the pipe direction.
 - **Instruments** (`ProcessInstrumentationFunction`) — a dashed outline following the symbol's actual boundary shape.
 
-### 5.9 Exporting the Drawing
+### 5.9 Signal-Conveying Line Styles (Proteus files)
+
+For a Proteus/DEXPI 1.3 file's `InformationFlow` elements (signal/instrument wires), the drawn `CenterLine` is decorated according to the `SignalConveyingFunctionTypeRepresentationAssignmentClass` custom attribute (`DexpiCustomAttributes` set), when present:
+
+| Representation value | Line style |
+|---|---|
+| `ElectricalSignalConveying` | Solid line with a small italic "E" repeated along its length |
+| `HydraulicSignalConveying` | Solid line with a small upright "L" repeated along its length |
+| `BusSignalConveying` | Solid line with a small circle repeated along its length |
+| `PneumaticSignalConveying` | Solid line with a small "^" chevron repeated along its length |
+| `CapillarySignalConveying` | Solid line with a small "x" repeated along its length |
+| `UndefinedSignalConveying` | Solid line with a small "/" repeated along its length |
+| `ElectromagneticGuidedSignalConveying` | Solid line with a small "∿" (sine-wave) squiggle repeated along its length |
+| `ElectromagneticUnguidedSignalConveying` | No line drawn — only the repeated "∿" squiggle, since there's no physical conductor to draw |
+| `SignalConveying` (plain, no sub-type) | Dashed line, no repeated mark |
+
+Wherever a mark is drawn, the wire's own line runs straight through the mark's visual centre (e.g. through the "E"'s middle bar, the "L"'s vertical arm, the circle's centre, the "x"'s crossing point) rather than sitting to one side of it. Wires with no `SignalConveyingFunctionTypeRepresentationAssignmentClass` attribute at all, or a value not listed above, are drawn as a plain solid line with no decoration.
+
+### 5.10 Exporting the Drawing
 
 Use **Save PNG** or **Save PDF** in the centre toolbar to save exactly what's currently in the drawing viewport — the DEXPI drawing plus the BG image overlay, if one is loaded — as a file. Both buttons are disabled until a drawing is loaded, and while an export is in progress.
 
