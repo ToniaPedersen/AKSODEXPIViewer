@@ -4,7 +4,7 @@ import {
     findAncestors, collectDescendantObjectIds, flattenTree,
     parseColor, isConnectivityRefProperty,
 } from "./dexpiParser.js";
-import { parseProteusPackage } from "./proteusParser.js";
+import { parseProteusPackage, SEGMENT_SYSTEM_MEMBERSHIP_REF_PROPERTIES, TREE_CONTAINMENT_REF_PROPERTIES } from "./proteusParser.js";
 import { jsPDF } from "jspdf";
 
 // Connections tab: friendly display labels for the "other" (non-upstream/
@@ -864,8 +864,18 @@ export default function App() {
         // (red) always wins over that color, letting them leak in here would
         // make e.g. an upstream CenterLine neighbor render as if it were
         // itself selected - regardless of whether connectivity mode is even on.
+        // Segment/System containment refs (see
+        // SEGMENT_SYSTEM_MEMBERSHIP_REF_PROPERTIES's doc comment in
+        // proteusParser.js) are excluded for the same reason: they're
+        // structural bookkeeping, not a real cross-reference - without this,
+        // selecting any one member of a PipingNetworkSegment/System would
+        // red-highlight the whole segment/system (and, transitively, anything
+        // else - like a LineLabel-* line-number Label - that references it
+        // back), rather than only when the segment/system itself is selected.
         selectedNode.refs
-            .filter(ref => !isConnectivityRefProperty(ref.property))
+            .filter(ref => !isConnectivityRefProperty(ref.property)
+                && !SEGMENT_SYSTEM_MEMBERSHIP_REF_PROPERTIES.has(ref.property)
+                && !TREE_CONTAINMENT_REF_PROPERTIES.has(ref.property))
             .forEach(ref => ref.objects.forEach(id => { if (id) ids.add(id); }));
         return ids;
     }, [selectedNode, selectHighlightSubComponents]);
@@ -1244,6 +1254,37 @@ export default function App() {
                                         );
                                     })()}
                                 </div>
+                                {(() => {
+                                    // Proteus/DEXPI-1.3 only (see buildProteusGraphics()'s
+                                    // symbolReferences in proteusParser.js - always empty for
+                                    // native DEXPI 2.0 files, so this section just never shows
+                                    // for those). Keyed by the same representedId a symbolUsage
+                                    // graphics element carries - i.e. whichever element actually
+                                    // owns the ComponentName+Position that placed the symbol
+                                    // (a standalone Label itself, for symbols like a
+                                    // SpecialItemLabel's lock/special-item marker - not the
+                                    // object that Label happens to annotate), so selecting the
+                                    // symbol on the drawing (or its tree node) shows exactly what
+                                    // placed it, matching the source XML's own Position block.
+                                    const ref = parsed?.graphics?.symbolReferences?.get(selectedId);
+                                    if (!ref) return null;
+                                    const vec = v => v ? `X="${v.x}" Y="${v.y}" Z="${v.z}"` : null;
+                                    return (
+                                        <div style={S.section}>
+                                            <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6 }}>Symbol Reference</div>
+                                            <div style={{ marginBottom: 6, padding: "4px 6px", background: "#f9fafb", borderRadius: 4 }}>
+                                                <div style={{ fontSize: 11, color: "#888", marginBottom: 1 }}>SymbolRegistrationNumberAssignmentClass</div>
+                                                <div style={{ fontSize: 13, fontWeight: 500 }}>{ref.regNum || "—"}</div>
+                                            </div>
+                                            <div style={{ padding: "4px 6px", background: "#f9fafb", borderRadius: 4, fontFamily: "monospace", fontSize: 12 }}>
+                                                {ref.axis && <div>{`<Axis ${vec(ref.axis)} />`}</div>}
+                                                {ref.reference && <div>{`<Reference ${vec(ref.reference)} />`}</div>}
+                                                {ref.scale && <div>{`<Scale ${vec(ref.scale)} />`}</div>}
+                                                {!ref.axis && !ref.reference && !ref.scale && <div style={{ fontFamily: "inherit", color: "#888" }}>No Axis/Reference/Scale on this element's Position.</div>}
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
                                 <div style={S.section}>
                                     <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6 }}>References / Associations</div>
                                     {selectedNode?.refs?.length ? selectedNode.refs.map((r, i) => (

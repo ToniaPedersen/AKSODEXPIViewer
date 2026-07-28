@@ -560,7 +560,15 @@ export function collectGraphicalElements(mainDoc, symbolMap, discDoc = null) {
     }
 
     qsa(mainDoc, 'Object[type="Core/Diagram.RepresentationGroup"]').forEach((g, i) => traverseGroup(g, null, `rg_${i}`));
-    return { elements: drawn, nodePosMap };
+    // Empty: "Symbol Reference" (SymbolRegistrationNumberAssignmentClass +
+    // raw Axis/Reference vectors) is a Proteus/DEXPI-1.3-specific concept -
+    // see buildProteusGraphics()'s own symbolReferences in proteusParser.js -
+    // native DEXPI 2.0 files place symbols directly by RDL class, with no
+    // ShapeCatalogue registration number or Proteus-style Axis/Reference
+    // placement vectors to show. Kept as an empty Map (rather than omitted)
+    // so App.jsx's Details panel can look it up the same way regardless of
+    // which parser produced this graphics object.
+    return { elements: drawn, nodePosMap, symbolReferences: new Map() };
 }
 
 const DEXPI_BUILTIN_HT_ELIGIBLE = new Set([

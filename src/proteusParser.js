@@ -138,14 +138,54 @@ function readPosition(el) {
 // returning the X/Y scale factors used to size a placed symbol - e.g.
 // <Scale X="4.375" Y="4.03869031814107" Z="1" /> on Equipment ID="XMP_1" in
 // FPQ-AKSO-P-XB-20130-01.XML. Z is unused (2D drawings). Falls back to 1/1
-// when the element carries no Scale at all, matching the prior (implicit)
-// behaviour for such elements.
+// when the element carries no Scale at all (the normal, unscaled case), but
+// to 0 when a Scale element IS present yet an axis doesn't parse as a valid
+// number - that's a malformed file, not "no scaling", and collapsing the
+// symbol to a point makes the bad data visibly obvious on the drawing
+// rather than silently masking it behind a default 1x size.
 function readScale(el) {
     const scaleEl = directChildrenByTag(el, "Scale")[0];
     if (!scaleEl) return { x: 1, y: 1 };
     const x = parseFloat(scaleEl.getAttribute("X"));
     const y = parseFloat(scaleEl.getAttribute("Y"));
-    return { x: Number.isNaN(x) ? 1 : x, y: Number.isNaN(y) ? 1 : y };
+    return { x: Number.isNaN(x) ? 0 : x, y: Number.isNaN(y) ? 0 : y };
+}
+
+// Reads the raw <Scale X Y Z/> element (see readScale() above) verbatim,
+// with no NaN/zero fallback applied - for the Details panel's "Symbol
+// Reference" section, which shows this alongside Axis/Reference exactly as
+// the source XML expresses it (e.g. a Nozzle's <Scale X="0" Y="0" Z="1" />
+// - a real, if odd, Comos/AKSO export value - rather than the effective 1/1
+// readScale() falls back to for actually sizing the drawn symbol). Returns
+// null when the element carries no <Scale> at all.
+function readRawScale(el) {
+    const scaleEl = directChildrenByTag(el, "Scale")[0];
+    if (!scaleEl) return null;
+    return {
+        x: parseFloat(scaleEl.getAttribute("X")) || 0,
+        y: parseFloat(scaleEl.getAttribute("Y")) || 0,
+        z: parseFloat(scaleEl.getAttribute("Z")) || 0,
+    };
+}
+
+// Reads the raw <Axis X Y Z/> and <Reference X Y Z/> vectors straight off an
+// element's <Position> block, alongside readPosition()'s own already-derived
+// rotation/mirror numbers - for the Details panel's "Symbol Reference"
+// section (see buildProteusGraphics()'s Rule 2 below), which shows these
+// verbatim rather than the derived rotation angle, so a user can see exactly
+// what placed the symbol the way the source XML itself expresses it.
+function readAxisReference(el) {
+    const posEl = directChildrenByTag(el, "Position")[0];
+    if (!posEl) return null;
+    const readVec = v => v ? {
+        x: parseFloat(v.getAttribute("X")) || 0,
+        y: parseFloat(v.getAttribute("Y")) || 0,
+        z: parseFloat(v.getAttribute("Z")) || 0,
+    } : null;
+    return {
+        axis: readVec(directChildrenByTag(posEl, "Axis")[0]),
+        reference: readVec(directChildrenByTag(posEl, "Reference")[0]),
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +419,47 @@ function resolveObjectData(el, dataPropIndex) {
 // concrete class in its own right, with exactly two concrete subtypes,
 // MeasuringLineFunction and SignalLineFunction.
 export const SIGNAL_FLOW_COMPONENT_CLASSES = new Set(["SignalConveyingFunction", "MeasuringLineFunction", "SignalLineFunction"]);
+
+// Segment/System containment ref property names (pushed by
+// deriveProteusFlowConnectivity() below - see its module doc comment's
+// "Segment/System containment" paragraph). These are pure structural/
+// membership bookkeeping ("this item sits inside this Segment/System"), not
+// a process/signal relationship - and, per that doc comment, are already
+// deliberately worded to dodge isConnectivityRefProperty()'s keyword match
+// so buildConnectivityMap() keeps them out of the blue/green/purple
+// upstream/downstream/group buckets, showing them as their own separate
+// Connections-tab category instead. That same dodge, though, means App.jsx's
+// "select sub-components" red highlight (selectedRepresentedIds) - which
+// only excludes isConnectivityRefProperty() matches - was letting these
+// leak straight through: selecting any one item belonging to a
+// PipingNetworkSegment/System would also red-highlight the segment/system
+// itself, which then, via THAT'S own reciprocal ref, could drag in
+// everything else that references it too. Concretely: selecting a pipe
+// run's own CenterLine sub-item added "indirect item of System" -> the
+// owning PipingNetworkSystem to the highlight set, which then also lit up a
+// "LineLabel-*" line-number Label placed directly under that same System
+// (see resolveLabelOwnerId() - its representedId IS that System) even
+// though only the System itself, not one of its members, should highlight
+// the label. Exported so App.jsx can exclude these from that computation
+// too, without changing isConnectivityRefProperty()/buildConnectivityMap()
+// (which must keep treating them as their own category, per above).
+export const SEGMENT_SYSTEM_MEMBERSHIP_REF_PROPERTIES = new Set([
+    "direct item of Segment", "segment item (direct)",
+    "indirect item of System", "system item (indirect)",
+]);
+
+// "is a part of" / "is a collection including" Association refs (see
+// buildTree()'s `refs` computation, which now keeps all of these rather
+// than stripping them) - like the Segment/System membership refs above,
+// these are pure tree-containment bookkeeping, not a process/signal
+// relationship, so while every one of them is shown in the Details panel's
+// References/Associations list (including the one that also happens to
+// establish the node's tree parent, already shown separately via "Parent
+// Component" - see XMP_1192 in FPQ-AKSO-P-XB-20130-01.XML for an element
+// with two "is a part of" refs, only one of which is its real structural
+// parent), they're excluded here so they don't red-highlight unrelated
+// objects via App.jsx's "select sub-components" propagation.
+export const TREE_CONTAINMENT_REF_PROPERTIES = new Set(["is a part of", "is a collection including"]);
 
 // Coordinate-matching tolerance (in drawing units) used by rule 4 below.
 // DISC-authored files use byte-identical coordinates between a CenterLine's
@@ -858,8 +939,23 @@ function buildTree(mainDoc, classIndex, dataPropIndex) {
     // vanishing from the document entirely. Elements missing ComponentClass
     // resolve to a "Plant/Unmapped.<tagName>" type via resolveObjectClass()
     // below, same as any other unmapped element.
+    // <Label> elements are kept in allEls/elementById regardless of whether
+    // they sit nested inside the object they decorate (e.g. an Equipment's
+    // own tag-name label) or stand alone as an independent PlantModel item
+    // (e.g. AKSO/Comos "SpecialItemLabel-*"/"LineLabel-*" exports, which sit
+    // as siblings of the item they annotate rather than nested inside it).
+    // Both shapes need to reach buildProteusGraphics() as their own element:
+    // a Label can carry a ComponentName that resolves to a real registered
+    // symbol in the ShapeCatalogue (e.g. a lock/special-item marker symbol
+    // such as ND0048, placed at the Label's own <Position> - the same Rule 2
+    // shape-placement lookup used for ordinary Equipment/PipingComponent
+    // symbols, which only runs for elements present in elementById), a
+    // leader-line <PolyLine> pointing back at what it annotates, and/or its
+    // own <Text>. See buildProteusGraphics()'s dedicated Label handling
+    // below for how each of those is drawn without double-counting Labels
+    // nested inside another item.
     const allEls = qsa(mainDoc, "[ID][ComponentClass], InformationFlow[ID]").filter(el => {
-        if (el.tagName === "Label" || el.tagName === "MetaData") return false;
+        if (el.tagName === "MetaData") return false;
         if (el.closest && el.closest("ShapeCatalogue")) return false;
         return true;
     });
@@ -888,11 +984,17 @@ function buildTree(mainDoc, classIndex, dataPropIndex) {
         // see the module doc comment above deriveProteusFlowConnectivity(),
         // which also adds the reverse-direction ref onto the referenced
         // Source/Target component.
+        //
+        // "is a part of"/"is a collection including" Associations are kept
+        // here (unlike before, when they were unconditionally stripped) -
+        // one of them may separately get consumed below to resolve this
+        // node's tree parent (already shown via the "Parent Component"
+        // section), but an element can carry more than one of the same Type
+        // (e.g. a real structural "is a part of" its parent PLUS a separate,
+        // purely informational "is a part of" -> "ProcessPlant-1" - see
+        // XMP_1192 in FPQ-AKSO-P-XB-20130-01.XML), and both are shown here
+        // rather than guessing which one the user cares about.
         const refs = directChildrenByTag(el, "Association")
-            .filter(a => {
-                const t = a.getAttribute("Type") || "";
-                return t !== "is a part of" && t !== "is a collection including";
-            })
             .map(a => ({ property: a.getAttribute("Type") || "", objects: [a.getAttribute("ItemID")].filter(Boolean) }));
         const label = displayName || tagName || el.getAttribute("ComponentName") || id || type.split(".").pop();
         nodesById.set(id, {
@@ -1004,6 +1106,47 @@ function buildTree(mainDoc, classIndex, dataPropIndex) {
 // resolved to "NC" by parseSymbolCatalogue()). Proteus GenericAttribute
 // values are already written in this short-code form, so a direct string
 // comparison is enough once the condition itself has been resolved.
+// Normalizes a text rotation angle (SVG-style, clockwise-positive degrees)
+// so Profile-derived (LabelTemplate) label text is never drawn upside-down
+// or reading top-to-bottom, regardless of how the symbol it's attached to
+// is rotated - standard P&ID drafting convention keeps such labels reading
+// either plain left-to-right (roughly horizontal) or bottom-to-top (roughly
+// vertical), never the reverse of either. Folds the angle onto the
+// (-90, 90] range: anything in the opposite half (90, 270] gets flipped by
+// 180 (e.g. a symbol placed upside-down at rotation=180 draws its label at
+// an effective 0 instead of 180; one rotated 90 draws its label at -90
+// - bottom-to-top - rather than 90, which would read top-to-bottom).
+function readableLabelRotation(deg) {
+    return (((deg % 360) + 360 + 90) % 180) - 90;
+}
+
+// Resolves which OTHER object a standalone <Label> element is annotating -
+// used both for its representedId (so selecting/highlighting the annotated
+// object also picks up the label - and vice versa) and, for a Label whose
+// own ComponentName resolves to a real ShapeCatalogue-registered symbol
+// (see Rule 2 above - e.g. a lock/special-item marker symbol such as
+// ND0048), as the data source for that symbol's own Profile LabelTemplate
+// token resolution (e.g. ND0048's "<SpecialItemNumber>" - SpecialItemNumber
+// lives on the decorated valve, not on the Label placing the lock symbol
+// next to it). Preference order: an explicit "is about"/"is associated
+// with"/"refers to" Association's target (the standard Proteus vocabulary
+// for a Label's subject - see proteus-4.1.1-disc.xsd's Association Type
+// enumeration), then the Label's own immediate XML parent when that parent
+// is itself a real placed item (matching prior behaviour for ordinary
+// tag-name labels nested inside their owner), and finally the Label itself
+// as a last resort. A no-op (returns el's own id) for anything that isn't a
+// <Label> - every other element kind already IS its own data owner.
+function resolveLabelOwnerId(el, id, elementById) {
+    if (el.tagName !== "Label") return id;
+    const aboutAssoc = directChildrenByTag(el, "Association")
+        .find(a => ["is about", "is associated with", "refers to"].includes(a.getAttribute("Type") || ""));
+    const aboutId = aboutAssoc?.getAttribute("ItemID");
+    if (aboutId && elementById.has(aboutId)) return aboutId;
+    const parentId = el.parentNode?.getAttribute?.("ID");
+    if (parentId && elementById.has(parentId)) return parentId;
+    return id;
+}
+
 function pickVariant(symbol, dataArr) {
     if (!symbol?.variants?.length) return null;
     if (symbol.variants.length === 1) return symbol.variants[0];
@@ -1031,13 +1174,24 @@ const LABEL_TEMPLATE_TOKEN_RE = /(?:([A-Za-z]\w*):)?<([^<>]+)>/g;
 // same shape App.jsx's Data panel already renders - see
 // resolveObjectData()) - i.e. matches on "DiscProfile/<name>" first (the
 // resolved DEXPI property name, when the attribute's AttributeURI was
-// resolvable against the loaded DiscProfile.xml) and falls back to
-// "Proteus/<name>" (the raw GenericAttribute name, when it wasn't). Reduces
-// the same value shapes App.jsx's formatDataValue() handles (PhysicalQuantity,
-// DataReference, plain scalars) down to a plain display string, since a
-// LabelTemplate's Text is always flat text - no units/enum badges here.
+// resolvable against the loaded DiscProfile.xml), then falls back to
+// "Proteus/<name>" (the raw GenericAttribute name, when it wasn't - and the
+// loaded DiscProfile.xml's class model happens to already spell that name
+// without a suffix), and finally to "Proteus/<name>AssignmentClass" - every
+// GenericAttribute in real AKSO/Comos Proteus exports is named
+// "<DEXPI-property-base-name>AssignmentClass" (e.g. "ItemTagAssignmentClass",
+// "ProcessPlantIdentificationCodeAssignmentClass" - see resolveObjectData()'s
+// `Proteus/${name}` fallback, which keeps that raw suffixed name verbatim
+// whenever Rule 3 can't map the attribute's AttributeURI - e.g. because the
+// loaded DiscProfile.xml doesn't happen to define that particular
+// DataProperty), so a LabelTemplate token written as the bare DEXPI name
+// (e.g. "<ProcessPlantIdentificationCode>") still resolves even when Rule 3
+// mapping isn't available. Reduces the same value shapes App.jsx's
+// formatDataValue() handles (PhysicalQuantity, DataReference, plain scalars)
+// down to a plain display string, since a LabelTemplate's Text is always
+// flat text - no units/enum badges here.
 function lookupAttributeText(dataArr, attrName) {
-    const found = (dataArr || []).find(d => d.property === `DiscProfile/${attrName}` || d.property === `Proteus/${attrName}`);
+    const found = (dataArr || []).find(d => d.property === `DiscProfile/${attrName}` || d.property === `Proteus/${attrName}` || d.property === `Proteus/${attrName}AssignmentClass`);
     if (!found || found.value === null || found.value === undefined) return "";
     const v = found.value;
     if (v && typeof v === "object" && v.kind === "PhysicalQuantity") return v.value !== null && v.value !== undefined ? String(v.value) : "";
@@ -1046,6 +1200,27 @@ function lookupAttributeText(dataArr, attrName) {
     return String(v);
 }
 
+// Plain (no "RelatedClass:" prefix) LabelTemplate tokens that never live on
+// the labeled object's own data, but on the PlantStructureItem it belongs to
+// - ProcessPlantIdentificationCode/PlantSystemIdentificationCode (seen e.g.
+// composed as "<ProcessPlantIdentificationCode>-<PlantSystemIdentificationCode>"
+// in real DiscProfile.xml LabelTemplates, matching AKSO/Comos's own "D-43"-
+// style plant/system code prefix on tag names). Each PlantStructureItem
+// (ComponentClass "ProcessPlant"/"PlantSystem" - see PlantModel's own
+// top-level <PlantStructureItem> elements) carries its own code as a
+// GenericAttribute, and every plant item is linked to its owning
+// ProcessPlant/PlantSystem via a same-named <Association Type="..."> back
+// on the item itself (observed: Type="is a part of" -> ProcessPlant,
+// Type="is located in" -> PlantSystem) - not the token's related-object
+// syntax used elsewhere (RelatedClass:<AttributeName>), which is keyed by
+// the *target's* ComponentClass rather than a fixed Association Type, so
+// these two get their own dedicated fallback below instead of being folded
+// into that generic mechanism.
+const PLANT_STRUCTURE_ATTRIBUTE_FALLBACKS = {
+    ProcessPlantIdentificationCode: { assocType: "is a part of", targetClass: "ProcessPlant" },
+    PlantSystemIdentificationCode: { assocType: "is located in", targetClass: "PlantSystem" },
+};
+
 // Substitutes every "<AttributeName>" / "RelatedClass:<AttributeName>" token
 // in a LabelTemplate's raw Text (see parseLabelTemplate() in dexpiParser.js)
 // with the real value it stands for, preserving all literal text (including
@@ -1053,12 +1228,16 @@ function lookupAttributeText(dataArr, attrName) {
 // renderPrimitive()) around/between tokens unchanged.
 //
 // "<AttributeName>" resolves against the labeled object's own attribute
-// data. "RelatedClass:<AttributeName>" (observed e.g. on alarm-setpoint
-// labels: "SignalConveyingFunction:<AlarmValue>") resolves against a
-// DIFFERENT object - one this element directly references via its own
-// <Association> children whose target's ComponentClass matches RelatedClass
-// - since the attribute in question (e.g. an alarm's AlarmValue) lives on
-// that related object, not on the labeled element itself. If no such
+// data - except for ProcessPlantIdentificationCode/PlantSystemIdentificationCode,
+// which fall back to the associated ProcessPlant/PlantSystem PlantStructureItem
+// (see PLANT_STRUCTURE_ATTRIBUTE_FALLBACKS above) when not found directly on
+// the object, since those two codes are defined once on the plant structure
+// rather than repeated onto every item. "RelatedClass:<AttributeName>"
+// (observed e.g. on alarm-setpoint labels: "SignalConveyingFunction:<AlarmValue>")
+// resolves against a DIFFERENT object - one this element directly references
+// via its own <Association> children whose target's ComponentClass matches
+// RelatedClass - since the attribute in question (e.g. an alarm's AlarmValue)
+// lives on that related object, not on the labeled element itself. If no such
 // association/attribute can be resolved, the token is replaced with an
 // empty string rather than left as raw "<...>" text, so a missing/optional
 // attribute just quietly omits that part of the label instead of showing
@@ -1066,7 +1245,17 @@ function lookupAttributeText(dataArr, attrName) {
 function resolveLabelTemplateText(rawText, el, ownData, elementById, dataByObjectId) {
     if (!rawText) return "";
     return rawText.replace(LABEL_TEMPLATE_TOKEN_RE, (match, relatedClass, attrName) => {
-        if (!relatedClass) return lookupAttributeText(ownData, attrName);
+        if (!relatedClass) {
+            const own = lookupAttributeText(ownData, attrName);
+            if (own) return own;
+            const fallback = PLANT_STRUCTURE_ATTRIBUTE_FALLBACKS[attrName];
+            if (!fallback) return own;
+            const structureId = directChildrenByTag(el, "Association")
+                .filter(a => a.getAttribute("Type") === fallback.assocType)
+                .map(a => a.getAttribute("ItemID"))
+                .find(itemId => itemId && elementById.get(itemId)?.getAttribute("ComponentClass") === fallback.targetClass);
+            return structureId ? lookupAttributeText(dataByObjectId.get(structureId), attrName) : own;
+        }
         const relatedId = directChildrenByTag(el, "Association")
             .map(a => a.getAttribute("ItemID"))
             .find(itemId => itemId && elementById.get(itemId)?.getAttribute("ComponentClass") === relatedClass);
@@ -1077,6 +1266,13 @@ function resolveLabelTemplateText(rawText, el, ownData, elementById, dataByObjec
 
 function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObjectId) {
     const elements = [];
+    // Keyed by the same representedId a symbolUsage element carries (i.e.
+    // the id of whichever element in elementById actually owns the
+    // ComponentName+Position that placed it - a Label itself, for a symbol
+    // placed via a standalone Label such as a SpecialItemLabel, not the
+    // object the label happens to annotate) - see App.jsx's "Symbol
+    // Reference" Details-panel section, which looks this up by selectedId.
+    const symbolReferences = new Map();
 
     elementById.forEach((el, id) => {
         const componentName = el.getAttribute("ComponentName");
@@ -1091,26 +1287,71 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
                 const variant = pickVariant(symbol, dataByObjectId.get(id));
                 if (variant) {
                     placedVariant = variant;
-                    const scale = readScale(el);
-                    elements.push({
-                        kind: "symbolUsage", key: `sym_${id}`, representedId: id, elementRole: "symbol",
-                        symbol, variant, position: { x: pos.x, y: pos.y }, rotation: pos.rotation,
-                        scaleX: scale.x, scaleY: scale.y, isMirrored: pos.isMirrored,
+                    // A symbol placement with no <Scale> element at all (e.g.
+                    // ControlledActuator-1 in FPQ-AKSO-P-XB-20130-01.XML) has
+                    // no real size information to draw it at - readScale()'s
+                    // 1/1 fallback for this case exists only so OTHER code
+                    // (the label-template auto-label positioning below) has
+                    // a sane multiplier to work with, not because 1x is a
+                    // correct or intended size for the symbol itself. Rather
+                    // than silently drawing such a symbol at an arbitrary
+                    // default size, skip drawing it entirely - its absence
+                    // on the canvas is the visible signal that the source
+                    // file never gave it a Scale. (This is distinct from an
+                    // explicit but malformed <Scale> - e.g. non-numeric X/Y
+                    // - which readScale() already renders as a collapsed
+                    // zero-size point instead, per its own doc comment.)
+                    const rawScale = readRawScale(el);
+                    if (rawScale) {
+                        const scale = readScale(el);
+                        elements.push({
+                            kind: "symbolUsage", key: `sym_${id}`, representedId: id, elementRole: "symbol",
+                            symbol, variant, position: { x: pos.x, y: pos.y }, rotation: pos.rotation,
+                            scaleX: scale.x, scaleY: scale.y, isMirrored: pos.isMirrored,
+                        });
+                    }
+                    const axisRef = readAxisReference(el);
+                    symbolReferences.set(id, {
+                        regNum, componentName,
+                        axis: axisRef?.axis || null, reference: axisRef?.reference || null,
+                        scale: rawScale,
                     });
                 }
             }
         }
 
-        // Text labels
+        // Text labels: `el` here can be either a normal placed item that
+        // owns nested <Label> children (e.g. an Equipment's own tag-name
+        // label - the common case) OR a <Label> itself, when it's one of
+        // the (possibly many) <Label> elements buildTree()'s allEls filter
+        // now always includes as their own elementById entry - both nested
+        // inside the object they decorate and standalone, sitting as a
+        // sibling of it (e.g. AKSO/Comos "SpecialItemLabel-*"/"LineLabel-*"
+        // exports). `ownLabelEls` covers the first shape (Label as a direct
+        // child one level down); `el.tagName === "Label"` covers the second
+        // (Label as `el` itself) - together every <Label> in the document
+        // gets its <Text>/leader-line drawn exactly once, whichever shape it
+        // takes. (Rule 2 above already handles a Label's own ComponentName
+        // resolving to a real ShapeCatalogue-registered symbol - e.g. a
+        // lock/special-item marker symbol - generically, since it runs for
+        // every elementById entry regardless of tag.)
         const ownLabelEls = directChildrenByTag(el, "Label");
-        ownLabelEls.forEach((labelEl, li) => {
+        const labelSelfEls = el.tagName === "Label" ? [el] : [];
+        [...ownLabelEls, ...labelSelfEls].forEach((labelEl, li) => {
+            // representedId is the object this label is annotating - see
+            // resolveLabelOwnerId() above for the resolution order. Nested
+            // Labels (labelEl !== el, el being their owner) always just
+            // represent their owner directly, matching prior behaviour for
+            // ordinary nested tag-name labels.
+            const representedId = labelEl === el ? resolveLabelOwnerId(el, id, elementById) : id;
+
             directChildrenByTag(labelEl, "Text").forEach((textEl, ti) => {
                 const str = textEl.getAttribute("String");
                 if (!str) return;
-                const tPos = readPosition(textEl);
+                const tPos = readPosition(textEl) || (labelEl === el ? pos : null);
                 const j = parseJustification(textEl.getAttribute("Justification"));
                 elements.push({
-                    kind: "primitive", key: `lbl_${id}_${li}_${ti}`, representedId: id, elementRole: "label",
+                    kind: "primitive", key: `lbl_${id}_${li}_${ti}`, representedId, elementRole: "label",
                     primitive: {
                         kind: "text", key: `lbltxt_${id}_${li}_${ti}`,
                         position: tPos ? { x: tPos.x, y: tPos.y } : { x: 0, y: 0 },
@@ -1122,6 +1363,20 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
                             horizontal: j.horizontal, vertical: j.vertical,
                         },
                     },
+                });
+            });
+
+            // Leader/pointer line (e.g. connecting a SpecialItemLabel's
+            // symbol/text back to the item it annotates) - drawn as a thin
+            // connector line, same primitive shape CenterLines use below.
+            directChildrenByTag(labelEl, "PolyLine").forEach((plEl, pli) => {
+                const points = directChildrenByTag(plEl, "Coordinate").map(c => ({
+                    x: parseFloat(c.getAttribute("X")) || 0, y: -(parseFloat(c.getAttribute("Y")) || 0),
+                }));
+                if (points.length < 2) return;
+                elements.push({
+                    kind: "primitive", key: `lblleader_${id}_${li}_${pli}`, representedId, elementRole: "label",
+                    primitive: { kind: "polyline", key: `lblleaderprim_${id}_${li}_${pli}`, points, stroke: { color: "#000000", width: 0.25, dashArray: "" } },
                 });
             });
         });
@@ -1142,25 +1397,38 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
         // position - consistent with "position relative to the symbol".
         // Text content comes from resolveLabelTemplateText() substituting
         // the template's <AttributeName> tokens against this object's own
-        // resolved data.
+        // resolved data - EXCEPT when `el` is itself a standalone <Label>
+        // placing a symbol via Rule 2 above (e.g. ND0048, a lock/special-
+        // item marker: its LabelTemplate Text is the bare token
+        // "<SpecialItemNumber>", but SpecialItemNumber is a GenericAttribute
+        // of the valve/equipment the label decorates, not of the Label
+        // element itself - which typically carries no GenericAttributes of
+        // its own at all). resolveLabelOwnerId() resolves that owning
+        // object the same way the Text-labels pass above already does for
+        // representedId, so the token resolves against the owner's real
+        // data (and, symmetrically, the synthesized label counts as
+        // representing the owner for selection/highlight purposes) instead
+        // of silently coming up empty.
         if (ownLabelEls.length === 0 && placedVariant && placedVariant.labelTemplates?.length) {
             const scale = readScale(el);
             const mirror = pos.isMirrored ? -1 : 1;
             const rad = pos.rotation * Math.PI / 180;
             const cos = Math.cos(rad), sin = Math.sin(rad);
-            const ownData = dataByObjectId.get(id) || [];
+            const ownerId = resolveLabelOwnerId(el, id, elementById);
+            const ownerEl = elementById.get(ownerId) || el;
+            const ownData = dataByObjectId.get(ownerId) || [];
             placedVariant.labelTemplates.forEach((lt, li) => {
-                const text = resolveLabelTemplateText(lt.text, el, ownData, elementById, dataByObjectId);
+                const text = resolveLabelTemplateText(lt.text, ownerEl, ownData, elementById, dataByObjectId);
                 if (!text.trim()) return;
                 const lx = lt.position.x * scale.x * mirror;
                 const ly = lt.position.y * scale.y;
                 const wx = pos.x + (lx * cos - ly * sin);
                 const wy = pos.y + (lx * sin + ly * cos);
                 elements.push({
-                    kind: "primitive", key: `lbltpl_${id}_${li}`, representedId: id, elementRole: "label",
+                    kind: "primitive", key: `lbltpl_${id}_${li}`, representedId: ownerId, elementRole: "label",
                     primitive: {
                         kind: "text", key: `lbltpltxt_${id}_${li}`,
-                        position: { x: wx, y: wy }, value: text, rotation: pos.rotation + lt.rotation,
+                        position: { x: wx, y: wy }, value: text, rotation: readableLabelRotation(pos.rotation + lt.rotation),
                         style: {
                             color: lt.color,
                             font: lt.font, size: lt.size,
@@ -1226,7 +1494,7 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
         });
     });
 
-    return { elements, nodePosMap: new Map() };
+    return { elements, nodePosMap: new Map(), symbolReferences };
 }
 
 // ---------------------------------------------------------------------------
