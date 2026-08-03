@@ -176,6 +176,9 @@ The downloaded file name is derived from the drawing number where available.
 | Object ID | The XML `id` attribute value |
 | Persistent Identifiers | Any persistent identifier values, with context |
 | Data | Data attributes with formatted values and units of measure. Check **Show non-DEXPI attributes** to reveal attributes outside the standard `DexpiAttributes` / `DexpiCustomAttributes` sets (hidden by default). |
+| Symbol Reference | *Proteus/DEXPI 1.3 files only.* The raw `ComponentName`/`SymbolRegistrationNumberAssignmentClass` and `Axis`/`Reference`/`Scale` values the source XML used to place the selected object's own symbol. Shown even when the `ComponentName` didn't resolve to a drawable symbol, so a mismatch can still be diagnosed. |
+| Label Symbol Reference(s) | *Proteus/DEXPI 1.3 files only.* Appears when the selected object owns a nested `<Label>` that places a *separate* symbol of its own (e.g. a valve's actuator/instrument marker). Shows that Label's own `SymbolRegistrationNumberAssignmentClass` and `Axis`/`Reference`/`Scale`, without needing to select the Label's own tree node. Click the Label ID shown to jump to it. |
+| Note(s) | *Proteus/DEXPI 1.3 files only.* Lists any Note object `ItemID`s referenced by the selected object's (or its Labels') Text templates. Click a Note ID to jump to it. |
 | References / Associations | Outgoing references — blue if the target exists in the file, red if broken. Click a reference to jump to its target. |
 | Parent Component | The containing object, if any — click to navigate to it. |
 | Sub-Components | Direct children of the selected object — click any to navigate to it. |
