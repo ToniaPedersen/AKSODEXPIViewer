@@ -1285,6 +1285,68 @@ export default function App() {
                                         </div>
                                     );
                                 })()}
+                                {(() => {
+                                    // Label Symbol Reference: an OWNER object (e.g. GateValve-1)
+                                    // can carry its own nested <Label ComponentName="..."> placing
+                                    // a SEPARATE symbol of its own (e.g. an actuator/instrument
+                                    // marker such as GateValve-1-Label-1's ComponentName=
+                                    // "IM005B_SHAPE") - distinct from the owner's own "Symbol
+                                    // Reference" above (GateValve-1's own ComponentName=
+                                    // "PV005B_SHAPE"). labelSymbolReferencesByOwner (see
+                                    // proteusParser.js's buildProteusGraphics()) is keyed by the
+                                    // OWNER's id so this shows up here directly, without having to
+                                    // separately select the nested Label's own tree node.
+                                    const labelRefs = parsed?.graphics?.labelSymbolReferencesByOwner?.get(selectedId);
+                                    if (!labelRefs?.length) return null;
+                                    const vec = v => v ? `X="${v.x}" Y="${v.y}" Z="${v.z}"` : null;
+                                    return (
+                                        <div style={S.section}>
+                                            <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6 }}>Label Symbol Reference{labelRefs.length > 1 ? "s" : ""}</div>
+                                            {labelRefs.map((ref, i) => (
+                                                <div key={ref.labelId || i} style={{ marginBottom: i < labelRefs.length - 1 ? 10 : 0 }}>
+                                                    <div
+                                                        style={{ fontSize: 11, color: parsed?.treeMap?.has(ref.labelId) ? "#0969da" : "#888", marginBottom: 4, cursor: parsed?.treeMap?.has(ref.labelId) ? "pointer" : "default" }}
+                                                        onClick={() => parsed?.treeMap?.has(ref.labelId) && handleSelect(ref.labelId)}
+                                                    >
+                                                        {ref.labelId}
+                                                    </div>
+                                                    <div style={{ marginBottom: 6, padding: "4px 6px", background: "#f9fafb", borderRadius: 4 }}>
+                                                        <div style={{ fontSize: 11, color: "#888", marginBottom: 1 }}>SymbolRegistrationNumberAssignmentClass</div>
+                                                        <div style={{ fontSize: 13, fontWeight: 500 }}>{ref.regNum || "—"}</div>
+                                                    </div>
+                                                    <div style={{ padding: "4px 6px", background: "#f9fafb", borderRadius: 4, fontFamily: "monospace", fontSize: 12 }}>
+                                                        {ref.axis && <div>{`<Axis ${vec(ref.axis)} />`}</div>}
+                                                        {ref.reference && <div>{`<Reference ${vec(ref.reference)} />`}</div>}
+                                                        {ref.scale && <div>{`<Scale ${vec(ref.scale)} />`}</div>}
+                                                        {!ref.axis && !ref.reference && !ref.scale && <div style={{ fontFamily: "inherit", color: "#888" }}>No Axis/Reference/Scale on this Label's Position.</div>}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    );
+                                })()}
+                                {(() => {
+                                    // Notes: Note ItemIDs referenced by any DependantAttribute on any of
+                                    // this element's (or its nested Labels') Text templates. Populated
+                                    // unconditionally, regardless of whether the reference resolves to
+                                    // anything else meaningful.
+                                    const noteIds = parsed?.graphics?.noteReferencesByOwner?.get(selectedId);
+                                    if (!noteIds?.length) return null;
+                                    return (
+                                        <div style={S.section}>
+                                            <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6 }}>Note{noteIds.length > 1 ? "s" : ""}</div>
+                                            {noteIds.map((noteId, i) => (
+                                                <div
+                                                    key={noteId || i}
+                                                    style={{ fontSize: 13, color: parsed?.treeMap?.has(noteId) ? "#0969da" : "#888", marginBottom: i < noteIds.length - 1 ? 4 : 0, cursor: parsed?.treeMap?.has(noteId) ? "pointer" : "default" }}
+                                                    onClick={() => parsed?.treeMap?.has(noteId) && handleSelect(noteId)}
+                                                >
+                                                    {noteId}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    );
+                                })()}
                                 <div style={S.section}>
                                     <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6 }}>References / Associations</div>
                                     {selectedNode?.refs?.length ? selectedNode.refs.map((r, i) => (

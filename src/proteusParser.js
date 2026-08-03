@@ -188,6 +188,29 @@ function readAxisReference(el) {
     };
 }
 
+// Reads the DependantAttribute+ItemID pairs a real Proteus <Text> element's
+// own <TextStringFormatSpecification>/<ObjectAttributesReference> children
+// declare (proteus-4.1.1-disc.xsd: one or more references, each naming both
+// the attribute AND the object it's pulled from). Returns null when the Text
+// carries no TextStringFormatSpecification at all (the common case for a
+// plain literal <Label> String), or an array (possibly containing more than
+// one reference, per the schema's maxOccurs="unbounded") when it does.
+function readTextTemplateReferences(textEl) {
+    const specEl = directChildrenByTag(textEl, "TextStringFormatSpecification")[0];
+    if (!specEl) return null;
+    return directChildrenByTag(specEl, "ObjectAttributesReference")
+        .map(ref => ({ attribute: ref.getAttribute("DependantAttribute"), itemId: ref.getAttribute("ItemID") }))
+        .filter(r => r.attribute);
+}
+
+// A reference whose ItemID resolves to a <Note ComponentClass="Note">
+// element - used to power the "Notes" Details-pane section (see
+// noteReferencesByOwner's doc comment in buildProteusGraphics() below).
+// Checking the referenced object's actual ComponentClass (rather than
+// pattern-matching the DependantAttribute name itself) covers every naming
+// convention a Note's own GenericAttributes happen to use.
+const NOTE_COMPONENT_CLASS = "Note";
+
 // ---------------------------------------------------------------------------
 // Rule 1 — class index: rdl_uri -> DEXPI-2.0-style type string
 // ---------------------------------------------------------------------------
@@ -1273,6 +1296,27 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
     // object the label happens to annotate) - see App.jsx's "Symbol
     // Reference" Details-panel section, which looks this up by selectedId.
     const symbolReferences = new Map();
+    // Keyed by the OWNER object's id (e.g. a GateValve/Equipment/PipingComponent)
+    // -> an array of that owner's own nested <Label ComponentName="..."> Symbol
+    // Reference entries (e.g. GateValve-1's actuator/instrument marker Label,
+    // ComponentName="IM005B_SHAPE") - so selecting the OWNER directly shows
+    // its Label's own separate symbol placement too (as a "Label Symbol
+    // Reference" section in App.jsx), without having to separately select the
+    // nested Label's own tree node to see it via symbolReferences above. A
+    // standalone Label that IS its own owner (resolveLabelOwnerId(el, id,
+    // elementById) === id) is intentionally NOT duplicated here, since its
+    // own symbolReferences entry (keyed by its own id) already covers it.
+    const labelSymbolReferencesByOwner = new Map();
+    // Keyed by representedId (the same id App.jsx's Details pane looks up by
+    // selectedId elsewhere) -> a Set of Note object ItemIDs any of that
+    // item's real <Label> Texts reference via their own
+    // TextStringFormatSpecification/ObjectAttributesReference - powers
+    // App.jsx's "Notes" Details-pane section. Purely informational:
+    // populated regardless of whether the reference resolves to anything
+    // meaningful - "this item has a Label pointing at this Note" is true
+    // either way. Converted from Set to array just before this function
+    // returns.
+    const noteReferencesByOwner = new Map();
 
     elementById.forEach((el, id) => {
         const componentName = el.getAttribute("ComponentName");
@@ -1311,11 +1355,22 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
                         });
                     }
                     const axisRef = readAxisReference(el);
-                    symbolReferences.set(id, {
+                    const ref = {
                         regNum, componentName,
                         axis: axisRef?.axis || null, reference: axisRef?.reference || null,
                         scale: rawScale,
-                    });
+                    };
+                    symbolReferences.set(id, ref);
+                    // Also index under the owning object, when `el` is itself
+                    // a nested/standalone <Label> annotating something else -
+                    // see labelSymbolReferencesByOwner's doc comment above.
+                    if (el.tagName === "Label") {
+                        const labelOwnerId = resolveLabelOwnerId(el, id, elementById);
+                        if (labelOwnerId !== id) {
+                            if (!labelSymbolReferencesByOwner.has(labelOwnerId)) labelSymbolReferencesByOwner.set(labelOwnerId, []);
+                            labelSymbolReferencesByOwner.get(labelOwnerId).push({ labelId: id, ...ref });
+                        }
+                    }
                 }
             }
         }
@@ -1348,6 +1403,15 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
             directChildrenByTag(labelEl, "Text").forEach((textEl, ti) => {
                 const str = textEl.getAttribute("String");
                 if (!str) return;
+                // "Notes" Details-pane section support - see
+                // noteReferencesByOwner's doc comment above. Purely
+                // informational, so this runs unconditionally.
+                readTextTemplateReferences(textEl)?.forEach(ref => {
+                    if (ref.itemId && elementById.get(ref.itemId)?.getAttribute("ComponentClass") === NOTE_COMPONENT_CLASS) {
+                        if (!noteReferencesByOwner.has(representedId)) noteReferencesByOwner.set(representedId, new Set());
+                        noteReferencesByOwner.get(representedId).add(ref.itemId);
+                    }
+                });
                 const tPos = readPosition(textEl) || (labelEl === el ? pos : null);
                 const j = parseJustification(textEl.getAttribute("Justification"));
                 elements.push({
@@ -1494,7 +1558,12 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
         });
     });
 
-    return { elements, nodePosMap: new Map(), symbolReferences };
+    // Convert noteReferencesByOwner's Set values to plain arrays for
+    // straightforward use by App.jsx.
+    const noteReferencesByOwnerArr = new Map();
+    noteReferencesByOwner.forEach((set, ownerId) => noteReferencesByOwnerArr.set(ownerId, [...set]));
+
+    return { elements, nodePosMap: new Map(), symbolReferences, labelSymbolReferencesByOwner, noteReferencesByOwner: noteReferencesByOwnerArr };
 }
 
 // ---------------------------------------------------------------------------
