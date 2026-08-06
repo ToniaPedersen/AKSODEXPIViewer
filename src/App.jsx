@@ -6,6 +6,9 @@ import {
 } from "./dexpiParser.js";
 import { parseProteusPackage, SEGMENT_SYSTEM_MEMBERSHIP_REF_PROPERTIES, TREE_CONTAINMENT_REF_PROPERTIES } from "./proteusParser.js";
 import { jsPDF } from "jspdf";
+import {
+    isPngBytes, readPngEmbeddedPlacement, writePngEmbeddedPlacement, png_stripPlacementChunk,
+} from "./pngPlacement.js";
 
 // Connections tab: friendly display labels for the "other" (non-upstream/
 // downstream/group) ref types produced by proteusParser.js's
@@ -641,6 +644,11 @@ export default function App() {
     const [panStart, setPanStart] = useState(null);
     const [bgImage, setBgImage] = useState(null);
     const [showBgControls, setShowBgControls] = useState(false);
+    // Part A - Draw-Order Override ("Send to Back"): a Set of represented-
+    // object ids whose graphic(s) have been moved to the front of the paint
+    // order (so they render/click *behind* everything else). View-only,
+    // in-memory, reset on every (re)parse - see rebuild() below.
+    const [zOrderOverrides, setZOrderOverrides] = useState(new Set());
     // Connectivity checkbox: checking it SHOWS the upstream/downstream/group
     // highlight for the selected object; unchecked (the default) hides it.
     // See connectivityHighlight below and the legend near the drawing
@@ -675,6 +683,10 @@ export default function App() {
     const svgViewportRef = useRef(null);
     const svgElRef = useRef(null);
     const [exporting, setExporting] = useState(false);
+    // Part B - BG Image Default Placement: the object URL currently backing
+    // bgImage's displayed <image>, so it can be revoked on replace/remove/
+    // unmount without leaking blob URLs.
+    const bgObjectUrlRef = useRef(null);
 
     const connectivityHighlight = useMemo(() => {
         if (!showConnectivity || !selectedId || !parsed?.connectivityMap) return { upstream: new Set(), downstream: new Set(), group: new Set() };
@@ -692,6 +704,8 @@ export default function App() {
             setExpanded(new Set([p.tree.id, ...p.tree.children.slice(0, 5).map(c => c.id)]));
             setViewBox({ x: b.minX, y: b.minY, w: Math.max(100, b.maxX - b.minX), h: Math.max(100, b.maxY - b.minY) });
             setParseError("");
+            // FR-6: loading/reloading a file clears all draw-order overrides.
+            setZOrderOverrides(new Set());
         } catch (e) { setParseError(e.message || String(e)); }
     }
 
@@ -708,28 +722,87 @@ export default function App() {
         setDiscFileName(file.name);
         rebuild(mainXmlText, txt);
     }
+    // Part B - BG Image Default Placement (FR-2, FR-7). Reads the picked
+    // file as raw bytes (not a base64 data URL - the file's own bytes are
+    // what Save/Update/Clear/Download operate on) and checks the PNG magic
+    // signature. If it's a PNG carrying a valid embedded
+    // dexpi:bgPlacement default (readPngEmbeddedPlacement - falls back to
+    // null on a non-PNG, missing, or corrupted/foreign chunk per FR-7), that
+    // placement seeds scale/offsetX/offsetY instead of the auto-fit values.
+    // The image itself is displayed via an object URL over those same raw
+    // bytes, revoked on replace/remove/unmount (bgObjectUrlRef).
     async function handleBgFile(e) {
         const file = e.target.files?.[0]; if (!file) return;
-        const reader = new FileReader();
-        reader.onload = ev => {
-            const src = ev.target.result;
-            // Load the raw pixel dimensions so the overlay can be fit into the
-            // drawing's coordinate space (fullBounds) preserving aspect ratio,
-            // instead of guessing a scale in unrelated CSS-pixel units.
-            const probe = new Image();
-            probe.onload = () => {
-                setBgImage({
-                    src, opacity: 0.4, scale: 1, offsetX: 0, offsetY: 0, visible: true,
-                    naturalWidth: probe.naturalWidth, naturalHeight: probe.naturalHeight,
-                });
-            };
-            probe.onerror = () => {
-                setBgImage({ src, opacity: 0.4, scale: 1, offsetX: 0, offsetY: 0, visible: true, naturalWidth: 0, naturalHeight: 0 });
-            };
-            probe.src = src;
-        };
-        reader.readAsDataURL(file);
         e.target.value = "";
+        const buf = await file.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        const isPng = isPngBytes(bytes);
+        const embeddedPlacement = isPng ? readPngEmbeddedPlacement(bytes) : null;
+        const placement = embeddedPlacement || { scale: 1, offsetX: 0, offsetY: 0 };
+
+        if (bgObjectUrlRef.current) { URL.revokeObjectURL(bgObjectUrlRef.current); bgObjectUrlRef.current = null; }
+        const objectUrl = URL.createObjectURL(new Blob([bytes], { type: file.type || (isPng ? "image/png" : "") }));
+        bgObjectUrlRef.current = objectUrl;
+
+        const base = {
+            objectUrl, sourceBytes: bytes, isPng, fileName: file.name,
+            embeddedPlacement,
+            opacity: 0.4, scale: placement.scale, offsetX: placement.offsetX, offsetY: placement.offsetY, visible: true,
+        };
+        // Load the raw pixel dimensions so the overlay can be fit into the
+        // drawing's coordinate space (fullBounds) preserving aspect ratio,
+        // instead of guessing a scale in unrelated CSS-pixel units.
+        const probe = new Image();
+        probe.onload = () => { setBgImage({ ...base, naturalWidth: probe.naturalWidth, naturalHeight: probe.naturalHeight }); };
+        probe.onerror = () => { setBgImage({ ...base, naturalWidth: 0, naturalHeight: 0 }); };
+        probe.src = objectUrl;
+    }
+
+    // Revoke the current BG image object URL on unmount only - replacement/
+    // removal revoke it inline at the point of change (handleBgFile, Remove).
+    useEffect(() => {
+        return () => { if (bgObjectUrlRef.current) URL.revokeObjectURL(bgObjectUrlRef.current); };
+    }, []);
+
+    // Embeds the current Scale / X / Y directly into a copy of the loaded
+    // PNG's bytes and downloads it in one action - no separate "save" step.
+    // The originally-selected file on disk is never modified; see
+    // downloadBgPlacementPng() just below for the actual download.
+    function clearBgDefault() {
+        setBgImage(b => {
+            if (!b || !b.isPng || !b.embeddedPlacement) return b;
+            try {
+                const newBytes = png_stripPlacementChunk(b.sourceBytes);
+                const blob = new Blob([newBytes], { type: "image/png" });
+                const base = (b.fileName || "image.png").replace(/\.png$/i, "");
+                downloadBlob(blob, `${base}-placement.png`);
+                return { ...b, sourceBytes: newBytes, embeddedPlacement: null };
+            } catch (err) {
+                alert("Could not clear the placement default: " + (err.message || String(err)));
+                return b;
+            }
+        });
+    }
+
+    // Embeds the current Scale / X / Y into a copy of the loaded PNG's bytes
+    // and immediately downloads it - the one action that replaces the old
+    // two-step "Save as Default" then "Download PNG with placement" flow.
+    // The originally-selected file on disk is never modified.
+    function downloadBgPlacementPng() {
+        setBgImage(b => {
+            if (!b || !b.isPng) return b;
+            try {
+                const placement = { scale: b.scale, offsetX: b.offsetX, offsetY: b.offsetY };
+                const newBytes = writePngEmbeddedPlacement(b.sourceBytes, placement);
+                const blob = new Blob([newBytes], { type: "image/png" });
+                const base = (b.fileName || "image.png").replace(/\.png$/i, "");
+                downloadBlob(blob, `${base}-placement.png`);
+                return { ...b, sourceBytes: newBytes, embeddedPlacement: placement };
+            } catch (err) {
+                alert("Could not save the placement into the PNG: " + (err.message || String(err)));
+                return b;
+            }
+        });
     }
 
     // Export: rasterizes exactly what's currently on screen inside the SVG
@@ -879,6 +952,49 @@ export default function App() {
             .forEach(ref => ref.objects.forEach(id => { if (id) ids.add(id); }));
         return ids;
     }, [selectedNode, selectHighlightSubComponents]);
+
+    // Part A - Draw-Order Override ("Send to Back"). Every represented id
+    // that has at least one associated graphic element - gates FR-1's
+    // control so it's only offered where there's actually something to
+    // reorder (see edge case: pure-graphic elements with no full model
+    // object still qualify, since this is keyed off el.representedId, not
+    // the tree).
+    const representedIdsWithGraphics = useMemo(() => {
+        const ids = new Set();
+        parsed?.graphics?.elements?.forEach(el => { if (el.representedId) ids.add(el.representedId); });
+        return ids;
+    }, [parsed]);
+
+    // The reordered list the SVG render loop actually iterates over:
+    // elements whose represented id is in zOrderOverrides move to the
+    // front, stable within that group; everything else keeps its original
+    // relative order. O(n), and === parsed.graphics.elements (by content,
+    // new array identity only when overrides are non-empty) when there are
+    // no overrides.
+    const paintOrderElements = useMemo(() => {
+        const elements = parsed?.graphics?.elements;
+        if (!elements) return [];
+        if (zOrderOverrides.size === 0) return elements;
+        const front = [];
+        const rest = [];
+        for (const el of elements) {
+            if (el.representedId && zOrderOverrides.has(el.representedId)) front.push(el);
+            else rest.push(el);
+        }
+        return [...front, ...rest];
+    }, [parsed, zOrderOverrides]);
+
+    // Adds/removes the currently selected object from the override set -
+    // FR-2/FR-3's "Send to Back" / "Restore order" toggle.
+    function toggleSendToBack() {
+        if (!selectedId) return;
+        setZOrderOverrides(prev => {
+            const next = new Set(prev);
+            if (next.has(selectedId)) next.delete(selectedId);
+            else next.add(selectedId);
+            return next;
+        });
+    }
 
     const handleSelect = useCallback((id) => {
         if (!id) return;
@@ -1065,6 +1181,11 @@ export default function App() {
                             <input type="checkbox" checked={showProfileLabels} onChange={e => setShowProfileLabels(e.target.checked)} />
                             Profile labels
                         </label>
+                        {zOrderOverrides.size > 0 && (
+                            <button style={S.btn} onClick={() => setZOrderOverrides(new Set())} title="Clear every 'Send to Back' draw-order override in one action">
+                                Reset Z-Order ({zOrderOverrides.size})
+                            </button>
+                        )}
                         <button style={S.btn} onClick={() => bgInputRef.current?.click()} title="Overlay an image behind the drawing">BG Image</button>
                         {bgImage && <button style={{ ...S.btn, background: showBgControls ? "#eaf2ff" : "white" }} onClick={() => setShowBgControls(p => !p)}>BG Controls</button>}
                         <input ref={bgInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleBgFile} />
@@ -1098,7 +1219,20 @@ export default function App() {
                             <input type="number" step={Math.max(0.01, boundsH / 500)} value={bgImage.offsetY} onChange={e => { const v = parseFloat(e.target.value); if (!Number.isNaN(v)) setBgImage(b => ({ ...b, offsetY: v })); }} style={S.numBoxWide} title="Y offset, in drawing units, from the auto-fit position" />
                         </label>
                         <button style={S.btnSmall} onClick={() => setBgImage(b => ({ ...b, scale: 1, offsetX: 0, offsetY: 0 }))} title="Reset to the auto-fit (centered, aspect-correct) placement">Reset fit</button>
-                        <button style={{ ...S.btnSmall, color: "#cf222e" }} onClick={() => { setBgImage(null); setShowBgControls(false); }}>Remove</button>
+                        <button
+                            style={{ ...S.btnSmall, opacity: bgImage.isPng ? 1 : 0.5, cursor: bgImage.isPng ? "pointer" : "not-allowed" }}
+                            disabled={!bgImage.isPng}
+                            onClick={downloadBgPlacementPng}
+                            title={bgImage.isPng
+                                ? "Embed the current Scale / X / Y into a copy of this PNG and download it, so the next time this image is loaded it starts at this placement instead of the auto-fit - the original file you selected is left untouched"
+                                : "Only PNG supports an embedded placement default"}
+                        >
+                            ⬇ Download PNG with placement
+                        </button>
+                        {bgImage.isPng && bgImage.embeddedPlacement && (
+                            <button style={S.btnSmall} onClick={clearBgDefault} title="Download a copy of this PNG with the saved placement default removed">Clear Default</button>
+                        )}
+                        <button style={{ ...S.btnSmall, color: "#cf222e" }} onClick={() => { if (bgObjectUrlRef.current) { URL.revokeObjectURL(bgObjectUrlRef.current); bgObjectUrlRef.current = null; } setBgImage(null); setShowBgControls(false); }}>Remove</button>
                     </div>
                 )}
 
@@ -1119,16 +1253,21 @@ export default function App() {
                     <svg ref={svgElRef} viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`} width="100%" height="100%" style={{ display: "block" }} onAuxClick={e => e.preventDefault()}>
                         {bgImage && bgPlacement && (
                             <g style={{ display: bgImage.visible ? "inline" : "none", opacity: bgImage.opacity, pointerEvents: "none" }}>
-                                <image href={bgImage.src} x={bgPlacement.x} y={bgPlacement.y} width={bgPlacement.width} height={bgPlacement.height} preserveAspectRatio="none" />
+                                <image href={bgImage.objectUrl} x={bgPlacement.x} y={bgPlacement.y} width={bgPlacement.width} height={bgPlacement.height} preserveAspectRatio="none" />
                                 <rect x={bgPlacement.x} y={bgPlacement.y} width={bgPlacement.width} height={bgPlacement.height} fill={BG_TINT_COLOR} style={{ mixBlendMode: "color" }} />
                             </g>
                         )}
-                        {parsed?.graphics.elements
+                        {paintOrderElements
                             // "lbltpl_"-prefixed keys are the LabelTemplate-synthesized
                             // labels (see buildProteusGraphics()'s label fallback in
                             // proteusParser.js) - hidden here when the Profile labels
                             // checkbox is off, leaving real <Label> XML-derived text
                             // (key prefix "lbl_") untouched either way.
+                            //
+                            // Part A - Draw-Order Override: paintOrderElements (not
+                            // parsed.graphics.elements directly) is what determines
+                            // paint/click order here, so a "Send to Back" override
+                            // takes effect immediately with no other change to this loop.
                             .filter(el => showProfileLabels || !el.key.startsWith("lbltpl_"))
                             .map(el => {
                             const isSelected = !!el.representedId && selectedRepresentedIds.has(el.representedId);
@@ -1195,7 +1334,25 @@ export default function App() {
                                 <div style={S.section}>
                                     <div style={{ fontWeight: 600, marginBottom: 4 }}>{selectedNode?.label || "No selection"}</div>
                                     <div style={{ fontSize: 12, color: "#57606a" }}>{selectedNode?.type || ""}</div>
-                                    {selectedNode?.objectId && <div style={{ marginTop: 6, fontSize: 12, fontFamily: "monospace", wordBreak: "break-all" }}>{selectedNode.objectId}</div>}
+                                    {selectedNode?.objectId && (
+                                        <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                                            <div style={{ fontSize: 12, fontFamily: "monospace", wordBreak: "break-all" }}>{selectedNode.objectId}</div>
+                                            {representedIdsWithGraphics.has(selectedNode.objectId) && (
+                                                <>
+                                                    <button
+                                                        style={S.btnSmall}
+                                                        onClick={toggleSendToBack}
+                                                        title="Move this object's symbol behind everything else in the drawing, so overlapping or nested items underneath it become clickable/selectable"
+                                                    >
+                                                        {zOrderOverrides.has(selectedNode.objectId) ? "↺ Restore order" : "⇩ Send to Back"}
+                                                    </button>
+                                                    {zOrderOverrides.has(selectedNode.objectId) && (
+                                                        <span style={S.badge("#57606a")} title="This object's draw order has been overridden">Sent to back</span>
+                                                    )}
+                                                </>
+                                            )}
+                                        </div>
+                                    )}
                                     {selectedNode?.persistentIdentifiers?.length > 0 && (
                                         <div style={{ marginTop: 10 }}>
                                             <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4 }}>Persistent Identifiers</div>

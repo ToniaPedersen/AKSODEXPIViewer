@@ -9,9 +9,9 @@ A browser-based viewer for legacy **Proteus 4.1.1 / DEXPI 1.3** P&ID XML files, 
 1. [Introduction](#1-introduction)
 2. [Getting Started](#2-getting-started)
 3. [Interface Overview](#3-interface-overview)
-4. [Left Panel — Files &amp; Topology Tree](#4-left-panel--files--topology-tree)
-5. [Centre Panel — P&amp;ID Drawing](#5-centre-panel--pid-drawing)
-6. [Right Panel — Object Details](#6-right-panel--object-details)
+4. [Left Panel — Files &amp; Topology Tree](#4-left-panel-files-topology-tree)
+5. [Centre Panel — P&amp;ID Drawing](#5-centre-panel-p-id-drawing)
+6. [Right Panel — Object Details](#6-right-panel-object-details)
 7. [Troubleshooting](#7-troubleshooting)
 
 ---
@@ -121,9 +121,13 @@ Click **BG Image** to overlay a reference image behind the drawing. Once one is 
 | Scale | Uniform scale factor applied to the auto-fit size (native aspect ratio is always preserved) |
 | X / Y | Offset, in drawing units, from the auto-fit (centered) position — not screen pixels, so the range scales with the drawing's own size |
 | Reset fit | Sets scale back to 1 and X/Y back to 0, returning to the auto-fit (centered, aspect-correct) placement |
+| ⬇ Download PNG with placement | *PNG images only.* Embeds the current Scale/X/Y into a copy of the loaded PNG and downloads it. The next time that downloaded copy is loaded as a BG image (in this session, a future session, or on another machine), it opens pre-aligned at this placement instead of the auto-fit default. The originally-selected file on disk is never modified. |
+| Clear Default | *PNG images only, shown only when the loaded PNG already carries a saved placement.* Downloads a copy of the PNG with the saved placement removed, so a future load of that copy falls back to auto-fit. |
 | Remove | Clear the background image |
 
 The image is placed inside the same coordinate space as the drawing, so it pans and zooms in lockstep with it — it stays aligned at any zoom level, not just the level it was set up at.
+
+Only PNG files can carry a saved placement (it's embedded as a small metadata chunk in the PNG itself, not stored anywhere in the browser) — other image formats work as background images exactly as before, just without the Download/Clear Default controls.
 
 ### 5.7 Profile Labels
 
@@ -219,7 +223,10 @@ The loaded DiscProfile.xml doesn't cover every class used in the drawing. Confir
 The drawing file may not carry explicit `<Label>` XML for those symbols. Enable **Profile labels** to show labels synthesized from the DiscProfile's `LabelTemplate` definitions instead.
 
 **Background image is stretched or misaligned**
-Use the Scale and X/Y controls in BG Controls, or click **Reset fit** to snap back to the auto-fit (centered) placement. The image always preserves its native aspect ratio; only its uniform scale and X/Y offset are adjustable. It's rendered in the same coordinate space as the drawing, so once placed it stays aligned at any pan/zoom level.
+Use the Scale and X/Y controls in BG Controls, or click **Reset fit** to snap back to the auto-fit (centered) placement. The image always preserves its native aspect ratio; only its uniform scale and X/Y offset are adjustable. It's rendered in the same coordinate space as the drawing, so once placed it stays aligned at any pan/zoom level. Note that the auto-fit placement is computed from the full extent of the parsed drawing, so a Proteus file whose symbols are missing or mis-scaled (see the next item) will also throw off the BG image's auto-fit.
+
+**A symbol placement has no `<Scale>` in the source XML**
+Rather than silently omitting it from the canvas, the viewer draws it at a default 1×1 scale, so it's still visible and still counted in the drawing's extent (which the BG image's auto-fit is computed from). Check that object's **Symbol Reference** section in the right panel (6.1) to see the raw `ComponentName`/`Axis`/`Reference`/`Scale` values the source XML actually provided.
 
 **Exported PNG/PDF is missing the background image**
 Make sure the BG image is loaded and **Visible** is checked before exporting — Save PNG/Save PDF capture exactly what's currently rendered in the drawing viewport, including the overlay only if it's currently shown.

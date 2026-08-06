@@ -1333,27 +1333,35 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
                     placedVariant = variant;
                     // A symbol placement with no <Scale> element at all (e.g.
                     // ControlledActuator-1 in FPQ-AKSO-P-XB-20130-01.XML) has
-                    // no real size information to draw it at - readScale()'s
-                    // 1/1 fallback for this case exists only so OTHER code
-                    // (the label-template auto-label positioning below) has
-                    // a sane multiplier to work with, not because 1x is a
-                    // correct or intended size for the symbol itself. Rather
-                    // than silently drawing such a symbol at an arbitrary
-                    // default size, skip drawing it entirely - its absence
-                    // on the canvas is the visible signal that the source
-                    // file never gave it a Scale. (This is distinct from an
-                    // explicit but malformed <Scale> - e.g. non-numeric X/Y
-                    // - which readScale() already renders as a collapsed
-                    // zero-size point instead, per its own doc comment.)
+                    // no authored size information - readScale() already
+                    // falls back to a 1x1 scale for this case (see its own
+                    // doc comment), and that same fallback is used to
+                    // actually draw the symbol here too (rather than
+                    // skipping it), matching OldDEXPIVersion's behavior: a
+                    // symbol with no Scale should still show up at a default
+                    // 1x1 size instead of silently vanishing from the
+                    // canvas. This also matters for fullBounds (see
+                    // boundsFromElements in dexpiParser.js) - dropping these
+                    // symbols entirely was shrinking the computed drawing
+                    // extent enough to visibly throw off the BG reference
+                    // image's auto-fit/contain placement relative to
+                    // OldDEXPIVersion. (In OldDEXPIVersion this same
+                    // fallback is additionally flagged by a
+                    // "zero-scale-symbol" rdlValidate.js warning so the
+                    // synthesized default is never silent - this app's
+                    // rdlValidate.js/xsdValidate.js aren't wired into
+                    // App.jsx, so no equivalent warning surfaces here yet.)
+                    // (An explicit but malformed <Scale> - e.g. non-numeric X/Y - is
+                    // unaffected by this: readScale() already renders that
+                    // as a collapsed zero-size point, per its own doc
+                    // comment, unchanged here.)
                     const rawScale = readRawScale(el);
-                    if (rawScale) {
-                        const scale = readScale(el);
-                        elements.push({
-                            kind: "symbolUsage", key: `sym_${id}`, representedId: id, elementRole: "symbol",
-                            symbol, variant, position: { x: pos.x, y: pos.y }, rotation: pos.rotation,
-                            scaleX: scale.x, scaleY: scale.y, isMirrored: pos.isMirrored,
-                        });
-                    }
+                    const scale = readScale(el);
+                    elements.push({
+                        kind: "symbolUsage", key: `sym_${id}`, representedId: id, elementRole: "symbol",
+                        symbol, variant, position: { x: pos.x, y: pos.y }, rotation: pos.rotation,
+                        scaleX: scale.x, scaleY: scale.y, isMirrored: pos.isMirrored,
+                    });
                     const axisRef = readAxisReference(el);
                     const ref = {
                         regNum, componentName,
