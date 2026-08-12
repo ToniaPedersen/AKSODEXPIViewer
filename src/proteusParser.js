@@ -1244,6 +1244,25 @@ const PLANT_STRUCTURE_ATTRIBUTE_FALLBACKS = {
     PlantSystemIdentificationCode: { assocType: "is located in", targetClass: "PlantSystem" },
 };
 
+// PipeOffPageConnector/SignalOffPageConnector (or a ComponentClass subtype of
+// either, e.g. FlowInPipeOffPageConnector/FlowOutSignalOffPageConnector) never
+// carry the referenced-drawing info themselves - it lives on a nested
+// <PipeOffPageConnectorReference>/<SignalOffPageConnectorReference> child
+// element instead (its own ID + own <GenericAttributes>, ComponentClass
+// typically "Pipe/SignalOffPageConnectorReferenceByNumber" - see the RDL's
+// PipeOffPageConnectorReferenceByNumber/SignalOffPageConnectorReferenceByNumber
+// classes and their ReferencedDrawingNumber/ReferencedConnectorNumber/
+// ReferencedDrawingDescriptor properties). Real DiscProfile.xml LabelTemplates
+// for these symbols reference those properties as bare tokens (e.g.
+// "<ReferencedDrawingNumber>"), so without this fallback they'd always
+// resolve empty: lookupAttributeText(ownData, attrName) only ever sees the
+// connector's own attributes, never its reference child's. buildTree() above
+// already gives that nested reference element its own elementById/
+// dataByObjectId entry (it's picked up by the same "[ID][ComponentClass]"
+// selector as everything else), so once its id is found this is just another
+// dataByObjectId lookup, same as the PLANT_STRUCTURE_ATTRIBUTE_FALLBACKS one.
+const OFF_PAGE_CONNECTOR_REFERENCE_CHILD_TAGS = ["PipeOffPageConnectorReference", "SignalOffPageConnectorReference"];
+
 // Substitutes every "<AttributeName>" / "RelatedClass:<AttributeName>" token
 // in a LabelTemplate's raw Text (see parseLabelTemplate() in dexpiParser.js)
 // with the real value it stands for, preserving all literal text (including
@@ -1255,7 +1274,10 @@ const PLANT_STRUCTURE_ATTRIBUTE_FALLBACKS = {
 // which fall back to the associated ProcessPlant/PlantSystem PlantStructureItem
 // (see PLANT_STRUCTURE_ATTRIBUTE_FALLBACKS above) when not found directly on
 // the object, since those two codes are defined once on the plant structure
-// rather than repeated onto every item. "RelatedClass:<AttributeName>"
+// rather than repeated onto every item; and except for PipeOffPageConnector/
+// SignalOffPageConnector attributes that instead live on their nested
+// PipeOffPageConnectorReference/SignalOffPageConnectorReference child (see
+// OFF_PAGE_CONNECTOR_REFERENCE_CHILD_TAGS above). "RelatedClass:<AttributeName>"
 // (observed e.g. on alarm-setpoint labels: "SignalConveyingFunction:<AlarmValue>")
 // resolves against a DIFFERENT object - one this element directly references
 // via its own <Association> children whose target's ComponentClass matches
@@ -1265,26 +1287,58 @@ const PLANT_STRUCTURE_ATTRIBUTE_FALLBACKS = {
 // empty string rather than left as raw "<...>" text, so a missing/optional
 // attribute just quietly omits that part of the label instead of showing
 // template syntax to the user.
+//
+// Besides the substituted text, also reports whether the template contained
+// any token at all (hasToken) and whether at least one of those tokens
+// actually resolved to a non-empty value (hasValue). This is what lets the
+// caller (buildProteusGraphics()'s label-template fallback below) tell a
+// template that's ALL literal text (always worth showing) apart from a
+// template whose only content is an unresolved token wrapped in literal
+// decoration - e.g. real DiscProfile.xml alarm-setpoint LabelTemplates like
+// "HH=' & SignalConveyingFunction:<AlarmValue>": when that instrument has no
+// AlarmValue configured, resolveLabelTemplateText() already replaces the
+// token with "", but the surrounding literal text ("HH=' & ") is non-empty
+// on its own, so the plain text.trim() check the caller also does isn't
+// enough to suppress it - it would otherwise draw a bare "HH=' & " label
+// next to every such symbol regardless of whether that setpoint is
+// populated.
 function resolveLabelTemplateText(rawText, el, ownData, elementById, dataByObjectId) {
-    if (!rawText) return "";
-    return rawText.replace(LABEL_TEMPLATE_TOKEN_RE, (match, relatedClass, attrName) => {
+    if (!rawText) return { text: "", hasToken: false, hasValue: false };
+    let hasToken = false;
+    let hasValue = false;
+    const resolveToken = (relatedClass, attrName) => {
         if (!relatedClass) {
             const own = lookupAttributeText(ownData, attrName);
             if (own) return own;
             const fallback = PLANT_STRUCTURE_ATTRIBUTE_FALLBACKS[attrName];
-            if (!fallback) return own;
-            const structureId = directChildrenByTag(el, "Association")
-                .filter(a => a.getAttribute("Type") === fallback.assocType)
-                .map(a => a.getAttribute("ItemID"))
-                .find(itemId => itemId && elementById.get(itemId)?.getAttribute("ComponentClass") === fallback.targetClass);
-            return structureId ? lookupAttributeText(dataByObjectId.get(structureId), attrName) : own;
+            if (fallback) {
+                const structureId = directChildrenByTag(el, "Association")
+                    .filter(a => a.getAttribute("Type") === fallback.assocType)
+                    .map(a => a.getAttribute("ItemID"))
+                    .find(itemId => itemId && elementById.get(itemId)?.getAttribute("ComponentClass") === fallback.targetClass);
+                const structureVal = structureId ? lookupAttributeText(dataByObjectId.get(structureId), attrName) : "";
+                if (structureVal) return structureVal;
+            }
+            const refChildEl = OFF_PAGE_CONNECTOR_REFERENCE_CHILD_TAGS
+                .map(tag => directChildrenByTag(el, tag)[0])
+                .find(Boolean);
+            const refId = refChildEl?.getAttribute("ID");
+            const refVal = refId ? lookupAttributeText(dataByObjectId.get(refId), attrName) : "";
+            return refVal || own;
         }
         const relatedId = directChildrenByTag(el, "Association")
             .map(a => a.getAttribute("ItemID"))
             .find(itemId => itemId && elementById.get(itemId)?.getAttribute("ComponentClass") === relatedClass);
         if (!relatedId) return "";
         return lookupAttributeText(dataByObjectId.get(relatedId), attrName);
+    };
+    const text = rawText.replace(LABEL_TEMPLATE_TOKEN_RE, (match, relatedClass, attrName) => {
+        hasToken = true;
+        const resolved = resolveToken(relatedClass, attrName);
+        if (resolved) hasValue = true;
+        return resolved;
     });
+    return { text, hasToken, hasValue };
 }
 
 function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObjectId) {
@@ -1490,8 +1544,17 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
             const ownerEl = elementById.get(ownerId) || el;
             const ownData = dataByObjectId.get(ownerId) || [];
             placedVariant.labelTemplates.forEach((lt, li) => {
-                const text = resolveLabelTemplateText(lt.text, ownerEl, ownData, elementById, dataByObjectId);
+                const { text, hasToken, hasValue } = resolveLabelTemplateText(lt.text, ownerEl, ownData, elementById, dataByObjectId);
                 if (!text.trim()) return;
+                // A template built entirely around token(s) that all came back
+                // empty (e.g. an alarm-setpoint "HH="/"H="/"L="/"LL=" label
+                // whose AlarmValue isn't populated on this instrument) still
+                // has non-empty literal decoration around the missing value,
+                // so the plain text.trim() check above doesn't catch it - skip
+                // it explicitly instead of drawing a value-less "HH=" label.
+                // A purely literal template (no tokens at all) is unaffected -
+                // hasToken is false for those, so this never suppresses them.
+                if (hasToken && !hasValue) return;
                 const lx = lt.position.x * scale.x * mirror;
                 const ly = lt.position.y * scale.y;
                 const wx = pos.x + (lx * cos - ly * sin);
