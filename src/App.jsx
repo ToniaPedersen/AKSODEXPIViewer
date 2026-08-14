@@ -668,6 +668,10 @@ export default function App() {
     // 100 = unchanged (no-op), so nothing is boosted until the user raises it.
     const [lineBoostPct, setLineBoostPct] = useState(100);
     const [boostSymbolOutlines, setBoostSymbolOutlines] = useState(false);
+    // Opacity of the drawing's own DEXPI/Proteus graphics (the symbols,
+    // lines, and labels parsed from the loaded Proteus XML) - independent of
+    // the separate BG Image opacity control below. 1 = fully opaque (no-op).
+    const [drawingOpacity, setDrawingOpacity] = useState(1);
     // Whether LabelTemplate-synthesized labels (drawn when an object carries
     // no <Label> XML of its own - see proteusParser.js's buildProteusGraphics()
     // label fallback) are shown in the drawing. Default false; check the box
@@ -1167,6 +1171,11 @@ export default function App() {
                             <input type="checkbox" checked={boostSymbolOutlines} onChange={e => setBoostSymbolOutlines(e.target.checked)} />
                             Include symbol outlines
                         </label>
+                        <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#57606a" }} title="Opacity of the drawing's DEXPI graphics (symbols, lines, and labels parsed from the Proteus XML). Lower it to see through the drawing, e.g. when comparing against a BG reference image.">
+                            Opacity
+                            <input type="range" min={0} max={1} step={0.05} value={drawingOpacity} onChange={e => setDrawingOpacity(parseFloat(e.target.value))} style={{ width: 70 }} />
+                            <input type="number" min={0} max={1} step={0.01} value={drawingOpacity} onChange={e => { const v = parseFloat(e.target.value); if (!Number.isNaN(v)) setDrawingOpacity(Math.min(1, Math.max(0, v))); }} style={S.numBox} title="Opacity (0-1)" />
+                        </label>
                         <button style={S.btn} disabled={!parsed || exporting} onClick={exportAsPng} title="Save the current view (drawing + BG image, if any) as a PNG">{exporting ? "..." : "Save PNG"}</button>
                         <button style={S.btn} disabled={!parsed || exporting} onClick={exportAsPdf} title="Save the current view (drawing + BG image, if any) as a PDF">{exporting ? "..." : "Save PDF"}</button>
                         <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#57606a", cursor: "pointer" }} title="Connectivity mode: highlights the upstream (blue), downstream (green), and group (purple) connections of the selected object. Hidden by default - check this box to show the highlight.">
@@ -1257,6 +1266,7 @@ export default function App() {
                                 <rect x={bgPlacement.x} y={bgPlacement.y} width={bgPlacement.width} height={bgPlacement.height} fill={BG_TINT_COLOR} style={{ mixBlendMode: "color" }} />
                             </g>
                         )}
+                        <g opacity={drawingOpacity}>
                         {paintOrderElements
                             // "lbltpl_"-prefixed keys are the LabelTemplate-synthesized
                             // labels (see buildProteusGraphics()'s label fallback in
@@ -1276,6 +1286,7 @@ export default function App() {
                             if (el.kind === "symbolUsage") return <SymbolGraphic key={el.key} el={el} selected={isSelected} connHighlight={connColor} onSelect={handleSelect} boostPct={lineBoostPct} boostSymbolOutlines={boostSymbolOutlines} />;
                             return <PrimitiveGraphic key={el.key} el={el} selected={isSelected} connHighlight={connColor} onSelect={handleSelect} nodePosMap={parsed.graphics.nodePosMap} boostPct={lineBoostPct} boostSymbolOutlines={boostSymbolOutlines} />;
                         })}
+                        </g>
                         {/* Heat-trace overlays - rendered on top, only when a DiscProfile.xml
                             is loaded and at least one object resolves to an active
                             HeatTracingType (see dexpiParser.js's buildHeatTraceSet()). */}

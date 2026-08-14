@@ -84,7 +84,7 @@ Clicking any row selects that object: it highlights red in the drawing, scrolls 
 | Zoom | Scroll the mouse wheel over the drawing (zooms toward the cursor) |
 | Pan | Hold **Space** and drag |
 | Fit to window | Click the **Fit** button in the centre toolbar |
-| Export view | Click **Save PNG** / **Save PDF** in the centre toolbar (see 5.10, below) |
+| Export view | Click **Save PNG** / **Save PDF** in the centre toolbar (see 5.11, below) |
 
 ### 5.2 Selecting Objects
 
@@ -110,7 +110,13 @@ Check **Sub-components** to have a selection also highlight (in red) every child
 
 The **Line weight** toggle boosts very thin connector lines to a minimum visible stroke width so faint piping doesn't disappear when zoomed out. Toggle it off to render every line at its exact drawn weight.
 
-### 5.6 Background Image
+### 5.6 Drawing Opacity
+
+The **Opacity** slider (and its adjacent 0–1 number box) in the centre toolbar controls the transparency of the drawing's own DEXPI/Proteus graphics — the symbols, piping/signal lines, and labels parsed from the loaded Proteus XML. It defaults to 1 (fully opaque).
+
+This is separate from the Background Image's own **Opacity** control (5.7, below): lowering the Drawing Opacity fades the P&ID itself, which is useful for seeing a loaded background reference image through the drawing, or for visually comparing the two without hiding either one outright. It has no effect on the heat-trace overlay (5.9), which is always drawn at full opacity so it stays legible even when the drawing is faded. It's included in **Save PNG**/**Save PDF** exports (5.11), since those capture exactly what's currently rendered in the viewport.
+
+### 5.7 Background Image
 
 Click **BG Image** to overlay a reference image behind the drawing. Once one is loaded, **BG Controls** appears with:
 
@@ -129,11 +135,11 @@ The image is placed inside the same coordinate space as the drawing, so it pans 
 
 Only PNG files can carry a saved placement (it's embedded as a small metadata chunk in the PNG itself, not stored anywhere in the browser) — other image formats work as background images exactly as before, just without the Download/Clear Default controls.
 
-### 5.7 Profile Labels
+### 5.8 Profile Labels
 
 Check **Profile labels** to show labels synthesized from the loaded DiscProfile.xml's `LabelTemplate` definitions, for symbols that carry no explicit `<Label>` XML of their own. Off by default, so only labels genuinely present in the drawing file are shown.
 
-### 5.8 Heat Trace Overlay
+### 5.9 Heat Trace Overlay
 
 When the loaded objects resolve to an active `HeatTracingType`, a dashed orange overlay is drawn automatically — no toggle needed:
 
@@ -141,7 +147,7 @@ When the loaded objects resolve to an active `HeatTracingType`, a dashed orange 
 - **Inline components** (valves, fittings, nozzles) — a dashed line alongside the symbol, oriented to match the pipe direction.
 - **Instruments** (`ProcessInstrumentationFunction`) — a dashed outline following the symbol's actual boundary shape.
 
-### 5.9 Signal-Conveying Line Styles (Proteus files)
+### 5.10 Signal-Conveying Line Styles (Proteus files)
 
 For a Proteus/DEXPI 1.3 file's `InformationFlow` elements (signal/instrument wires), the drawn `CenterLine` is decorated according to the `SignalConveyingFunctionTypeRepresentationAssignmentClass` custom attribute (`DexpiCustomAttributes` set), when present:
 
@@ -159,7 +165,7 @@ For a Proteus/DEXPI 1.3 file's `InformationFlow` elements (signal/instrument wir
 
 Wherever a mark is drawn, the wire's own line runs straight through the mark's visual centre (e.g. through the "E"'s middle bar, the "L"'s vertical arm, the circle's centre, the "x"'s crossing point) rather than sitting to one side of it. Wires with no `SignalConveyingFunctionTypeRepresentationAssignmentClass` attribute at all, or a value not listed above, are drawn as a plain solid line with no decoration.
 
-### 5.10 Exporting the Drawing
+### 5.11 Exporting the Drawing
 
 Use **Save PNG** or **Save PDF** in the centre toolbar to save exactly what's currently in the drawing viewport — the DEXPI drawing plus the BG image overlay, if one is loaded — as a file. Both buttons are disabled until a drawing is loaded, and while an export is in progress.
 
