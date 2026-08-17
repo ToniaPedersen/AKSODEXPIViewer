@@ -668,10 +668,6 @@ export default function App() {
     // 100 = unchanged (no-op), so nothing is boosted until the user raises it.
     const [lineBoostPct, setLineBoostPct] = useState(100);
     const [boostSymbolOutlines, setBoostSymbolOutlines] = useState(false);
-    // Opacity of the drawing's own DEXPI/Proteus graphics (the symbols,
-    // lines, and labels parsed from the loaded Proteus XML) - independent of
-    // the separate BG Image opacity control below. 1 = fully opaque (no-op).
-    const [drawingOpacity, setDrawingOpacity] = useState(1);
     // Whether LabelTemplate-synthesized labels (drawn when an object carries
     // no <Label> XML of its own - see proteusParser.js's buildProteusGraphics()
     // label fallback) are shown in the drawing. Default false; check the box
@@ -751,7 +747,11 @@ export default function App() {
         const base = {
             objectUrl, sourceBytes: bytes, isPng, fileName: file.name,
             embeddedPlacement,
-            opacity: 0.4, scale: placement.scale, offsetX: placement.offsetX, offsetY: placement.offsetY, visible: true,
+            // Part B - BG Image Default Placement: a newly loaded BG image
+            // starts centered (blend 0), so both the BG image and the DEXPI
+            // drawing are fully visible right away - see the Blend slider's
+            // drawingOpacity/bgOpacity derivation below.
+            blend: 0, scale: placement.scale, offsetX: placement.offsetX, offsetY: placement.offsetY, visible: true,
         };
         // Load the raw pixel dimensions so the overlay can be fit into the
         // drawing's coordinate space (fullBounds) preserving aspect ratio,
@@ -1053,6 +1053,15 @@ export default function App() {
     // the identical transform as the drawing, so it now pans/zooms in lockstep.
     const boundsW = Math.max(1, fullBounds.maxX - fullBounds.minX);
     const boundsH = Math.max(1, fullBounds.maxY - fullBounds.minY);
+    // Blend slider (-1..1, 0 = center): drives the BG image and the DEXPI
+    // drawing's opacity as a single cross-fade instead of two independent
+    // opacity controls. At 0 both layers are fully visible; dragging right
+    // (positive) fades the BG image out while the drawing stays fully
+    // visible; dragging left (negative) fades the drawing out while the BG
+    // image stays fully visible.
+    const bgBlend = bgImage?.blend ?? 0;
+    const drawingOpacity = bgBlend < 0 ? 1 + bgBlend : 1;
+    const bgOpacity = bgBlend > 0 ? 1 - bgBlend : 1;
     const bgPlacement = useMemo(() => {
         if (!bgImage) return null;
         let baseW = boundsW, baseH = boundsH, baseX = fullBounds.minX, baseY = fullBounds.minY;
@@ -1171,11 +1180,6 @@ export default function App() {
                             <input type="checkbox" checked={boostSymbolOutlines} onChange={e => setBoostSymbolOutlines(e.target.checked)} />
                             Include symbol outlines
                         </label>
-                        <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#57606a" }} title="Opacity of the drawing's DEXPI graphics (symbols, lines, and labels parsed from the Proteus XML). Lower it to see through the drawing, e.g. when comparing against a BG reference image.">
-                            Opacity
-                            <input type="range" min={0} max={1} step={0.05} value={drawingOpacity} onChange={e => setDrawingOpacity(parseFloat(e.target.value))} style={{ width: 70 }} />
-                            <input type="number" min={0} max={1} step={0.01} value={drawingOpacity} onChange={e => { const v = parseFloat(e.target.value); if (!Number.isNaN(v)) setDrawingOpacity(Math.min(1, Math.max(0, v))); }} style={S.numBox} title="Opacity (0-1)" />
-                        </label>
                         <button style={S.btn} disabled={!parsed || exporting} onClick={exportAsPng} title="Save the current view (drawing + BG image, if any) as a PNG">{exporting ? "..." : "Save PNG"}</button>
                         <button style={S.btn} disabled={!parsed || exporting} onClick={exportAsPdf} title="Save the current view (drawing + BG image, if any) as a PDF">{exporting ? "..." : "Save PDF"}</button>
                         <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#57606a", cursor: "pointer" }} title="Connectivity mode: highlights the upstream (blue), downstream (green), and group (purple) connections of the selected object. Hidden by default - check this box to show the highlight.">
@@ -1198,6 +1202,7 @@ export default function App() {
                         <button style={S.btn} onClick={() => bgInputRef.current?.click()} title="Overlay an image behind the drawing">BG Image</button>
                         {bgImage && <button style={{ ...S.btn, background: showBgControls ? "#eaf2ff" : "white" }} onClick={() => setShowBgControls(p => !p)}>BG Controls</button>}
                         <input ref={bgInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleBgFile} />
+                        <span style={{ fontSize: 11, color: "#888", marginLeft: 4 }}>Scroll to zoom · Space+drag to pan</span>
                     </div>
                 </div>
 
@@ -1206,10 +1211,9 @@ export default function App() {
                         <label style={{ display: "flex", alignItems: "center", gap: 4 }}>
                             <input type="checkbox" checked={bgImage.visible} onChange={e => setBgImage(b => ({ ...b, visible: e.target.checked }))} /> Visible
                         </label>
-                        <label style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                            Opacity
-                            <input type="range" min={0} max={1} step={0.05} value={bgImage.opacity} onChange={e => setBgImage(b => ({ ...b, opacity: parseFloat(e.target.value) }))} style={{ width: 70 }} />
-                            <input type="number" min={0} max={1} step={0.01} value={bgImage.opacity} onChange={e => { const v = parseFloat(e.target.value); if (!Number.isNaN(v)) setBgImage(b => ({ ...b, opacity: Math.min(1, Math.max(0, v)) })); }} style={S.numBox} title="Opacity (0-1)" />
+                        <label style={{ display: "flex", alignItems: "center", gap: 4 }} title="Blend between the BG image and the DEXPI drawing. Center (0): both fully visible. Drag right: the BG image fades out, the drawing stays fully visible. Drag left: the drawing fades out, the BG image stays fully visible.">
+                            Blend
+                            <input type="range" min={-1} max={1} step={0.05} value={bgImage.blend} onChange={e => setBgImage(b => ({ ...b, blend: parseFloat(e.target.value) }))} style={{ width: 70 }} />
                         </label>
                         <label style={{ display: "flex", alignItems: "center", gap: 4 }}>
                             Scale
@@ -1260,7 +1264,7 @@ export default function App() {
                 >
                     <svg ref={svgElRef} viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`} width="100%" height="100%" style={{ display: "block" }} onAuxClick={e => e.preventDefault()}>
                         {bgImage && bgPlacement && (
-                            <g style={{ display: bgImage.visible ? "inline" : "none", opacity: bgImage.opacity, pointerEvents: "none" }}>
+                            <g style={{ display: bgImage.visible ? "inline" : "none", opacity: bgOpacity, pointerEvents: "none" }}>
                                 <image href={bgImage.objectUrl} x={bgPlacement.x} y={bgPlacement.y} width={bgPlacement.width} height={bgPlacement.height} preserveAspectRatio="none" />
                                 <rect x={bgPlacement.x} y={bgPlacement.y} width={bgPlacement.width} height={bgPlacement.height} fill={BG_TINT_COLOR} style={{ mixBlendMode: "color" }} />
                             </g>
