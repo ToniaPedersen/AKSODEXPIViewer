@@ -1478,10 +1478,10 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
 
             directChildrenByTag(labelEl, "Text").forEach((textEl, ti) => {
                 const str = textEl.getAttribute("String");
-                if (!str) return;
                 // "Notes" Details-pane section support - see
                 // noteReferencesByOwner's doc comment above. Purely
-                // informational, so this runs unconditionally.
+                // informational, so this runs unconditionally (even when
+                // str is empty, or the reference below fails to resolve).
                 const templateRefs = readTextTemplateReferences(textEl);
                 templateRefs?.forEach(ref => {
                     if (ref.itemId && elementById.get(ref.itemId)?.getAttribute("ComponentClass") === NOTE_COMPONENT_CLASS) {
@@ -1489,6 +1489,30 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
                         noteReferencesByOwner.get(representedId).add(ref.itemId);
                     }
                 });
+                // A Text governed by its own TextStringFormatSpecification/
+                // ObjectAttributesReference must be DRAWN from that
+                // reference's resolved attribute value, never from the
+                // Text's own cached @String - per the Proteus schema, the
+                // reference is the actual source of truth and @String is
+                // only ever a rendering hint the authoring tool wrote down
+                // at export time. Concretely: a Note callout's identifier
+                // Text in a real AKSO export (e.g. Note-3 in
+                // FPQ-AKSO-P-XB-26055-01.XML) carries String="3." but
+                // references DependantAttribute="NoteIdentifier" - a name
+                // that doesn't match any of that Note's own
+                // GenericAttributes (only "NoteRegistrationNumberAssignment
+                // Class"/"LocalNoteIdentifierAssignmentClass" exist there),
+                // so the reference can't resolve. Falling back to the
+                // cached "3." in that case would silently show stale/
+                // placeholder text as if the reference were fine; instead
+                // this Text must render nothing until the reference itself
+                // is fixed. A Text with no TextStringFormatSpecification at
+                // all (templateRefs === null, the common plain-literal-
+                // Label case) is unaffected and keeps using its own @String.
+                const displayStr = templateRefs && templateRefs.length
+                    ? templateRefs.map(ref => lookupAttributeText(dataByObjectId.get(ref.itemId), ref.attribute)).filter(Boolean).join(" ")
+                    : str;
+                if (!displayStr) return;
                 // A Text doesn't count as this owner's own real tag/
                 // ObjectDisplayName text - and so must NOT suppress the
                 // "Fallback" catalog-LabelTemplate overlay below for the
@@ -1527,7 +1551,7 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
                     primitive: {
                         kind: "text", key: `lbltxt_${id}_${li}_${ti}`,
                         position: tPos ? { x: tPos.x, y: tPos.y } : { x: 0, y: 0 },
-                        value: str, rotation: tPos ? tPos.rotation : 0,
+                        value: displayStr, rotation: tPos ? tPos.rotation : 0,
                         style: {
                             color: { r: 0, g: 0, b: 0 },
                             font: textEl.getAttribute("Font") || "Arial",
