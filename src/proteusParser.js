@@ -1479,16 +1479,36 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
             directChildrenByTag(labelEl, "Text").forEach((textEl, ti) => {
                 const str = textEl.getAttribute("String");
                 if (!str) return;
-                hasRealLabelText = true;
                 // "Notes" Details-pane section support - see
                 // noteReferencesByOwner's doc comment above. Purely
                 // informational, so this runs unconditionally.
-                readTextTemplateReferences(textEl)?.forEach(ref => {
+                const templateRefs = readTextTemplateReferences(textEl);
+                templateRefs?.forEach(ref => {
                     if (ref.itemId && elementById.get(ref.itemId)?.getAttribute("ComponentClass") === NOTE_COMPONENT_CLASS) {
                         if (!noteReferencesByOwner.has(representedId)) noteReferencesByOwner.set(representedId, new Set());
                         noteReferencesByOwner.get(representedId).add(ref.itemId);
                     }
                 });
+                // A Text whose TextStringFormatSpecification references
+                // ANOTHER object's attribute via ItemID (e.g. a Note callout
+                // - ItemID="Note-1", as with PressureVessel-1's "NOTE 1"
+                // Label in DISC_EXAMPLE-05-01.xml) is an auxiliary
+                // annotation ABOUT that other object, not this owner's own
+                // tag/ObjectDisplayName text - so it must not count toward
+                // hasRealLabelText. Counting it would wrongly suppress the
+                // "Fallback" catalog-LabelTemplate overlay below for the
+                // OWNER's own placed symbol whenever some unrelated Note (or
+                // similar cross-reference) Label happens to sit alongside a
+                // leader-only, profile-governed tag Label (e.g.
+                // PressureVessel-1's ND0041_SHAPE Label) - exactly why
+                // DISC_EXAMPLE-05-01.xml's PressureVessel-1 (which has both)
+                // failed to show its "D-20VA001" ObjectDisplayName label
+                // while DISC_EXAMPLE-05-10.xml's otherwise-identical
+                // PressureVessel-1 (no Note Label) did. A plain literal Text
+                // with no TextStringFormatSpecification at all, or one whose
+                // reference(s) carry no ItemID (a same-owner attribute
+                // token), still counts normally.
+                if (!templateRefs?.some(ref => ref.itemId)) hasRealLabelText = true;
                 const tPos = readPosition(textEl) || (labelEl === el ? pos : null);
                 const j = parseJustification(textEl.getAttribute("Justification"));
                 elements.push({
