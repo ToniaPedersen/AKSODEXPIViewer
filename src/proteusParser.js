@@ -1454,6 +1454,20 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
         // every elementById entry regardless of tag.)
         const ownLabelEls = directChildrenByTag(el, "Label");
         const labelSelfEls = el.tagName === "Label" ? [el] : [];
+        // True once ANY <Text> with a real (non-empty) String has actually
+        // been pushed below, across every <Label> handled in this pass - see
+        // the "Fallback" block after this forEach, which uses this (rather
+        // than ownLabelEls.length) to decide whether to also synthesize a
+        // catalog LabelTemplate overlay. A <Label> element can exist purely
+        // as a leader line with no <Text> child at all (e.g.
+        // PressureVessel-1-Label-1/ND0041_SHAPE in DISC_EXAMPLE-05-10.xml,
+        // which carries only a <PolyLine>), or carry a <Text> whose String
+        // is the empty string (e.g. Nozzle-10-Label-1/ND0002_SHAPE in the
+        // same file) - in both cases ownLabelEls.length is nonzero even
+        // though no real label text was ever drawn, so gating the fallback
+        // on ownLabelEls.length alone silently suppressed the profile's own
+        // ObjectDisplayName-templated label for exactly these placements.
+        let hasRealLabelText = false;
         [...ownLabelEls, ...labelSelfEls].forEach((labelEl, li) => {
             // representedId is the object this label is annotating - see
             // resolveLabelOwnerId() above for the resolution order. Nested
@@ -1465,6 +1479,7 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
             directChildrenByTag(labelEl, "Text").forEach((textEl, ti) => {
                 const str = textEl.getAttribute("String");
                 if (!str) return;
+                hasRealLabelText = true;
                 // "Notes" Details-pane section support - see
                 // noteReferencesByOwner's doc comment above. Purely
                 // informational, so this runs unconditionally.
@@ -1507,12 +1522,16 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
             });
         });
 
-        // Fallback: this element carries no <Label> XML elements of its own,
-        // but the symbol variant just placed for it (Rule 2 above) may
-        // define its own LabelTemplates in the loaded DiscProfile.xml (see
+        // Fallback: this element had no real (non-empty) <Text> drawn above
+        // for it - either because it carries no <Label> XML elements of its
+        // own at all, or because the <Label>(s) it does carry are leader-
+        // line-only (no <Text> child) or carry a <Text> whose String is
+        // empty (see hasRealLabelText's doc comment above) - but the symbol
+        // variant just placed for it (Rule 2 above) may define its own
+        // LabelTemplates in the loaded DiscProfile.xml (see
         // parseSymbolCatalogue()'s labelTemplates field in dexpiParser.js) -
         // real Proteus/Comos exports commonly omit per-instance <Label>
-        // elements entirely and rely on the profile to define what a
+        // Text entirely and rely on the profile to define what a
         // symbol's label should show. A LabelTemplate's own Position/
         // Rotation are in the same symbol-local coordinate space as the
         // symbol's own primitives/bounds (both are Core/Diagram.Shape-
@@ -1535,7 +1554,7 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
         // data (and, symmetrically, the synthesized label counts as
         // representing the owner for selection/highlight purposes) instead
         // of silently coming up empty.
-        if (ownLabelEls.length === 0 && placedVariant && placedVariant.labelTemplates?.length) {
+        if (!hasRealLabelText && placedVariant && placedVariant.labelTemplates?.length) {
             const scale = readScale(el);
             const mirror = pos.isMirrored ? -1 : 1;
             const rad = pos.rotation * Math.PI / 180;
