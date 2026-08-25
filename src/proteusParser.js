@@ -1517,10 +1517,10 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
 
             directChildrenByTag(labelEl, "Text").forEach((textEl, ti) => {
                 const str = textEl.getAttribute("String");
-                if (!str) return;
                 // "Notes" Details-pane section support - see
                 // noteReferencesByOwner's doc comment above. Purely
-                // informational, so this runs unconditionally.
+                // informational, so this runs unconditionally (even when
+                // str is empty, or the reference below fails to resolve).
                 const templateRefs = readTextTemplateReferences(textEl);
                 templateRefs?.forEach(ref => {
                     if (ref.itemId && elementById.get(ref.itemId)?.getAttribute("ComponentClass") === NOTE_COMPONENT_CLASS) {
@@ -1528,26 +1528,61 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
                         noteReferencesByOwner.get(representedId).add(ref.itemId);
                     }
                 });
-                // A Text whose TextStringFormatSpecification references
-                // ANOTHER object's attribute via ItemID (e.g. a Note callout
-                // - ItemID="Note-1", as with PressureVessel-1's "NOTE 1"
-                // Label in DISC_EXAMPLE-05-01.xml) is an auxiliary
-                // annotation ABOUT that other object, not this owner's own
-                // tag/ObjectDisplayName text - so it must not count toward
-                // hasRealLabelText. Counting it would wrongly suppress the
+                // A Text governed by its own TextStringFormatSpecification/
+                // ObjectAttributesReference must be DRAWN from that
+                // reference's resolved attribute value, never from the
+                // Text's own cached @String - per the Proteus schema, the
+                // reference is the actual source of truth and @String is
+                // only ever a rendering hint the authoring tool wrote down
+                // at export time. Concretely: a Note callout's identifier
+                // Text in a real AKSO export (e.g. Note-3 in
+                // FPQ-AKSO-P-XB-26055-01.XML) carries String="3." but
+                // references DependantAttribute="NoteIdentifier" - a name
+                // that doesn't match any of that Note's own
+                // GenericAttributes (only "NoteRegistrationNumberAssignment
+                // Class"/"LocalNoteIdentifierAssignmentClass" exist there),
+                // so the reference can't resolve. Falling back to the
+                // cached "3." in that case would silently show stale/
+                // placeholder text as if the reference were fine; instead
+                // this Text must render nothing until the reference itself
+                // is fixed. A Text with no TextStringFormatSpecification at
+                // all (templateRefs === null, the common plain-literal-
+                // Label case) is unaffected and keeps using its own @String.
+                const displayStr = templateRefs && templateRefs.length
+                    ? templateRefs.map(ref => lookupAttributeText(dataByObjectId.get(ref.itemId), ref.attribute)).filter(Boolean).join(" ")
+                    : str;
+                if (!displayStr) return;
+                // A Text doesn't count as this owner's own real tag/
+                // ObjectDisplayName text - and so must NOT suppress the
                 // "Fallback" catalog-LabelTemplate overlay below for the
-                // OWNER's own placed symbol whenever some unrelated Note (or
-                // similar cross-reference) Label happens to sit alongside a
-                // leader-only, profile-governed tag Label (e.g.
-                // PressureVessel-1's ND0041_SHAPE Label) - exactly why
-                // DISC_EXAMPLE-05-01.xml's PressureVessel-1 (which has both)
-                // failed to show its "D-20VA001" ObjectDisplayName label
-                // while DISC_EXAMPLE-05-10.xml's otherwise-identical
-                // PressureVessel-1 (no Note Label) did. A plain literal Text
-                // with no TextStringFormatSpecification at all, or one whose
-                // reference(s) carry no ItemID (a same-owner attribute
-                // token), still counts normally.
-                if (!templateRefs?.some(ref => ref.itemId)) hasRealLabelText = true;
+                // owner's OWN placed symbol - in two cases, both seen in
+                // real AKSO/Comos exports sitting alongside a leader-only,
+                // profile-governed tag Label (e.g. an Equipment's own
+                // ND0041_SHAPE elevation-marker Label):
+                //   1. Its TextStringFormatSpecification references ANOTHER
+                //      object's attribute via ItemID (e.g. a Note callout -
+                //      ItemID="Note-1"/"Note-13" - as with PressureVessel-1's
+                //      "NOTE 1" Label in DISC_EXAMPLE-05-01.xml, or
+                //      TagNoteLabel-12's "NOTE 13, 16" in
+                //      FPQ-AKSO-P-XB-26055-01.XML) - an annotation ABOUT that
+                //      other object, not this owner's own text.
+                //   2. labelEl itself carries its own ComponentName, meaning
+                //      it places its OWN separate symbol (Rule 2 above) and
+                //      is itself an auxiliary callout in its own right - not
+                //      a plain literal annotation of the owner - e.g.
+                //      SpecialItemLabel-21 (ComponentName="LZ009A_SHAPE",
+                //      literal Text "1523", no TextStringFormatSpecification
+                //      at all) next to XMP_4160/A4VRAZ8KOE's own
+                //      ND0041_SHAPE ElevationLabel-20 in the same file - its
+                //      "1523" special-item number isn't a competing
+                //      ObjectDisplayName, so it must not blank out
+                //      XMP_4160's own "D-26LE001" catalog overlay either.
+                // A plain literal Text with no TextStringFormatSpecification
+                // AND no ComponentName of its own (a genuine per-instance
+                // tag Label) still counts normally.
+                const labelHasOwnSymbol = !!labelEl.getAttribute("ComponentName");
+                const isForeignReference = !!templateRefs?.some(ref => ref.itemId);
+                if (!labelHasOwnSymbol && !isForeignReference) hasRealLabelText = true;
                 const tPos = readPosition(textEl) || (labelEl === el ? pos : null);
                 const j = parseJustification(textEl.getAttribute("Justification"));
                 // A Text's own <Position> is read exactly like a symbol
@@ -1573,7 +1608,7 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
                     primitive: {
                         kind: "text", key: `lbltxt_${id}_${li}_${ti}`,
                         position: tPos ? { x: tPos.x, y: tPos.y } : { x: 0, y: 0 },
-                        value: str, rotation: orient.rotation,
+value: (typeof displayStr !== 'undefined' && displayStr !== null) ? displayStr : str, rotation: (tPos && typeof tPos.rotation !== 'undefined') ? tPos.rotation : ((orient && typeof orient.rotation !== 'undefined') ? orient.rotation : 0),
                         style: {
                             color: { r: 0, g: 0, b: 0 },
                             font: textEl.getAttribute("Font") || "Arial",
