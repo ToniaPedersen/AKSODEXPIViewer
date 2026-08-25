@@ -1143,6 +1143,45 @@ function readableLabelRotation(deg) {
     return (((deg % 360) + 360 + 90) % 180) - 90;
 }
 
+// readableLabelRotation() above only folds the ANGLE - but folding by 180
+// degrees is, geometrically, rotating the text block 180 degrees around its
+// own anchor point. That doesn't move the anchor (still the same world
+// position, still meant to sit just outside the symbol's boundary the way
+// the LabelTemplate/Text author positioned it), but it DOES flip which
+// direction the text extends FROM that anchor: text authored to extend
+// rightward/downward from its anchor (Justification/Alignment "Left"/"Top",
+// i.e. textAnchor="start"/baseline="hanging" in renderPrimitive()) now
+// extends leftward/upward instead, and vice versa for "Right"/"Bottom" -
+// Center/Middle are unaffected since they extend equally both ways. Left
+// uncorrected, a folded label keeps its ORIGINAL alignment despite the
+// visual 180-degree flip, so it ends up extending back across its anchor -
+// typically INTO the symbol it was authored to sit just outside of (e.g.
+// ND0034C in FPQ-AKSO-P-XB-20130-01.XML, mirrored+rotated 180, Scale
+// X="1.2": its Profile LabelTemplate offset already scales correctly with
+// that 1.2x via readScale()/the lx*scale.x*mirror math below, but without
+// this alignment flip the folded rotation alone still draws the label on
+// the wrong side of its own anchor, undoing that outward placement).
+// Swapping Left<->Right and Top<->Bottom exactly when the angle folds keeps
+// the label on the SAME SIDE of its anchor in world space it was authored
+// for, in addition to keeping it right-side-up/readable.
+//
+// The flip boundary matches readableLabelRotation() exactly (verified
+// numerically, not just by the (90,270] description in its doc comment
+// above, which is imprecise at the exact endpoints): normalizing deg to
+// [0,360), the fold happens for wrapped in [90,270) - NOT (90,270] - since
+// readableLabelRotation(270) returns -90, which is the SAME angle as 270
+// (mod 360), i.e. no real flip, while readableLabelRotation(90) returns
+// -90, which is 180 away from 90 - i.e. a real flip.
+function readableLabelOrientation(deg, horizontal, vertical) {
+    const wrapped = ((deg % 360) + 360) % 360;
+    const flip = wrapped >= 90 && wrapped < 270;
+    return {
+        rotation: readableLabelRotation(deg),
+        horizontal: flip ? (horizontal === "Left" ? "Right" : horizontal === "Right" ? "Left" : horizontal) : horizontal,
+        vertical: flip ? (vertical === "Top" ? "Bottom" : vertical === "Bottom" ? "Top" : vertical) : vertical,
+    };
+}
+
 // Resolves which OTHER object a standalone <Label> element is annotating -
 // used both for its representedId (so selecting/highlighting the annotated
 // object also picks up the label - and vice versa) and, for a Label whose
@@ -1511,17 +1550,35 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
                 if (!templateRefs?.some(ref => ref.itemId)) hasRealLabelText = true;
                 const tPos = readPosition(textEl) || (labelEl === el ? pos : null);
                 const j = parseJustification(textEl.getAttribute("Justification"));
+                // A Text's own <Position> is read exactly like a symbol
+                // placement (readPosition() above), so its raw .rotation
+                // reflects that Position's Axis/Reference verbatim -
+                // including, for a mirrored placement such as ND0034C's own
+                // Axis Z="-1"/Reference X="-1" Y="0" (rotation=180 before
+                // folding), an angle that would draw the text upside-down/
+                // reversed. readableLabelOrientation() (see its doc comment
+                // - already used for Profile LabelTemplate overlays below)
+                // folds that into a readable rotation AND swaps the
+                // Justification-derived horizontal/vertical alignment right
+                // along with it, so the label stays on the same side of its
+                // anchor (critical for multi-line String values - embedded
+                // \n / &#xA; - whose tspans stack top-to-bottom in local
+                // space and would otherwise render bottom-to-top/on the
+                // wrong side of the anchor once rotated by the raw,
+                // unfolded angle with its ORIGINAL, now-mismatched
+                // alignment).
+                const orient = tPos ? readableLabelOrientation(tPos.rotation, j.horizontal, j.vertical) : { rotation: 0, horizontal: j.horizontal, vertical: j.vertical };
                 elements.push({
                     kind: "primitive", key: `lbl_${id}_${li}_${ti}`, representedId, elementRole: "label",
                     primitive: {
                         kind: "text", key: `lbltxt_${id}_${li}_${ti}`,
                         position: tPos ? { x: tPos.x, y: tPos.y } : { x: 0, y: 0 },
-                        value: str, rotation: tPos ? tPos.rotation : 0,
+                        value: str, rotation: orient.rotation,
                         style: {
                             color: { r: 0, g: 0, b: 0 },
                             font: textEl.getAttribute("Font") || "Arial",
                             size: parseFloat(textEl.getAttribute("Height")) || 3.5,
-                            horizontal: j.horizontal, vertical: j.vertical,
+                            horizontal: orient.horizontal, vertical: orient.vertical,
                         },
                     },
                 });
@@ -1598,15 +1655,31 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObje
                 const ly = lt.position.y * scale.y;
                 const wx = pos.x + (lx * cos - ly * sin);
                 const wy = pos.y + (lx * sin + ly * cos);
+                // readableLabelOrientation() (see its doc comment above)
+                // folds pos.rotation + lt.rotation into a readable angle AND
+                // swaps the template's own Left/Right/Top/Bottom alignment
+                // right along with it whenever that fold is a real 180-degree
+                // flip - keeping the label on the SAME SIDE of its (wx,wy)
+                // anchor the template author placed it on. Without this, a
+                // symbol like ND0034C (mirrored, rotation=180) still gets its
+                // label's ANCHOR positioned correctly outside the symbol's
+                // boundary by the lx/ly scale+mirror+rotate math just above -
+                // scale.x/scale.y already keeps that offset proportional to
+                // the symbol's own (possibly non-uniform, e.g. Scale
+                // X="1.2") size - but the text would extend from that anchor
+                // in its ORIGINAL, un-swapped direction once folded readable,
+                // i.e. right back across the anchor and into the symbol
+                // instead of staying outside it.
+                const orient = readableLabelOrientation(pos.rotation + lt.rotation, lt.alignment.horizontal, lt.alignment.vertical);
                 elements.push({
                     kind: "primitive", key: `lbltpl_${id}_${li}`, representedId: ownerId, elementRole: "label",
                     primitive: {
                         kind: "text", key: `lbltpltxt_${id}_${li}`,
-                        position: { x: wx, y: wy }, value: text, rotation: readableLabelRotation(pos.rotation + lt.rotation),
+                        position: { x: wx, y: wy }, value: text, rotation: orient.rotation,
                         style: {
                             color: lt.color,
                             font: lt.font, size: lt.size,
-                            horizontal: lt.alignment.horizontal, vertical: lt.alignment.vertical,
+                            horizontal: orient.horizontal, vertical: orient.vertical,
                         },
                     },
                 });
