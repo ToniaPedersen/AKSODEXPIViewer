@@ -1182,6 +1182,40 @@ function readableLabelOrientation(deg, horizontal, vertical) {
     };
 }
 
+// Certain Profile LabelTemplate tokens are explicitly meant to read as a
+// vertical STACK OF INDIVIDUAL CHARACTERS, each on its own horizontal
+// line, top line first - rather than a single string (rotated sideways or
+// otherwise). e.g. ND0003 (the ProcessInstrumentationFunction/instrument-
+// bubble symbol)'s "D" LabelTemplate, whose "<NonSasFunction>" token (the
+// non-SAS/local-control-system designator run down the side of the
+// bubble) is drawn per AKSO's own drafting convention as one letter per
+// line reading downward - e.g. "ASC" as "A" over "S" over "C" - not as a
+// single word rotated sideways. Matched against the template's raw,
+// unresolved Text (not the resolved per-instance value), so it keys off
+// which LabelTemplate this is regardless of what value ends up
+// substituted - kept as an explicit opt-in set rather than a general
+// rule, since every other Profile-driven label in the file still wants
+// its own plain single-line/rotated text.
+//
+// Splitting the resolved value into one character per line reuses
+// renderPrimitive()'s existing "text" case unchanged (App.jsx): a value
+// containing embedded line breaks is already rendered as stacked <tspan>
+// lines, first line at the smallest y (top), each subsequent line
+// lineHeight further down - exactly "top to bottom" - so turning "ASC"
+// into "A\nS\nC" is all that's needed to get one-character-per-line
+// stacking for free. The label's own configured Rotation (270 in the
+// Profile, meant for the old single-line-sideways rendering) is
+// deliberately NOT applied for these templates - each line is drawn
+// upright, tilted only by whatever the symbol instance's own placement
+// rotation (pos.rotation) already applies to every other (non-tilted)
+// LabelTemplate on this same symbol, so the stacked characters stay
+// level with the rest of the drawing instead of running sideways.
+const CHARACTER_STACKED_LABEL_TEMPLATE_TEXTS = new Set(["<NonSasFunction>"]);
+
+function isCharacterStackedLabelTemplate(lt) {
+    return CHARACTER_STACKED_LABEL_TEMPLATE_TEXTS.has((lt.text || "").trim());
+}
+
 // Resolves which OTHER object a standalone <Label> element is annotating -
 // used both for its representedId (so selecting/highlighting the annotated
 // object also picks up the label - and vice versa) and, for a Label whose
@@ -1705,12 +1739,18 @@ value: (typeof displayStr !== 'undefined' && displayStr !== null) ? displayStr :
                 // in its ORIGINAL, un-swapped direction once folded readable,
                 // i.e. right back across the anchor and into the symbol
                 // instead of staying outside it.
-                const orient = readableLabelOrientation(pos.rotation + lt.rotation, lt.alignment.horizontal, lt.alignment.vertical);
+                // See isCharacterStackedLabelTemplate()'s doc comment above:
+                // these templates skip their own Rotation (it was authored
+                // for the old sideways-string rendering) and instead draw
+                // their value as one upright character per line.
+                const stacked = isCharacterStackedLabelTemplate(lt);
+                const orient = readableLabelOrientation(pos.rotation + (stacked ? 0 : lt.rotation), lt.alignment.horizontal, lt.alignment.vertical);
+                const displayText = stacked ? Array.from(text).join("\n") : text;
                 elements.push({
                     kind: "primitive", key: `lbltpl_${id}_${li}`, representedId: ownerId, elementRole: "label",
                     primitive: {
                         kind: "text", key: `lbltpltxt_${id}_${li}`,
-                        position: { x: wx, y: wy }, value: text, rotation: orient.rotation,
+                        position: { x: wx, y: wy }, value: displayText, rotation: orient.rotation,
                         style: {
                             color: lt.color,
                             font: lt.font, size: lt.size,
