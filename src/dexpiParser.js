@@ -1,7 +1,4 @@
-// DEXPI XML parser utilities - shared between App.jsx and validation engine
-// (Copied unchanged from the main DEXPIViewer app's src/dexpiParser.js so this
-// standalone Proteus viewer can reuse the same symbol-catalogue / connectivity /
-// heat-trace logic without depending on the main app.)
+// DEXPI XML parser utilities: symbol catalogue, connectivity, and heat-trace logic.
 
 export function qsa(node, selector) { return Array.from(node.querySelectorAll(selector)); }
 
@@ -63,7 +60,7 @@ export function aggregatedValue(aggNode) {
         const value = valueFromData(aggNode, "Value");
         return { kind: "PhysicalQuantity", value, unit: unitSymbol, unitRef };
     }
-    // Generic fallback: collect all Data children as key/value pairs for display
+    // Fallback: collects all Data children as key/value pairs.
     const children = directChildrenByTag(aggNode, "Data");
     if (children.length > 0) {
         const entries = {};
@@ -199,25 +196,9 @@ export function referenceTargets(node, property = null) {
         .flatMap(r => (r.getAttribute("objects") || "").split(/\s+/).filter(Boolean).map(v => v.startsWith("#") ? v.slice(1) : v));
 }
 
-// Parse a SymbolVariant's Condition. Per the Profile.xml meta-model, this is
-// NOT a plain string Data value - it's a composed PropertyValueCondition
-// object:
-//   <Components property="Condition">
-//     <Object type="Profile/PropertyValueCondition">
-//       <Data property="Property"><String>DiscProfile.InformationModel.OperatedValveExtension.ValvePosition</String></Data>
-//       <Data property="Value"><String>DiscProfile.InformationModel.ValvePosition.NormallyClose</String></Data>
-//     </Object>
-//   </Components>
-// "Property" is a fully-qualified path whose last segment is the attribute
-// name ("ValvePosition"); "Value" is a fully-qualified EnumerationLiteral
-// reference whose last segment is the literal's name ("NormallyClose"),
-// which must be resolved through the profile's EnumerationLiteral ->
-// MetaData/symbol map to get the short code actually used in data files
-// (e.g. "NormallyClose" -> "NC"). Both DEXPI-native GenericAttribute
-// DataReferences and Proteus GenericAttribute Value strings ultimately
-// carry this same short code, so resolving it here (once, at parse time)
-// lets every caller do a plain string comparison.
-// Returns { attributeName, value } or null for unconditional (default) variants.
+// Parses a SymbolVariant's Condition into an attribute name and expected value,
+// resolved through the enum-literal symbol map.
+// Returns { attributeName, value }, or null for an unconditional variant.
 function parseVariantCondition(conditionObj, enumLiteralSymbols) {
     if (!conditionObj) return null;
     const propertyPath = valueFromData(conditionObj, "Property");
@@ -230,14 +211,7 @@ function parseVariantCondition(conditionObj, enumLiteralSymbols) {
     return { attributeName, value };
 }
 
-// Splits a LabelTemplate's Alignment value - a single combined DataReference
-// like "Core/Diagram.TextAlignment.CenterTop" or "...RightBottom" - into the
-// separate horizontal/vertical parts the renderer already expects (see
-// renderPrimitive()'s "text" case in App.jsx, and proteusParser.js's
-// parseJustification() which does the same split for Proteus's own
-// Justification="CenterCenter"-style strings). Kept local to this file
-// rather than imported from proteusParser.js to avoid a circular import
-// (proteusParser.js already imports from this file).
+// Splits a combined alignment reference into horizontal and vertical parts.
 function parseLabelTemplateAlignment(alignmentRef) {
     const name = refName(alignmentRef);
     if (!name) return { horizontal: "Center", vertical: "Center" };
@@ -246,16 +220,8 @@ function parseLabelTemplateAlignment(alignmentRef) {
     return { horizontal, vertical };
 }
 
-// Parses one Profile/LabelTemplate object (a SymbolVariant's "LabelTemplates"
-// composition - see Profile.xml's ConcreteClass name="LabelTemplate"). These
-// describe a label the profile expects to be shown next to a symbol -
-// position/rotation/size/font/color plus a Text template string containing
-// "<AttributeName>" (or "RelatedClass:<AttributeName>" for an attribute on
-// an associated object) placeholder tokens mixed with literal text - see
-// resolveLabelTemplateText() in proteusParser.js, which is what actually
-// substitutes those tokens for a real object at render time. This function
-// only extracts the template definition itself; it has no knowledge of any
-// particular object instance.
+// Parses a Profile/LabelTemplate object: position, rotation, size, font, color,
+// and a text template containing placeholder tokens.
 function parseLabelTemplate(obj) {
     if (!obj) return null;
     const text = valueFromData(obj, "Text");
@@ -288,11 +254,8 @@ export function parseSymbolCatalogue(discDoc) {
                 primitives: directComponentsObjects(variant, "Primitives").map(parsePrimitive).filter(Boolean),
                 variantNumber: intFromData(variant, "VariantNumber", i),
                 condition: parseVariantCondition(condObj, enumLiteralSymbols),
-                // Profile-defined label(s) to synthesize when the placed
-                // object carries no <Label> XML elements of its own - see
-                // Rule 2's label fallback in proteusParser.js's
-                // buildProteusGraphics(). A variant commonly has more than
-                // one (e.g. a tag name label plus a separate size label).
+                // Label templates to synthesize when the placed object has no
+                // labels of its own.
                 labelTemplates: directComponentsObjects(variant, "LabelTemplates").map(parseLabelTemplate).filter(Boolean),
             };
         });
@@ -301,9 +264,7 @@ export function parseSymbolCatalogue(discDoc) {
     return map;
 }
 
-// Build a map from EnumerationLiteral name → MetaData/symbol short-code.
-// Used when evaluating SymbolVariant conditions against DataReference property values.
-// e.g. "NormallyClose" → "NC", "NormallyOpen" → "NO", "Open" → "Open"
+// Maps each EnumerationLiteral name to its MetaData/symbol short code.
 export function parseEnumLiteralSymbols(discDoc) {
     const map = new Map();
     if (!discDoc) return map;
@@ -317,7 +278,7 @@ export function parseEnumLiteralSymbols(discDoc) {
     return map;
 }
 
-function inferBoundsFromPrimitives(primitives) {
+export function inferBoundsFromPrimitives(primitives) {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     const visit = p => { if (!p) return; minX = Math.min(minX, p.x); minY = Math.min(minY, p.y); maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y); };
     primitives.forEach(p => {
@@ -433,8 +394,7 @@ export function collectGraphicalElements(mainDoc, symbolMap, discDoc = null) {
     const nodePosMap = parseNodePositionsById(mainDoc);
     const drawn = [];
 
-    // Build enum literal → short-symbol map for condition evaluation
-    // e.g. "NormallyClose" → "NC"
+    // Builds the enum-literal-to-symbol map for condition evaluation.
     const enumLiteralSymbols = parseEnumLiteralSymbols(discDoc);
 
     // Build objectId → Map<propertyName, rawDataValue> for condition evaluation.
@@ -456,8 +416,7 @@ export function collectGraphicalElements(mainDoc, symbolMap, discDoc = null) {
         if (rawVal === null || rawVal === undefined) return null;
         if (typeof rawVal === "string") return rawVal;
         if (rawVal?.kind === "DataReference") {
-            // Extract the last segment: "DiscProfile/InformationModel.ValvePosition.NormallyClose"
-            // → literalName "NormallyClose" → symbol "NC"
+            // Extracts the last path segment as the literal name.
             const literalName = rawVal.value.split(".").pop().split("/").pop();
             return enumLiteralSymbols.get(literalName) ?? literalName;
         }
@@ -519,9 +478,8 @@ export function collectGraphicalElements(mainDoc, symbolMap, discDoc = null) {
     }
 
     function traverseGroup(groupNode, currentRepresents = null, keyPrefix = "g") {
-        // If this group node is itself a Core/Diagram.Label, everything inside it
-        // is annotation text and should highlight orange (elementRole "label"),
-        // not the primary red used for symbol outlines.
+        // Elements inside a Core/Diagram.Label group get elementRole "label"
+        // instead of "symbol".
         const groupType = groupNode.getAttribute ? (groupNode.getAttribute("type") || "") : "";
         const isLabelGroup = groupType === "Core/Diagram.Label";
 
@@ -533,7 +491,7 @@ export function collectGraphicalElements(mainDoc, symbolMap, discDoc = null) {
             } else if (type === "Core/Diagram.ShapeUsage") {
                 pushSymbolUsage(referenceTargets(el, "Shape")[0] || null, el, localRepresents, `${keyPrefix}_shu_${i}`, isLabelGroup ? "label" : "symbol");
             } else if (type === "Core/Diagram.Label") {
-                // Label as a direct Element child (less common — most files put Labels in Groups)
+                // Label as a direct Element child.
                 const labelRepresents = resolveRepresentedId(el, localRepresents);
                 directComponentsObjects(el, "Elements").forEach((lel, li) => {
                     const lt = lel.getAttribute("type") || "";
@@ -560,21 +518,15 @@ export function collectGraphicalElements(mainDoc, symbolMap, discDoc = null) {
     }
 
     qsa(mainDoc, 'Object[type="Core/Diagram.RepresentationGroup"]').forEach((g, i) => traverseGroup(g, null, `rg_${i}`));
-    // Empty: "Symbol Reference" (SymbolRegistrationNumberAssignmentClass +
-    // raw Axis/Reference vectors) is a Proteus/DEXPI-1.3-specific concept -
-    // see buildProteusGraphics()'s own symbolReferences in proteusParser.js -
-    // native DEXPI 2.0 files place symbols directly by RDL class, with no
-    // ShapeCatalogue registration number or Proteus-style Axis/Reference
-    // placement vectors to show. Kept as an empty Map (rather than omitted)
-    // so App.jsx's Details panel can look it up the same way regardless of
-    // which parser produced this graphics object.
+    // symbolReferences is always empty here; kept so callers can rely on the
+    // same return shape regardless of which parser produced it.
     return { elements: drawn, nodePosMap, symbolReferences: new Map() };
 }
 
 const DEXPI_BUILTIN_HT_ELIGIBLE = new Set([
     // Plant.xml direct owners
     "PipingNetworkSystem", "PipingNetworkSegment", "PipingComponent", "OfflineMeasuringElement",
-    // Plant.xml – Pipe (PipingConnection subclass, carries inherited HeatTracingType from its segment)
+    // Plant.xml – Pipe
     "Pipe",
     // Plant.xml – concrete subclasses of PipingComponent / InlineMeasuringElement
     "AngleBallValve","AngleGlobeValve","AnglePlugValve","AngleValve","BallValve",
@@ -589,7 +541,7 @@ const DEXPI_BUILTIN_HT_ELIGIBLE = new Set([
     "Silencer","SpringLoadedAngleGlobeSafetyValve","SpringLoadedGlobeSafetyValve",
     "SteamTrap","StraightwayValve","Strainer","SwingCheckValve","TurbineFlowMeter",
     "VariableAreaFlowMeter","VentLine","VenturiTube","VolumeFlowMeasuringElement",
-    // DiscProfile.xml – concrete subclasses of the above (standard DISC profile)
+    // DiscProfile.xml – concrete subclasses of the above
     "AcousticNoiseReducer","AirReleaseTrap","AveragingPitotTubeFlowMeter","AxialValve",
     "BirdScreen","BlockAndBleedValve","ChokeValve","ClampConnector","ClampOn",
     "CoriolisMassFlowMeter","DiaphragmSeal","DiaphragmValve","Diffuser","DiverterValve",
@@ -713,22 +665,9 @@ export function buildHeatTraceSet(tree, discDoc = null) {
     return result;
 }
 
-// Whether a ref's property string is one buildConnectivityMap() below
-// classifies into upstream/downstream/group (i.e. it's substring-matched
-// against "upstream"/"source"/"inlet"/"downstream"/"target"/"outlet"/
-// "function"/"member"/"piping"/"instrument"). Exported so App.jsx can
-// exclude these same refs from selectedRepresentedIds (the "selected"/red-
-// highlight set) - connectivity refs exist purely to drive the separate
-// upstream/downstream/group highlight colors, not to mark their target as
-// "also selected". Without this exclusion, e.g. a PipingComponent's
-// "upstream (CenterLine)" ref (added by proteusParser.js's
-// deriveProteusFlowConnectivity()) would cause the object it points at to be
-// drawn in the same red "selected" color as the actually-selected object,
-// regardless of whether connectivity highlighting is even turned on -
-// selected/red is meant to always win over connectivity color (see
-// SymbolGraphic/PrimitiveGraphic's `selected ? ... : connHighlight` priority
-// in App.jsx), so a ref that's ONLY meant to feed connectivity color must
-// never end up in the selected set to begin with.
+// Whether a ref's property name is a connectivity classifier (upstream, downstream,
+// source, target, inlet, outlet, function, member, piping, instrument).
+// Used to exclude connectivity refs from the "selected" highlight set.
 export function isConnectivityRefProperty(property) {
     const prop = (property || "").toLowerCase();
     return prop.includes("upstream") || prop.includes("source") || prop.includes("inlet")

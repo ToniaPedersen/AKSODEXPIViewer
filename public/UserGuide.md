@@ -1,6 +1,8 @@
-# AKSO DEXPI Viewer — User Guide
+# DEXPI 1.4 / DISC Profile Viewer — User Guide
 
-A browser-based viewer for legacy **Proteus 4.1.1 / DEXPI 1.3** P&ID XML files, rendered using **DEXPI 2.x** profile symbols, classes, and attributes supplied by a loaded `DiscProfile.xml`.
+A browser-based viewer and validation tool for legacy **DEXPI 1.4 / Proteus 4.1.1** XML files, rendered and checked using **DEXPI 2.x profile** symbols, classes and attributes by way of a loaded `DiscProfile.xml`.
+
+Developed by **Tonia Pedersen**.
 
 ---
 
@@ -9,229 +11,458 @@ A browser-based viewer for legacy **Proteus 4.1.1 / DEXPI 1.3** P&ID XML files, 
 1. [Introduction](#1-introduction)
 2. [Getting Started](#2-getting-started)
 3. [Interface Overview](#3-interface-overview)
-4. [Left Panel — Files &amp; Topology Tree](#4-left-panel-files-topology-tree)
-5. [Centre Panel — P&amp;ID Drawing](#5-centre-panel-p-id-drawing)
-6. [Right Panel — Object Details](#6-right-panel-object-details)
-7. [Troubleshooting](#7-troubleshooting)
+4. [Left Panel](#4-left-panel)
+5. [Centre Panel — P&ID Drawing](#5-centre-panel--pid-drawing)
+6. [Right Panel — Object Details](#6-right-panel--object-details)
+7. [How Validation Works](#7-how-validation-works)
+8. [Validation Code Reference](#8-validation-code-reference)
+9. [CSV and Excel Export](#9-csv-and-excel-export)
+10. [Troubleshooting](#10-troubleshooting)
 
 ---
 
 ## 1. Introduction
 
-AKSO DEXPI Viewer reads an older-generation **Proteus 4.1.1 / DEXPI 1.3** drawing XML file and re-renders it using a **DEXPI 2.x DiscProfile.xml** — the same symbol catalogue, class model, and attribute definitions used by modern DEXPI 2.0 tooling. This lets a legacy 1.3 drawing be inspected, browsed, and cross-checked against a current profile without converting the file first.
+The viewer reads a Proteus 4.1.1 / DEXPI 1.4 XML file and provides three things at once:
 
-The viewer provides:
+- **Graphical rendering** — the P&ID is drawn directly from the XML: symbols, piping and signal lines, labels, heat-trace overlays and connectors, using the symbol geometry of the loaded profile where one is supplied.
+- **Object model exploration** — a containment tree of every object, with its properties, references, connectivity, symbol placement and raw `ComponentClass`.
+- **Validation** — two engines behind one issue list: the **ProteusPIDSchema 4.1.1 disc.xsd** schema check, and a model/profile check of classes, attributes, enumerations, cardinality, symbol usage and geometry against the **DEXPI 1.4 information model** (taken from the official DEXPI P&ID Specification 1.4 XMI) and the loaded **DiscProfile.xml**.
 
-- **Graphical rendering** of the drawing — symbols, piping lines, signal connectors, heat-trace overlays, and labels.
-- **Topology tree** — the full object model as a searchable, expandable tree.
-- **Object details** — data attributes, references/associations, parent, and sub-components for any selected object.
-- **Connectivity map** — upstream/downstream/group tracing across the piping and instrumentation network.
+Everything runs in the browser — no server, and no file of yours leaves the machine. The single request the app makes to the network is for the default `DiscProfile.xml` it loads at startup (see [2.2](#22-loading-files)); the XML files you open, and the folders you validate, are read locally and are never sent anywhere.
 
-The application runs entirely in the browser. No file is uploaded anywhere — both XML files are read and parsed locally.
+A `DiscProfile.xml` is loaded **automatically** at startup, from the [DISCDEXPI_2026Pack](https://github.com/ToniaPedersen/DISCDEXPI_2026Pack) repository, so the profile-dependent checks are live from the first file opened. It stays optional: unload it, or start with no way to reach it, and the file is still drawn and the schema and model checks still run in full — only the profile-dependent codes step aside and report *not-evaluated* rather than passing silently.
 
 ---
 
 ## 2. Getting Started
 
-### 2.1 Loading Files
+### 2.1 Running the application
 
-The viewer needs **two** files, loaded from the buttons in the top-left toolbar:
+```bash
+npm install
+npm run dev
+```
 
-1. **Load Proteus XML** — the Proteus 4.1.1 / DEXPI 1.3 drawing file to be viewed.
-2. **Load DiscProfile.xml** — the DEXPI 2.x profile that supplies the symbol catalogue, class mappings, and attribute/label definitions used to render it.
+`npm run build` produces a static bundle in `dist/` that can be hosted anywhere.
 
-A checkmark appears on each button once its file is loaded, and the loaded file names are listed underneath. The drawing renders as soon as both files are present, and re-renders automatically if either file is reloaded.
+This guide is generated: edit `public/UserGuide.md`, then run `python scripts/build-guide.py` (needs `pip install markdown`) to rebuild `public/UserGuide.html`.
 
-Once loaded, a small diagnostics line shows the total object count and how many objects were class-mapped via the TypeURI fallback rule.
+### 2.2 Loading files
+
+In the left panel:
+
+1. **Load Proteus XML** — the drawing renders immediately and the Topology tree populates. Required.
+2. **Load DiscProfile.xml** — optional, and usually unnecessary, because one is already loaded (see below). Picking a file here replaces the default, which is what you want when checking against a profile revision of your own. A profile resolves symbols, classes and attribute usage and switches on every profile-dependent check; the Proteus file is re-parsed automatically when a profile is added or removed.
+
+Both buttons show a ✓ and turn blue once loaded, and the file names are listed underneath. The small **x** next to the profile name unloads the profile and returns to plain DEXPI viewing.
+
+**The default profile.** At startup the app fetches `Profile/xml/DiscProfile.xml` from the [DISCDEXPI_2026Pack](https://github.com/ToniaPedersen/DISCDEXPI_2026Pack) repository and loads it, listed as `DiscProfile.xml (DISCDEXPI_2026Pack)`. It is fetched with no caching, so a profile published to that repository is picked up on the next page reload. While the fetch is in flight the panel reads *Loading default DiscProfile.xml…*; if it cannot be reached — no network, or GitHub unavailable — an amber note appears with a **Retry** button and the viewer carries on without a profile. A profile loaded by hand always wins: the startup fetch never overwrites one, and unloading the default with **x** does not pull it back.
+
+Under the file names, a diagnostics line reports how many objects were parsed and how many had their class mapped via the TypeURI rule.
+
+### 2.3 Running validation
+
+Both engines run **automatically** when a file is opened, so the Validation tab is filled in by the time the drawing is on screen; its label carries the total issue count. Re-parsing after a profile is loaded or unloaded re-runs the model/profile engine against that profile — the schema engine depends on the file text alone and re-runs only when the file changes.
+
+**Run Validation** (the blue, full-width button) re-runs both engines on the file already loaded. It is there for a deliberate re-check; nothing has to be clicked to get results.
+
+To check a whole folder rather than one file, use **Validate Folder…** (see [4.3](#43-folder-tab--validating-a-whole-folder)).
 
 ---
 
 ## 3. Interface Overview
 
-The application is divided into three panels:
+| Area | Contents |
+|---|---|
+| **Left panel** | File loading, Run Validation, and the Topology / Validation / Folder tabs. |
+| **Centre panel** | The rendered P&ID drawing and its toolbar. |
+| **Right panel** | Object / Connections / Issues for the current selection. |
 
-| Area | Description |
-|------|-------------|
-| **Left panel** | Load the two XML files and browse the object topology tree. |
-| **Centre panel** | The interactive, zoomable/pannable P&ID drawing. |
-| **Right panel** | Details for the currently selected object — its data, references, and network connections. |
-
-The left and right panels can each be collapsed by clicking the arrow button (`<` / `>`) at their edge, giving the drawing more room.
+The side panels collapse with the `<` / `>` button in their header, giving the drawing the full width.
 
 ---
 
-## 4. Left Panel — Files &amp; Topology Tree
+## 4. Left Panel
 
-Below the file-load buttons, the object tree shows the full model as an expandable hierarchy, organised by containment (e.g. a piping system down to its segments and components).
+### 4.1 Topology tab
 
-Each row shows the object's label and, on the right, its type suffix (shown in red if the type falls under `Plant/Unmapped.*`, meaning no matching class was found).
+The full object model as an expandable tree, organised by containment (e.g. `PlantModel` → `PipingNetworkSystem` → `PipingNetworkSegment`).
 
-Controls above the tree:
+- **Search** — filters the tree live on tag, type, object ID or persistent identifier.
+- **Expand all / Collapse all** — the whole tree in one click. The object count is shown on the right.
 
-- **Search box** — filters the tree in real time by tag, object ID, type, or persistent identifier.
-- **Expand all / Collapse all** — expand or collapse the entire tree in one click.
+Clicking a node selects it: the matching graphics are highlighted in the drawing and the right panel fills with its details.
 
-Clicking any row selects that object: it highlights red in the drawing, scrolls into view in the tree, and populates the right panel.
+### 4.2 Validation tab
 
----
+Both engines' results merged into one list, populated as soon as a file is opened. The header row shows the total issue count, which engines contributed, and a **CSV** button ([section 9](#9-csv-and-excel-export)).
 
-## 5. Centre Panel — P&amp;ID Drawing
+- **All / Error / Warning / Info** chips filter the list by type and show the count for each.
+- Issues are **grouped by code**. The group header carries the type badge, the code, the code's title and the number of issues in it; click it to fold the group, or use **Expand all / Collapse all**.
+- Each row shows the type badge, the code, the source line where one is known, the code's title, the specific message, and the object ID. A row marked ⊕ can be clicked to select that object — the drawing highlights it and the right panel switches to its Issues tab. An object with no graphics is marked **⚠ no symbol** and is not clickable.
+
+Two notices can appear above the list:
+
+- **XSD schema validation unavailable** — the schema check could not run against this file (the reason is shown). Model and profile checks are unaffected.
+- **non-DEXPI attribute groups excluded** — how many vendor `GenericAttributes` Sets were left out of the XSD check. Only `Set="DexpiAttributes"` and `Set="DexpiCustomAttributes"` are schema-checked.
+
+### 4.3 Folder tab — validating a whole folder
+
+**Validate Folder…**, under the two load buttons, checks every `.xml` file in a folder — and its subfolders — against the same two engines.
+
+> **Nothing is uploaded.** The files are read and validated inside your browser, on your own machine, and are never sent to a server. The browser asks permission first, worded as *"view and copy files"*, *"let this site view files"* or *"upload N files to this site"* depending on the browser and version. Every one of those is the browser asking whether the page may **read** those files into itself — read access is the only folder permission the app requests, and there is no weaker one. Nothing is sent anywhere, which you can confirm in DevTools → Network: no requests are made while a folder is validated.
+
+The currently loaded `DiscProfile.xml` is used for every file in the run — by default the one fetched at startup (2.2), so there is normally nothing to load first. If no profile is loaded, the app asks for confirmation before starting and names what will be skipped — the run then covers the schema and the DEXPI 1.4 model only, and the header says "no profile". A progress line reports each file as it goes, with **Stop** to end the run early and keep what has been done so far.
+
+Results arrive as one list grouped by file:
+
+- The header shows the folder name, the total issue count, how many files were checked, and which profile was used.
+- **All / Error / Warning / Info** chips filter across every file at once; a file with nothing left after filtering drops out of the list.
+- Each file's header shows its finding count, or a green **clean** / red **failed** badge. Click it to fold the file; **Expand all / Collapse all** work on the whole run.
+- **Open** on any file loads it into the viewer, so a finding can be traced on the drawing.
+- **Explorer** opens the drill-down view over the whole run — Layer → Category → Code, and from a code into the documents and lines behind it ([4.4](#44-error-explorer)).
+- **CSV** and **Excel** download the whole run as one file — the only file the browser writes, and it goes to your Downloads folder, not back into the folder you picked. Both use the column layout in [section 9](#9-csv-and-excel-export).
+
+A file that cannot be parsed appears with its error instead of findings, rather than dropping out of the run.
+
+### 4.4 Error explorer
+
+**Explorer**, in the Folder tab's button row, opens a drill-down over the findings of the whole folder run in a panel a little over half the width of the window. **Esc**, **Close** or a click outside it returns to the viewer; the run, the filters and the viewer's state are untouched.
+
+The explorer answers a different question from the Folder tab. The Folder tab asks *what is wrong with this file*; the explorer asks *what is wrong across the set, and where*.
+
+**Drilling down.** The panel opens on the four layers and steps inward on a click: **Layer → Category → Code**. Each row is a bar sized by the level's share of the run and split by type — red Error, amber Warning, blue Info — so the shape of the problem is visible before any of it is read. The breadcrumb above the bars steps back out.
+
+- **Size by** — *Occurrences* sizes bars by raw finding count; *Documents hit* sizes them by how many files carry the finding at all. A code that fires thousands of times in two files and a code that fires twice in ninety look very different under the two, and the second is usually the one to fix first.
+- **All / Error / Warning / Info** filter the whole tree by type, with counts.
+
+**At the code level** the bars give way to the documents the code was raised in, most hits first, each with its count. Click a document to expand it into the individual findings, ordered by line, each one showing:
+
+- the type badge and the **line number**;
+- the **location** — the element, and the attribute where the message names one;
+- the object ID, where the finding carries one;
+- the message;
+- the **source line itself**, read from the file you picked and shown as it appears in the XML.
+
+Source lines are read once per document, straight from the folder pick — no file is re-read from disk until you expand it, and nothing is re-validated. **Open**, on a document row, loads that file into the viewer and closes the explorer, so a finding can be followed onto the drawing.
+
+**The summary panel** on the right tracks whatever is in focus: occurrences, documents hit, the per-type split, and — for a single code — its severity, what the check needs, its scope, and the documents carrying the most hits.
+
+## 5. Centre Panel — P&ID Drawing
+
+The drawing number, name and subtitle from the file are shown at the top left of the toolbar.
 
 ### 5.1 Navigation
 
 | Action | How |
-|--------|-----|
+|---|---|
 | Zoom | Scroll the mouse wheel over the drawing (zooms toward the cursor) |
 | Pan | Hold **Space** and drag |
-| Fit to window | Click the **Fit** button in the centre toolbar |
-| Export view | Click **Save PNG** / **Save PDF** in the centre toolbar (see 5.10, below) |
+| Fit to window | **Fit** button |
+| Select | Click a symbol or line — it is outlined red (orange for labels) |
 
-### 5.2 Selecting Objects
+### 5.2 Toolbar controls
 
-Click any symbol or piping line in the drawing to select it — the same selection used by the tree and the right panel. The selected object is outlined in red (orange for label elements).
+| Control | What it does |
+|---|---|
+| **Fit** | Fits the whole drawing into the window. |
+| **Reset Z-Order (n)** | Appears once objects have been sent to back; restores the file's original paint order for all of them. |
+| **Line Boost %** | Stroke-width multiplier for connector/centerlines. 100% is unchanged; raise it to bulk up thin lines, e.g. to match the weight of a background reference image. |
+| **Include symbol outlines** | Applies the same Line Boost percentage to symbol outlines as well. Off by default. |
+| **Save PNG** / **Save PDF** | Saves the current view — drawing plus background image, if visible. The PDF is a single full-page image, long edge ≈ 420 mm (A3-ish); DEXPI coordinates are not reliably tied to real-world units, so this is a print-friendly fit, not a to-scale export. The file name is taken from the drawing number. |
+| **Connectivity** | Colour-codes the selected object's network neighbours (see below). Off by default. |
+| **Sub-components** | Makes a selection also highlight every child of the selected object — useful when selecting a container such as a `PipingNetworkSystem`. Off by default. |
+| **Profile labels** | Shown only when a profile is loaded (see 5.5). |
+| **BG Image** / **BG Controls** | Reference image behind the drawing (see 5.6). |
 
-### 5.3 Connectivity
+### 5.3 Connectivity highlighting
 
-Check **Connectivity** in the centre toolbar to highlight the network neighbours of the selected object:
+With **Connectivity** checked, selecting an object colours its neighbours, and a legend appears in the lower-left corner:
 
 | Colour | Meaning |
-|--------|---------|
-| 🔵 Blue | Upstream — flows into the selected object |
-| 🟢 Green | Downstream — the selected object flows into these |
-| 🟣 Purple | Group — a connection point sits at the exact same drawing position as one of the selected object's own connection points |
+|---|---|
+| 🔴 Red | The selected object |
+| 🔵 Blue | Upstream — flows into the selection |
+| 🟢 Green | Downstream — flows out of the selection |
+| 🟣 Purple | Group — same piping network segment or instrumentation loop |
 
-A legend appears in the lower-left corner of the drawing while this is on. The highlight is off by default.
+### 5.4 Signal-conveying line styles
 
-### 5.4 Sub-Components
+A `SignalConveyingFunction` whose signal type resolves from the file is decorated automatically with a repeated mark along its line, independent of the line style encoded in the file's own graphics.
 
-Check **Sub-components** to have a selection also highlight (in red) every child object of the selected item — useful when selecting a container such as a piping segment or system. Off by default, so selecting a large container only highlights the container itself.
+| Signal type | Line decoration |
+|---|---|
+| `ElectricalSignalConveying` | Repeated italic **E** |
+| `HydraulicSignalConveying` | Repeated upright **L** |
+| `BusSignalConveying` | Repeated small circle |
+| `PneumaticSignalConveying` | Repeated **^** chevron |
+| `CapillarySignalConveying` | Repeated small **x** |
+| `UndefinedSignalConveying` | Repeated **/** slash |
+| `ElectromagneticGuidedSignalConveying` | Repeated **∿** squiggle |
+| `ElectromagneticUnguidedSignalConveying` | Only the repeated **∿** squiggle — the line itself is hidden, as there is no physical conductor to draw |
 
-### 5.5 Line Weight
+Selecting a decorated line, or highlighting it through Connectivity mode, recolours the line and its marks together.
 
-The **Line weight** toggle boosts very thin connector lines to a minimum visible stroke width so faint piping doesn't disappear when zoomed out. Toggle it off to render every line at its exact drawn weight.
+### 5.5 Heat trace overlay
 
-### 5.6 Background Image
+When a profile is loaded, heat-traced items are detected from the `HeatTracingType` property and drawn with dashed overlays on top of the drawing — along piping centerlines, as a dashed box around inline components and nozzles, and as a dashed rectangle around instrument symbols. No toggle: an item is overlaid when its resolved heat-tracing type is an actual tracing system rather than `NoHeatTracingSystem`.
 
-Click **BG Image** to overlay a reference image behind the drawing. Once one is loaded, **BG Controls** appears with:
+### 5.6 Profile labels
+
+With a profile loaded, a **Profile labels** checkbox appears.
+
+- **Checked** — every catalogued symbol placement shows the value built from the profile symbol's own `Profile/LabelTemplate`, as an overlay, even for symbols that carry no `<Label>` of their own in the file.
+- **Unchecked** — the profile's attribute-resolved value replaces the symbol's own literal label text.
+
+### 5.7 Background image
+
+**BG Image** loads a reference image behind the drawing; **BG Controls** then exposes:
 
 | Control | Description |
-|---------|-------------|
-| Visible | Toggle the overlay on or off |
-| Blend | A single cross-fade slider from **-1** to **+1** (0 = centre). At 0, both the BG image and the DEXPI drawing are fully visible. Drag right (positive) to fade the BG image out while the drawing stays fully opaque; drag left (negative) to fade the drawing out while the BG image stays fully opaque. |
-| Scale | Uniform scale factor applied to the auto-fit size (native aspect ratio is always preserved) |
-| X / Y | Offset, in drawing units, from the auto-fit (centered) position — not screen pixels, so the range scales with the drawing's own size |
-| Reset fit | Sets scale back to 1 and X/Y back to 0, returning to the auto-fit (centered, aspect-correct) placement |
-| ⬇ Download PNG with placement | *PNG images only.* Embeds the current Scale/X/Y into a copy of the loaded PNG and downloads it. The next time that downloaded copy is loaded as a BG image (in this session, a future session, or on another machine), it opens pre-aligned at this placement instead of the auto-fit default. The originally-selected file on disk is never modified. |
-| Clear Default | *PNG images only, shown only when the loaded PNG already carries a saved placement.* Downloads a copy of the PNG with the saved placement removed, so a future load of that copy falls back to auto-fit. |
-| Remove | Clear the background image |
-
-The image is placed inside the same coordinate space as the drawing, so it pans and zooms in lockstep with it — it stays aligned at any zoom level, not just the level it was set up at.
-
-Only PNG files can carry a saved placement (it's embedded as a small metadata chunk in the PNG itself, not stored anywhere in the browser) — other image formats work as background images exactly as before, just without the Download/Clear Default controls.
-
-The Blend slider is only available once a BG image is loaded — there's no standalone drawing-opacity control outside of it. It has no effect on the heat-trace overlay (5.8), which is always drawn at full opacity so it stays legible even when the drawing is faded. Blend is included in **Save PNG**/**Save PDF** exports (5.10), since those capture exactly what's currently rendered in the viewport.
-
-### 5.7 Profile Labels
-
-Check **Profile labels** to show labels synthesized from the loaded DiscProfile.xml's `LabelTemplate` definitions, for symbols that carry no explicit `<Label>` XML of their own. Off by default, so only labels genuinely present in the drawing file are shown.
-
-### 5.8 Heat Trace Overlay
-
-When the loaded objects resolve to an active `HeatTracingType`, a dashed orange overlay is drawn automatically — no toggle needed:
-
-- **Piping** — a dashed line offset alongside the pipe run.
-- **Inline components** (valves, fittings, nozzles) — a dashed line alongside the symbol, oriented to match the pipe direction.
-- **Instruments** (`ProcessInstrumentationFunction`) — a dashed outline following the symbol's actual boundary shape.
-
-### 5.9 Signal-Conveying Line Styles (Proteus files)
-
-For a Proteus/DEXPI 1.3 file's `InformationFlow` elements (signal/instrument wires), the drawn `CenterLine` is decorated according to the `SignalConveyingFunctionTypeRepresentationAssignmentClass` custom attribute (`DexpiCustomAttributes` set), when present:
-
-| Representation value | Line style |
 |---|---|
-| `ElectricalSignalConveying` | Solid line with a small italic "E" repeated along its length |
-| `HydraulicSignalConveying` | Solid line with a small upright "L" repeated along its length |
-| `BusSignalConveying` | Solid line with a small circle repeated along its length |
-| `PneumaticSignalConveying` | Solid line with a small "^" chevron repeated along its length |
-| `CapillarySignalConveying` | Solid line with a small "x" repeated along its length |
-| `UndefinedSignalConveying` | Solid line with a small "/" repeated along its length |
-| `ElectromagneticGuidedSignalConveying` | Solid line with a small "∿" (sine-wave) squiggle repeated along its length |
-| `ElectromagneticUnguidedSignalConveying` | No line drawn — only the repeated "∿" squiggle, since there's no physical conductor to draw |
-| `SignalConveying` (plain, no sub-type) | Dashed line, no repeated mark |
+| Blend | −1 to 1. Centre (0) shows both fully; right fades the image out, left fades the drawing out. |
+| Scale | Uniform factor on the auto-fit size; the native aspect ratio is always preserved. |
+| X / Y | Offset from the auto-fit (centred) position, **in drawing units** — not screen pixels. |
+| Reset fit | Back to scale 1 and offset 0, i.e. the auto-fit placement. |
+| ⬇ Download PNG with placement | PNG only. Writes the current Scale / X / Y into a copy of the PNG's own metadata and downloads it; the original file is untouched. Loading that copy later starts pre-aligned, on any machine or browser. |
+| Clear Default | Shown once a loaded PNG carries an embedded placement; downloads a copy with it removed. |
+| Remove | Unloads the image. |
 
-Wherever a mark is drawn, the wire's own line runs straight through the mark's visual centre (e.g. through the "E"'s middle bar, the "L"'s vertical arm, the circle's centre, the "x"'s crossing point) rather than sitting to one side of it. Wires with no `SignalConveyingFunctionTypeRepresentationAssignmentClass` attribute at all, or a value not listed above, are drawn as a plain solid line with no decoration.
+The image sits in the same coordinate space as the drawing, so it pans and zooms in lockstep and stays aligned at any zoom. Only PNG can carry an embedded placement — other image types re-fit each time they are loaded.
 
-### 5.10 Exporting the Drawing
+### 5.8 Draw order — Send to Back
 
-Use **Save PNG** or **Save PDF** in the centre toolbar to save exactly what's currently in the drawing viewport — the DEXPI drawing plus the BG image overlay, if one is loaded — as a file. Both buttons are disabled until a drawing is loaded, and while an export is in progress.
+Objects are painted in file order, and whatever paints last sits on top for both display and clicking. When a large symbol covers smaller items, select the covering object and click **⇩ Send to Back** in the right panel's Object tab: its graphics move behind everything else and the items underneath become clickable. The button becomes **↺ Restore order** for that object, and **Reset Z-Order (n)** in the centre toolbar restores all of them at once.
 
-- **Save PNG** — rasterizes the current view to a PNG at a fixed long-edge resolution, aspect ratio matching the current view.
-- **Save PDF** — the same rendering, embedded as a single full-page image in a PDF (long edge ~420mm, A3-ish). DEXPI/Proteus drawing coordinates aren't reliably tied to real-world units, so this is a print-friendly fit rather than a to-scale export.
-
-The downloaded file name is derived from the drawing number where available.
+> This affects the on-screen draw/click order for the current session only. Nothing is written back to the XML, and it resets when a new file is loaded.
 
 ---
 
 ## 6. Right Panel — Object Details
 
-### 6.1 Object Tab
+### 6.1 Object tab
 
 | Section | Content |
-|---------|---------|
-| Label and type | Display name and full DEXPI type string |
-| Object ID | The XML `id` attribute value |
-| Persistent Identifiers | Any persistent identifier values, with context |
-| Data | Data attributes with formatted values and units of measure. Check **Show non-DEXPI attributes** to reveal attributes outside the standard `DexpiAttributes` / `DexpiCustomAttributes` sets (hidden by default). |
-| Symbol Reference | *Proteus/DEXPI 1.3 files only.* The raw `ComponentName`/`SymbolRegistrationNumberAssignmentClass` and `Axis`/`Reference`/`Scale` values the source XML used to place the selected object's own symbol. Shown even when the `ComponentName` didn't resolve to a drawable symbol, so a mismatch can still be diagnosed. |
-| Label Symbol Reference(s) | *Proteus/DEXPI 1.3 files only.* Appears when the selected object owns a nested `<Label>` that places a *separate* symbol of its own (e.g. a valve's actuator/instrument marker). Shows that Label's own `SymbolRegistrationNumberAssignmentClass` and `Axis`/`Reference`/`Scale`, without needing to select the Label's own tree node. Click the Label ID shown to jump to it. |
-| Note(s) | *Proteus/DEXPI 1.3 files only.* Lists any Note object `ItemID`s referenced by the selected object's (or its Labels') Text templates. Click a Note ID to jump to it. |
-| References / Associations | Outgoing references — blue if the target exists in the file, red if broken. Click a reference to jump to its target. |
-| Parent Component | The containing object, if any — click to navigate to it. |
-| Sub-Components | Direct children of the selected object — click any to navigate to it. |
+|---|---|
+| Label and type | Display name and the resolved DEXPI type (e.g. `Plant/Piping.CentrifugalPump`). |
+| ComponentClass | The raw `ComponentClass="…"` attribute exactly as written in the Proteus file, shown alongside the resolved type — the two legitimately differ when a TypeURI assignment maps a custom class onto a profile class. Proteus/1.4 files only. |
+| Object ID | The XML `ID`, with the **⇩ Send to Back** button when the object has graphics. |
+| Persistent Identifiers | Each `PersistentIdentifier` with its context. |
+| Data | Properties with values and units. **Show non-DEXPI attributes** reveals vendor `GenericAttributes` Sets, which are hidden by default; the count of hidden entries is shown. |
+| Symbol Reference | The `SymbolRegistrationNumberAssignmentClass` and the raw `Axis` / `Reference` / `Scale` of the Position block that placed the symbol. |
+| Label Symbol Reference | The same, for any symbol placed by a nested `<Label>` of this object (e.g. an actuator or special-item marker). |
+| Notes | Note ItemIDs referenced by this object's text templates; click to navigate. |
+| References / Associations | Outgoing references — blue when the target resolves, red when it does not. |
+| Parent Component | The containing object; click to navigate. |
+| Sub-Components | Children, with their type suffix and child count; click to navigate. |
 
-### 6.2 Connections Tab
+### 6.2 Connections tab
 
-Shows the connectivity map for the selected object:
+The connectivity map for the selection: **Upstream Node** (blue), **Downstream Node** (green) and **Group** (purple), followed by the structural associations — segment/system containment, logical start/end, and any other association type — each under its own heading. Every entry is clickable.
 
-- **Upstream Node** — objects that connect into the selected item.
-- **Downstream Node** — objects the selected item connects into.
+### 6.3 Issues tab
 
-  For a `PipingNetworkSegment`'s `CenterLine`, each end is matched independently against nearby components' connection points. If only one end lands on a real component (the other end's coordinate doesn't match anything, and there's no off-page connector to fall back to), that one match is still kept rather than discarded — select the `CenterLine` itself in the tree to see whichever one-sided Upstream/Downstream Node it resolved, even though the two real components aren't cross-linked to each other in that case (that direct link needs both ends to resolve).
-- **Group** — objects with a connection point positioned exactly on top of one of the selected object's own connection points (within a very small tolerance). This detects physical touches directly, without needing an explicit `<CenterLine>` or `<Connection>` between the two — e.g. two piping components whose flanges meet, or two pipe items placed end-to-end with no drawn pipe run between them.
-
-  This is purely position-based, so it isn't limited to process/piping ports: any connection point counts, including a symbol's drawing-layout anchors (nodes named `PID.T`/`PID.B`/`PID.L`/`PID.R` mark a tag balloon's top/bottom/left/right edge, used for leader-line placement). Two instrument tags stacked directly against each other on the drawing can end up in each other's Group list purely because their balloon edges touch, even with no real signal or process connection between them — check the Object tab's Data/References for the two objects if a Group entry looks unexpected.
-
-Below these, any other structural associations the object carries (e.g. segment/system containment, or a signal wire's logical start/end) are listed in their own labeled sections, using their raw association name if no friendlier label is defined.
-
-Click any entry in either section to navigate to that object.
-
-#### InformationFlow (signal wire) CenterLine
-
-An `InformationFlow` element's `CenterLine` is the drawn line for a signal/instrument wire. Its first and last points are matched by x/y position against nearby components' connection points, the same way a `PipingNetworkSegment`'s `CenterLine` is matched — and the two components that match feed the **Upstream Node** / **Downstream Node** buckets, just like a piping connection. Selecting the wire itself (its node in the tree, or its drawn line) also shows its own Upstream Node / Downstream Node this way — including a one-sided result if only one end of the wire lands on a real component's connection point, rather than showing nothing at all.
-
-This position-based result is kept **separate** from, and shown alongside, the wire's declared logical endpoints: each `InformationFlow` element also carries explicit `Association` entries of type `has logical start` / `has logical end` pointing at its Source/Target components. These appear as their own labeled categories — **Has Logical Start** and **Has Logical End** — rather than under Upstream/Downstream/Group, since a wire's declared logical endpoint and where its drawn geometry physically lands do not always agree. Selecting the referenced component itself shows the reverse relationship, labeled **Is Logical Start Of** / **Is Logical End Of**.
+The validation issues attached to the selected object, with type, code, title and message. Populated as soon as the file is opened and validated; schema findings carry a line number rather than an object, so they appear only in the Validation tab.
 
 ---
 
-## 7. Troubleshooting
+## 7. How Validation Works
 
-**Drawing stays blank after loading both files**
-Check the diagnostics line under the file buttons for the object count. If it reads 0, the Proteus XML likely didn't parse — check the browser console for the parse error shown in the left panel.
+### 7.1 Two engines, one vocabulary
 
-**Many objects show a red `Unmapped` type**
-The loaded DiscProfile.xml doesn't cover every class used in the drawing. Confirm you loaded the DiscProfile.xml that matches this drawing's plant/profile, not a generic or partial one.
+| Engine | What it checks | Needs |
+|---|---|---|
+| **XSD schema** | The file against `ProteusPIDSchema 4.1.1 disc.xsd`, via `xmllint-wasm`. | `xmllint-wasm` resolving |
+| **Model / profile** | Classes, properties, multiplicity, references, symbol usage, profile scope and node geometry against the DEXPI 1.4 information model and the loaded `DiscProfile.xml`. | Always runs |
 
-**Symbols render without labels**
-The drawing file may not carry explicit `<Label>` XML for those symbols. Enable **Profile labels** to show labels synthesized from the DiscProfile's `LabelTemplate` definitions instead.
+Both speak the same classification codes, so a code shown in the viewer, a code in an exported CSV or Excel report and a code in the classification register are the same identifier.
 
-**Background image is stretched or misaligned**
-Use the Scale and X/Y controls in BG Controls, or click **Reset fit** to snap back to the auto-fit (centered) placement. The image always preserves its native aspect ratio; only its uniform scale and X/Y offset are adjustable. It's rendered in the same coordinate space as the drawing, so once placed it stays aligned at any pan/zoom level. Note that the auto-fit placement is computed from the full extent of the parsed drawing, so a Proteus file whose symbols are missing or mis-scaled (see the next item) will also throw off the BG image's auto-fit.
+### 7.2 Anatomy of a code
 
-**A symbol placement has no `<Scale>` in the source XML**
-Rather than silently omitting it from the canvas, the viewer draws it at a default 1×1 scale, so it's still visible and still counted in the drawing's extent (which the BG image's auto-fit is computed from). Check that object's **Symbol Reference** section in the right panel (6.1) to see the raw `ComponentName`/`Axis`/`Reference`/`Scale` values the source XML actually provided.
+A code reads `LAYER-CATEGORY-NN`, e.g. `MDL-PRP-03`. The layer is the first three letters:
 
-**Exported PNG/PDF is missing the background image**
-Make sure the BG image is loaded and **Visible** is checked before exporting — Save PNG/Save PDF capture exactly what's currently rendered in the drawing viewport, including the overlay only if it's currently shown.
+| Layer | Meaning |
+|---|---|
+| **SER** | Serialization & schema — is the file valid XML, and valid against the schema? |
+| **MDL** | Effective information model — do classes, properties, multiplicities and references hold up? |
+| **PRF** | DISC profile — symbols, label templates, allowed classes and properties. |
+| **GEO** | Node placement & geometry — grid, node positions, connection alignment. |
 
-**Connectivity highlight doesn't show anything**
-Make sure an object is selected first — the Connectivity checkbox only highlights relative to the current selection, and only for objects that have upstream/downstream/group relationships in the parsed model.
+### 7.3 pass, fail, and not-evaluated
+
+Two independent facts gate every code:
+
+- **Needs** — what data the check requires: the XSD alone, the information model, the profile, or both. `Model (+ profile if DISC)` means the profile is required only when the file claims DISC — the profile declares 172 classes of its own, so a DISC file checked without it cannot have its class names resolved at all.
+- **Scope** — which files the check is meaningful for: all DEXPI files, or only a file that claims the DISC profile. Asking whether a plain DEXPI file stays inside the DISC `AllowedClasses` list is meaningless, because it never claimed to.
+
+A check that cannot be answered reports **not-evaluated**, never *pass*. That is the difference between a file that is clean and a file that was never really checked. In the viewer an unevaluated code produces no findings at all.
+
+Codes marked as not implemented in [section 8](#8-validation-code-reference) are registered and reserved, but the check behind them is not written yet — they always report not-evaluated.
+
+---
+
+## 8. Validation Code Reference
+
+81 codes are registered; 40 are implemented today. **Type** is the default the viewer gives the code (Major → Error, Minor → Warning). **Needs** and **Scope** are the gates described in 7.3, and **Implemented** marks the checks that actually run today.
+
+The five DEXPI 2.0-only codes (`SER-FMT-03`, `SER-FMT-05`, `MDL-REF-06`, `PRF-LBL-05`, `PRF-SYM-05`) are deliberately absent: this tool can never produce them for a 1.3/1.4 file, and carrying them would report them as not-evaluated for ever.
+
+### SER — Serialization & schema
+
+| Code | Issue | Category | Type | Needs | Scope | Implemented |
+|---|---|---|---|---|---|:--:|
+| `SER-CNT-01` | Declared count disagrees with actual children | Declared counts | Warning | XSD only | All files | ✓ |
+| `SER-FMT-01` | File is not well-formed XML | File format | Error | XSD only | All files | — |
+| `SER-FMT-02` | Wrong root element for the declared version | File format | Error | XSD only | All files | ✓ |
+| `SER-FMT-04` | Declared version does not match the content | File format | Error | XSD only | All files | ✓ |
+| `SER-IDN-01` | Duplicate id within the file | Identity & references | Error | XSD only | All files | ✓ |
+| `SER-IDN-02` | id does not match the ID pattern | Identity & references | Error | XSD only | All files | ✓ |
+| `SER-IDN-03` | Reference does not resolve inside the file | Identity & references | Error | XSD only | All files | — |
+| `SER-IDN-04` | Name collision in one scope | Identity & references | Error | XSD only | All files | ✓ |
+| `SER-REQ-01` | Required attribute missing | Required content | Error | XSD only | All files | ✓ |
+| `SER-REQ-02` | Required child element missing | Required content | Error | XSD only | All files | ✓ |
+| `SER-STR-01` | Element not permitted in this parent | Document structure | Error | XSD only | All files | ✓ |
+| `SER-STR-02` | Element order violates the schema sequence | Document structure | Warning | XSD only | All files | — |
+| `SER-STR-03` | Foreign element or attribute | Document structure | Warning | XSD only | All files | ✓ |
+| `SER-VAL-01` | Value does not match its lexical pattern | Lexical values | Error | XSD only | All files | ✓ |
+| `SER-VAL-02` | Empty or placeholder reference string | Lexical values | Error | XSD only | All files | — |
+| `SER-VAL-03` | Value not lexically valid for its datatype | Lexical values | Error | XSD only | All files | ✓ |
+| `SER-VAL-04` | Enumeration literal not declared | Lexical values | Error | XSD only | All files | ✓ |
+
+### MDL — Effective information model
+
+| Code | Issue | Category | Type | Needs | Scope | Implemented |
+|---|---|---|---|---|---|:--:|
+| `MDL-CLS-01` | Class not defined in the model | Class usage | Error | Model (+ profile if DISC) | All files | ✓ |
+| `MDL-CLS-02` | Abstract class used as an object class | Class usage | Error | Model (+ profile if DISC) | All files | ✓ |
+| `MDL-CLS-03` | Class contradicts other evidence in the file | Class usage | Error | Model + profile | DISC files | ✓ |
+| `MDL-CLS-04` | Type URI unresolvable or echoes the class name | Class usage | Warning | Model + profile | DISC files | ✓ |
+| `MDL-CLS-05` | Vendor marker class emitted | Class usage | Warning | Model (+ profile if DISC) | All files | ✓ |
+| `MDL-CMP-01` | Components property not defined for the parent class | Composition | Error | Model (+ profile if DISC) | All files | — |
+| `MDL-CMP-02` | Child class not permitted by the composition property | Composition | Error | Model (+ profile if DISC) | All files | ✓ |
+| `MDL-CMP-03` | Required sub-component missing | Composition | Error | Model (+ profile if DISC) | All files | ✓ |
+| `MDL-CMP-04` | Container present but empty | Composition | Warning | Model (+ profile if DISC) | All files | — |
+| `MDL-CYC-01` | Cyclic dependency | Cyclic dependency | Error | Model | All files | — |
+| `MDL-MUL-01` | Multiplicity bound violated | Multiplicity | Error | Model (+ profile if DISC) | All files | ✓ |
+| `MDL-MUL-03` | Opposite multiplicity exceeded | Multiplicity | Error | Model (+ profile if DISC) | All files | — |
+| `MDL-MUL-04` | Duplicate entry in a unique property | Multiplicity | Warning | Model (+ profile if DISC) | All files | — |
+| `MDL-PRP-01` | Property not defined on the class or an ancestor | Properties | Error | Model (+ profile if DISC) | All files | ✓ |
+| `MDL-PRP-02` | Property value type does not match the declared type | Properties | Error | Model (+ profile if DISC) | All files | — |
+| `MDL-PRP-03` | Required property absent | Properties | Error | Model (+ profile if DISC) | All files | ✓ |
+| `MDL-PRP-04` | Property value outside its declared constraint | Properties | Warning | Model (+ profile if DISC) | All files | — |
+| `MDL-PRP-05` | Standard namespace claimed for a non-standard attribute | Properties | Warning | Model (+ profile if DISC) | All files | ✓ |
+| `MDL-PRP-06` | Serialized attribute name does not reduce to a model property | Properties | Warning | Model (+ profile if DISC) | All files | — |
+| `MDL-REF-01` | Reference target absent from the file | References & endpoints | Error | Model (+ profile if DISC) | All files | — |
+| `MDL-REF-02` | Target class not permitted by the reference property | References & endpoints | Error | Model (+ profile if DISC) | All files | — |
+| `MDL-REF-03` | Endpoint role violated | References & endpoints | Error | Model (+ profile if DISC) | All files | ✓ |
+| `MDL-REF-04` | Endpoint class cannot be determined | References & endpoints | Warning | Model (+ profile if DISC) | All files | ✓ |
+| `MDL-REF-05` | Object never participates where the model expects it to | References & endpoints | Warning | Model (+ profile if DISC) | All files | ✓ |
+| `MDL-TAG-01` | Taggable object carries no identifier | Identification | Warning | Model | All files | — |
+| `PRF-EXT-01` | Extension property used off its baseType | Properties | Error | Model + profile | DISC files | — |
+| `PRF-EXT-02` | Extension attribute emitted without the vendor namespace | Properties | Warning | Model + profile | DISC files | — |
+| `PRF-EXT-04` | Object rdl_uri disagrees with the profile class it claims | Class usage | Warning | Model + profile | DISC files | — |
+| `PRF-MAP-01` | 1.4 class has no counterpart by name | Class usage | Warning | Model + profile | DISC files | — |
+| `PRF-MAP-02` | RDL URI does not resolve against the profile | Class usage | Warning | Model + profile | DISC files | ✓ |
+| `PRF-MAP-03` | Custom wrapper does not match the family its URI resolves to | Class usage | Error | Model + profile | DISC files | — |
+| `PRF-MAP-04` | Class mapped by name across a version rename | Class usage | Error | Model + profile | DISC files | — |
+
+### PRF — DISC profile — symbols & scope
+
+| Code | Issue | Category | Type | Needs | Scope | Implemented |
+|---|---|---|---|---|---|:--:|
+| `PRF-EXT-03` | Type code outside the symbol's AllowedTypeCodes | Symbol usage | Warning | Profile | DISC files | — |
+| `PRF-LBL-01` | Label references an attribute the symbol does not permit | Label templates | Error | Profile | DISC files | ✓ |
+| `PRF-LBL-02` | Label is literal text with no attribute template | Label templates | Warning | Profile | DISC files | ✓ |
+| `PRF-LBL-04` | Label template index or position not defined by the variant | Label templates | Warning | Profile | DISC files | — |
+| `PRF-MAP-05` | 1.4 Shape class used where 2.0 expects SymbolUsage | 1.4 → DISC mapping | Warning | Profile | DISC files | — |
+| `PRF-MAP-06` | Serialized symbol name does not reduce to a profile symbol | 1.4 → DISC mapping | Warning | Profile | DISC files | — |
+| `PRF-SCP-01` | Class outside the DISC AllowedClasses list | DISC scope | Error | Profile | DISC files | ✓ |
+| `PRF-SCP-02` | Property outside the DISC AllowedProperties list | DISC scope | Warning | Profile | DISC files | ✓ |
+| `PRF-SYM-01` | Symbol not in the SymbolCatalogue | Symbol usage | Error | Profile | DISC files | ✓ |
+| `PRF-SYM-02` | Symbol used for a class its usage does not cover | Symbol usage | Error | Profile | DISC files | ✓ |
+| `PRF-SYM-03` | Drawn object places no symbol | Symbol usage | Warning | Profile | DISC files | — |
+| `PRF-SYM-04` | Placeholder or disabled symbol name emitted | Symbol usage | Warning | Profile | DISC files | — |
+| `PRF-TRN-01` | Transform applied where the profile forbids it | Symbol transforms | Warning | Profile | DISC files | — |
+| `PRF-TRN-05` | Zero or negative scale | Symbol transforms | Error | Profile | DISC files | ✓ |
+| `PRF-VAR-01` | Variant condition not satisfied | Variant selection | Warning | Profile | DISC files | — |
+| `PRF-VAR-02` | No variant selected or VariantNumber out of range | Variant selection | Warning | Profile | DISC files | — |
+
+### GEO — Node placement & geometry
+
+| Code | Issue | Category | Type | Needs | Scope | Implemented |
+|---|---|---|---|---|---|:--:|
+| `GEO-ALN-01` | Connected items not coincident | Connection alignment | Error | Model | All files | ✓ |
+| `GEO-ALN-02` | Zero-length connector | Connection alignment | Error | Model | All files | ✓ |
+| `GEO-ALN-03` | Duplicate ports co-located | Connection alignment | Warning | Profile | DISC files | — |
+| `GEO-DIR-01` | Connection approaches at a direction the node forbids | Approach direction | Warning | Profile | DISC files | — |
+| `GEO-GRD-01` | SymbolUsage position not on the grid | Grid alignment | Error | Profile | DISC files | ✓ |
+| `GEO-GRD-02` | Node position not on the grid | Grid alignment | Error | Profile | DISC files | ✓ |
+| `GEO-NCT-01` | Node referenced by no connection | Node counts | Warning | Model | All files | ✓ |
+| `GEO-NCT-02` | Connection count outside the node's declared bounds | Node counts | Error | Profile | DISC files | — |
+| `GEO-NCT-04` | Component declares more ports than are referenced | Node counts | Warning | Profile | DISC files | — |
+| `GEO-NPS-01` | Node not at a connection point of the placed symbol | Node position | Error | Profile | DISC files | — |
+| `GEO-NPS-02` | Node position cannot be checked — no symbol placed | Node position | Warning | Profile | DISC files | — |
+| `GEO-NPS-03` | Profile symbol declares no connection points | Node position | Warning | Model | All files | — |
+| `GEO-NTY-01` | Piping node used by a non-piping connection | Node type usage | Error | Profile | DISC files | — |
+| `GEO-NTY-03` | Instrumentation node used by a piping connection | Node type usage | Error | Profile | DISC files | — |
+| `GEO-SNS-01` | Sensing location not coincident with the measured item | Sensing location | Warning | Model | All files | — |
+| `GEO-SNS-02` | Sensing location references an impermissible object type | Sensing location | Error | Model | All files | — |
+
+**`GEO-ALN-01` — piping segment continuity.** For each `PipingNetworkSegment`, the check takes the first and last point of every CenterLine and the connection-node positions of every component, and requires that:
+
+- all items in the segment join into a single run, with touching end points (within 0.01 drawing units). If they don't, one finding lists the separate runs, e.g. *run 1: CenterLine 1, BallValve-3; run 2: BlindFlange-1*.
+- the segment's start and end sit on the nodes named in its `Connection` (`FromID`/`FromNode`, `ToID`/`ToNode`). If not, the finding gives the expected node position, the nearest point in the segment and the distance between them. An end that connects to another segment, or to a node with no position, is skipped.
+
+Items with neither points nor positioned nodes, such as flow arrows, are ignored. The finding is reported on the segment.
+
+---
+
+## 9. CSV and Excel Export
+
+The **CSV** button in the Validation tab writes every issue of the current run (all types, not just the filtered ones). The Folder tab's **CSV** and **Excel** buttons write every issue of a whole folder run. All three use the same columns, one row per finding:
+
+| Column | Contents |
+|---|---|
+| Classification code | The code, e.g. `SER-VAL-02`. Blank on a row reporting a file that could not be validated. |
+| Causes | Always blank — kept for alignment with the issue lists this feeds into. |
+| Nr | Sequence number within the file, starting at 1. |
+| Source URI | Blank unless the finding carries one. |
+| File | The file the finding came from. |
+| Line | Source line, where one could be resolved. |
+| Location | The element, and the attribute where the message names one: `<References>, attribute "objects"`. |
+| Level | `ERROR`, `WARNING` or `INFO`. |
+| Type | `Schema Error`, `Model Error`, `Profile Error` or `Geometry Error`, from the code's layer. |
+| Description | The specific detail — the object, attribute or value at fault. |
+
+CSV files are UTF-8 with CRLF line endings and quoted fields.
+
+> If characters look garbled in Excel, open the CSV with **Data → From Text/CSV** and select UTF-8.
+
+---
+
+## 10. Troubleshooting
+
+**Default DiscProfile.xml unavailable**
+The startup fetch could not reach GitHub — no network, a proxy in the way, or the repository moved. Use **Retry** in the amber note, or load a `DiscProfile.xml` by hand; everything except the profile-dependent codes works meanwhile.
+
+**Explorer: "source line unavailable"**
+The picked folder is no longer readable — the permission lapsed, or the file changed since the run. Re-run **Validate Folder…** on the folder.
+
+**No PRF or GEO findings at all**
+Those codes need a profile. Check that one is listed under the load buttons — if the default could not be fetched, load a `DiscProfile.xml` by hand. Without one the codes report not-evaluated rather than passing.
+
+**Everything reports not-evaluated for a DISC file**
+The file claims DISC but no profile was loaded, so its class names cannot be resolved. Load the profile.
+
+**Drawing renders blank or partially**
+The file may reference profile symbols that are not loaded. Load the matching `DiscProfile.xml` — the file is re-parsed automatically when a profile is added.
+
+**An item cannot be clicked in the drawing**
+Something is painted over it. Select the covering object and use **⇩ Send to Back** (5.8).
+
+**Background image will not line up, or resets every time**
+Offsets are in drawing units, not pixels; **Reset fit** returns to the auto-fit placement. Only PNG can carry a saved placement, and only the copy downloaded with **⬇ Download PNG with placement** carries it — the original file is never modified.
+
+**Excel shows garbled characters in the CSV**
+Open it with **Data → From Text/CSV** in Excel and select UTF-8.

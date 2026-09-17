@@ -1,12 +1,9 @@
-// Proteus 4.1.1 / DEXPI 1.3 (<PlantModel> root) parser.
+// Proteus 4.1.1 / DEXPI 1.4 (<PlantModel> root) parser.
 //
-// Translates a legacy Proteus/DEXPI-1.3 XML file into the same internal
-// tree + graphics model produced by dexpiParser.js's parseDexpiPackage(),
-// so the rest of the viewer (tree view, SVG renderer, connectivity map,
-// heat-trace overlays) can be reused unchanged.
+// Parses a Proteus/DEXPI XML file into the same tree + graphics model
+// produced by dexpiParser.js's parseDexpiPackage().
 //
-// Mapping rules (per project spec), evaluated against a loaded DEXPI 2.0
-// DiscProfile.xml:
+// Mapping rules, evaluated against a loaded DiscProfile.xml:
 //   1. class:     GenericAttribute[Name="TypeURIAssignmentClass"]/@Value
 //                 == ConcreteClass/AbstractClass's Data[property="MetaData/rdl_uri"]
 //   2. symbol:    ShapeCatalogue element's nested
@@ -14,10 +11,9 @@
 //                 == Profile/Symbol Object's "name" attribute
 //   3. attribute: GenericAttribute/@AttributeURI
 //                 == DataProperty's Data[property="MetaData/rdl_uri"]
-//
 import {
     qsa, directChildrenByTag, parseSymbolCatalogue, flattenTree,
-    buildConnectivityMap, buildHeatTraceSet,
+    buildConnectivityMap, buildHeatTraceSet, inferBoundsFromPrimitives,
 } from "./dexpiParser.js";
 
 // ---------------------------------------------------------------------------
@@ -39,9 +35,6 @@ export function isProteusDoc(doc) {
 
 function directDataText(node, property) {
     const d = directChildrenByTag(node, "Data").find(x => x.getAttribute("property") === property);
-    // Use children[0] rather than firstElementChild: more broadly supported
-    // across DOM implementations (native browser DOMParser supports both, but
-    // this avoids any doubt).
     const first = d && d.children && d.children[0];
     return first ? (first.textContent || "").trim() : null;
 }
@@ -50,20 +43,8 @@ function ownGenericAttributes(el) {
     return directChildrenByTag(el, "GenericAttributes").flatMap(g => directChildrenByTag(g, "GenericAttribute"));
 }
 
-// Reads a single GenericAttribute's Value, scoped to a specific
-// GenericAttributes Set (e.g. "DexpiCustomAttributes") - unlike
-// ownGenericAttributes() above, this deliberately does NOT flatten across
-// every group, since custom attributes like SignalConveyingFunctionType-
-// Representation live only in the "DexpiCustomAttributes" group and a
-// same-named attribute could in principle also appear in an unrelated
-// vendor Set.
-// Dash pattern (SVG stroke-dasharray, world units) used to draw an
-// InformationFlow's CenterLine when its SignalConveyingFunctionType-
-// RepresentationAssignmentClass is the plain, unqualified "SignalConveying"
-// value (i.e. no more specific Electrical/Hydraulic/Bus/etc sub-type) - see
-// buildProteusGraphics() below.
-const SIGNAL_CONVEYING_DASH_ARRAY = "3 2";
-
+// Reads a single GenericAttribute's Value from a specific GenericAttributes
+// group, identified by its Set attribute.
 function ownGenericAttributeValue(el, setName, attrName) {
     for (const group of directChildrenByTag(el, "GenericAttributes")) {
         if (group.getAttribute("Set") !== setName) continue;
@@ -72,6 +53,11 @@ function ownGenericAttributeValue(el, setName, attrName) {
     }
     return null;
 }
+
+// Dash pattern (SVG stroke-dasharray) for an InformationFlow CenterLine whose
+// SignalConveyingFunctionTypeRepresentationAssignmentClass is the plain
+// "SignalConveying" value.
+const SIGNAL_CONVEYING_DASH_ARRAY = "3 2";
 
 function coerceValue(raw, format) {
     if (raw === null || raw === undefined) return null;
@@ -95,24 +81,14 @@ function parseJustification(j) {
     return { horizontal, vertical };
 }
 
-// Reads a Proteus <Position><Location X Y/><Axis .../><Reference X Y/></Position>
-// block, returning a world position + rotation + mirror flag expressed in
-// DEXPI's own (SVG-compatible) convention.
+// Reads a Proteus <Position> block (<Location>, <Axis>, <Reference>),
+// returning a world position, rotation, and mirror flag in DEXPI's
+// (SVG-compatible) Y-down convention.
 //
-// Proteus's <Location> uses a Y-up frame (Y increases upward), while
-// DEXPI/SVG use Y-down (Y increases downward) - so Y is negated here.
-//
-// <Axis Z="-1"/> marks a mirrored placement (Z="1"/absent = not mirrored).
-//
-// The rotation angle is derived from the <Reference> vector via atan2, but
-// the correct sign depends on whether the placement is mirrored: negating Y
-// flips the effective handedness of the Reference vector's angle, and
-// mirroring flips it back again. Both the Y-negation and this sign rule were
-// verified against a reference table of all 8 (rotation x mirror)
-// combinations - see DEXPI Position (0.03-0.24, 0.05/0.12) vs. Proteus
-// Location/Axis/Reference examples - confirming: unmirrored placements use
-// atan2(-Reference.Y, Reference.X), mirrored placements use
-// atan2(Reference.Y, Reference.X), both normalized to [0,360).
+// Proteus <Location> is Y-up; Y is negated here. <Axis Z="-1"/> marks a
+// mirrored placement. Rotation is derived from <Reference> via atan2:
+// atan2(-Reference.Y, Reference.X) when unmirrored, atan2(Reference.Y,
+// Reference.X) when mirrored, normalized to [0,360).
 function readPosition(el) {
     const posEl = directChildrenByTag(el, "Position")[0];
     if (!posEl) return null;
@@ -134,15 +110,10 @@ function readPosition(el) {
     return { x, y, rotation, isMirrored };
 }
 
-// Reads a Proteus <Scale X Y Z/> element (a direct sibling of <Position>),
-// returning the X/Y scale factors used to size a placed symbol - e.g.
-// <Scale X="4.375" Y="4.03869031814107" Z="1" /> on Equipment ID="XMP_1" in
-// FPQ-AKSO-P-XB-20130-01.XML. Z is unused (2D drawings). Falls back to 1/1
-// when the element carries no Scale at all (the normal, unscaled case), but
-// to 0 when a Scale element IS present yet an axis doesn't parse as a valid
-// number - that's a malformed file, not "no scaling", and collapsing the
-// symbol to a point makes the bad data visibly obvious on the drawing
-// rather than silently masking it behind a default 1x size.
+// Reads a Proteus <Scale X Y Z/> element (sibling of <Position>), returning
+// the X/Y scale factors for a placed symbol. Z is unused. Returns {x:1,y:1}
+// when no <Scale> element is present, or 0 for an axis attribute that isn't
+// a valid number.
 function readScale(el) {
     const scaleEl = directChildrenByTag(el, "Scale")[0];
     if (!scaleEl) return { x: 1, y: 1 };
@@ -151,13 +122,9 @@ function readScale(el) {
     return { x: Number.isNaN(x) ? 0 : x, y: Number.isNaN(y) ? 0 : y };
 }
 
-// Reads the raw <Scale X Y Z/> element (see readScale() above) verbatim,
-// with no NaN/zero fallback applied - for the Details panel's "Symbol
-// Reference" section, which shows this alongside Axis/Reference exactly as
-// the source XML expresses it (e.g. a Nozzle's <Scale X="0" Y="0" Z="1" />
-// - a real, if odd, Comos/AKSO export value - rather than the effective 1/1
-// readScale() falls back to for actually sizing the drawn symbol). Returns
-// null when the element carries no <Scale> at all.
+// Reads the raw <Scale X Y Z/> element verbatim, with no fallback applied,
+// for display in the Details panel. Returns null when no <Scale> element
+// is present.
 function readRawScale(el) {
     const scaleEl = directChildrenByTag(el, "Scale")[0];
     if (!scaleEl) return null;
@@ -168,12 +135,8 @@ function readRawScale(el) {
     };
 }
 
-// Reads the raw <Axis X Y Z/> and <Reference X Y Z/> vectors straight off an
-// element's <Position> block, alongside readPosition()'s own already-derived
-// rotation/mirror numbers - for the Details panel's "Symbol Reference"
-// section (see buildProteusGraphics()'s Rule 2 below), which shows these
-// verbatim rather than the derived rotation angle, so a user can see exactly
-// what placed the symbol the way the source XML itself expresses it.
+// Reads the raw <Axis X Y Z/> and <Reference X Y Z/> vectors from an
+// element's <Position> block, for display in the Details panel.
 function readAxisReference(el) {
     const posEl = directChildrenByTag(el, "Position")[0];
     if (!posEl) return null;
@@ -187,29 +150,6 @@ function readAxisReference(el) {
         reference: readVec(directChildrenByTag(posEl, "Reference")[0]),
     };
 }
-
-// Reads the DependantAttribute+ItemID pairs a real Proteus <Text> element's
-// own <TextStringFormatSpecification>/<ObjectAttributesReference> children
-// declare (proteus-4.1.1-disc.xsd: one or more references, each naming both
-// the attribute AND the object it's pulled from). Returns null when the Text
-// carries no TextStringFormatSpecification at all (the common case for a
-// plain literal <Label> String), or an array (possibly containing more than
-// one reference, per the schema's maxOccurs="unbounded") when it does.
-function readTextTemplateReferences(textEl) {
-    const specEl = directChildrenByTag(textEl, "TextStringFormatSpecification")[0];
-    if (!specEl) return null;
-    return directChildrenByTag(specEl, "ObjectAttributesReference")
-        .map(ref => ({ attribute: ref.getAttribute("DependantAttribute"), itemId: ref.getAttribute("ItemID") }))
-        .filter(r => r.attribute);
-}
-
-// A reference whose ItemID resolves to a <Note ComponentClass="Note">
-// element - used to power the "Notes" Details-pane section (see
-// noteReferencesByOwner's doc comment in buildProteusGraphics() below).
-// Checking the referenced object's actual ComponentClass (rather than
-// pattern-matching the DependantAttribute name itself) covers every naming
-// convention a Note's own GenericAttributes happen to use.
-const NOTE_COMPONENT_CLASS = "Note";
 
 // ---------------------------------------------------------------------------
 // Rule 1 — class index: rdl_uri -> DEXPI-2.0-style type string
@@ -242,30 +182,18 @@ export function buildClassRdlUriIndex(discDoc) {
 }
 
 // ---------------------------------------------------------------------------
-// Custom-class check (used by rdlValidate.js, not by the tree-building rules
-// above): rdl_uri -> { name, superTypes }.
+// Custom-class index (used by rdlValidate.js): rdl_uri -> { name, superTypes, kind }.
 //
-// Proteus's DEXPI 1.3 RDL defines a family of generic "Custom<X>" placeholder
-// classes (CustomEquipment, CustomOperatedValve, CustomPipingComponent, ...)
-// for use when a real object doesn't correspond to a standard universal RDL
-// class. The object's TRUE semantic type is then carried separately via its
-// TypeURIAssignmentClass GenericAttribute, which should resolve (through the
-// loaded DiscProfile.xml's own rdl_uri-tagged ConcreteClass/AbstractClass
-// entries) to a class whose declared superTypes attribute corresponds back
-// to the "Custom" class used (e.g. ComponentClass="CustomOperatedValve"
-// should resolve to a profile class with superTypes="Plant/Piping.OperatedValve").
-//
-// Unlike buildClassRdlUriIndex() above (which only needs the resolved
-// class's own qualified name, for rule 1's class-mapping), this check needs
-// each resolved class's declared superTypes attribute instead - so it's
-// captured here, in its own index, dynamically re-derived from whichever
-// DiscProfile.xml is currently loaded (there is no static/pre-extracted
-// equivalent of this, unlike dexpi13Rdl.json - the mapping is inherently
-// profile-specific).
+// Proteus's DEXPI 1.4 model defines generic "Custom<X>" placeholder classes
+// (CustomEquipment, CustomOperatedValve, CustomPipingComponent, ...) whose
+// real semantic type is carried via a TypeURIAssignmentClass GenericAttribute
+// resolving to a DiscProfile.xml class with a matching superTypes value.
 // ---------------------------------------------------------------------------
 
+// `kind` ("Concrete" | "Abstract") reflects the node's tag name
+// (ConcreteClass vs AbstractClass).
 export function buildProfileClassSuperTypeIndex(discDoc) {
-    const map = new Map(); // rdl_uri -> { name, superTypes: string[] }
+    const map = new Map(); // rdl_uri -> { name, superTypes: string[], kind: "Concrete"|"Abstract" }
     if (!discDoc) return map;
 
     function walk(node) {
@@ -275,7 +203,8 @@ export function buildProfileClassSuperTypeIndex(discDoc) {
                 const name = child.getAttribute("name") || "";
                 const uri = directDataText(child, "MetaData/rdl_uri");
                 const superTypes = (child.getAttribute("superTypes") || "").split(/\s+/).filter(Boolean);
-                if (uri) map.set(uri, { name, superTypes });
+                const kind = tag === "AbstractClass" ? "Abstract" : "Concrete";
+                if (uri) map.set(uri, { name, superTypes, kind });
             }
             walk(child);
         });
@@ -285,34 +214,13 @@ export function buildProfileClassSuperTypeIndex(discDoc) {
 }
 
 // ---------------------------------------------------------------------------
-// Symbol usage index: registered symbol number -> the one DEXPI class the
-// profile declares that symbol may depict.
-//
-// The loaded DiscProfile.xml registers every drawing symbol as its own
-// <Object name="ND0003" type="Profile/Symbol"> element (280 of them in the
-// DISC 0.4 profile), and each one carries exactly one direct-child
-// <Data property="MetaData/usage"><String>...</String></Data> declaring the
-// single class that symbol is meant to represent - e.g.
-// "Plant.Instrumentation.ProcessInstrumentationFunction" for ND0003, or
-// "DiscProfile.InformationModel.DoubleBlockAndBleedValve" for ND0004.
-// Confirmed 1:1 (280 Profile/Symbol objects, 280 MetaData/usage properties)
-// across the whole profile - every registered symbol declares exactly one
-// expected class, never zero or several.
-//
-// The usage string's leading segments ("Plant.Instrumentation", "Core.Diagram",
-// "DiscProfile.InformationModel") are just a namespace/package prefix; the
-// class name itself is always the final "."-separated segment, and that name
-// resolves either directly against a static dexpi13Rdl.json class (the
-// "Plant.X.Y"/"Core.X.Y" forms) or against a ConcreteClass/AbstractClass name
-// declared elsewhere in this same DiscProfile.xml (the "DiscProfile.X.Y"
-// forms, the same profile classes buildProfileClassSuperTypeIndex() resolves).
-// Callers don't need to tell these two forms apart - they just compare the
-// trailing class name against a real object's ComponentClass (see
-// rdlValidate.js's classSatisfiesConstraint(), which already handles both a
-// direct/inherited static-RDL match and a Custom<X>-via-TypeURIAssignmentClass
-// profile-class match).
+// Symbol usage index: registered symbol number -> the DEXPI class the
+// profile declares that symbol may depict, read from each Profile/Symbol
+// Object's <Data property="MetaData/usage"> value (last "."-separated
+// segment of the usage string).
+// ---------------------------------------------------------------------------
 export function buildSymbolUsageIndex(discDoc) {
-    const map = new Map(); // symbol registration number (e.g. "ND0003") -> expected class name
+    const map = new Map(); // symbol registration number -> expected class name
     if (!discDoc) return map;
 
     function walk(node) {
@@ -361,16 +269,9 @@ export function buildDataPropertyRdlUriIndex(discDoc) {
 }
 
 // ---------------------------------------------------------------------------
-// Rule 2 — Proteus ShapeCatalogue: ComponentName -> SymbolRegistrationNumber
-// (joined with parseSymbolCatalogue(discDoc), which keys symbols by
-//  "DiscProfile/<Symbol Object name>")
-//
-// This ONLY reads the SymbolRegistrationNumberAssignmentClass GenericAttribute
-// off each ShapeCatalogue entry, to find which DiscProfile.xml Symbol it
-// corresponds to. Any graphical primitives a Proteus file's own ShapeCatalogue
-// entries might carry are deliberately never read or rendered - all symbol
-// geometry (primitives, variant bounds, node positions) comes exclusively
-// from parseSymbolCatalogue(discDoc), i.e. from DiscProfile.xml.
+// Rule 2 — Proteus ShapeCatalogue: ComponentName -> SymbolRegistrationNumber,
+// joined with parseSymbolCatalogue(discDoc) (keyed by
+// "DiscProfile/<Symbol Object name>").
 // ---------------------------------------------------------------------------
 
 export function buildProteusShapeCatalogue(mainDoc) {
@@ -382,6 +283,120 @@ export function buildProteusShapeCatalogue(mainDoc) {
         const regGa = ownGenericAttributes(el).find(g => g.getAttribute("Name") === "SymbolRegistrationNumberAssignmentClass");
         const regNum = regGa ? regGa.getAttribute("Value") : null;
         if (componentName && regNum) map.set(componentName, regNum);
+    });
+    return map;
+}
+
+// ---------------------------------------------------------------------------
+// Embedded ShapeCatalogue fallback: symbol geometry drawn directly from the
+// Proteus file's own <ShapeCatalogue> entries (Circle/PolyLine/TrimmedCurve/
+// Ellipse/Shape primitives), keyed by ComponentName, with no DiscProfile.xml
+// involved.
+//
+// Coordinate convention: all numeric positions in a Proteus file (a
+// placement's <Position>, a CenterLine's <Coordinate>, a ShapeCatalogue
+// entry's own local geometry) use the same Y-up convention, negated here to
+// match readPosition()'s Y-down output.
+// ---------------------------------------------------------------------------
+
+// Converts Proteus <Presentation R G B/> 0-1 float channels to a "#rrggbb"
+// hex string.
+function proteusPresentationColor(el) {
+    const pres = directChildrenByTag(el, "Presentation")[0];
+    const toHex = raw => {
+        const n = Math.round((parseFloat(raw) || 0) * 255);
+        return Math.max(0, Math.min(255, n)).toString(16).padStart(2, "0");
+    };
+    if (!pres) return "#000000";
+    return `#${toHex(pres.getAttribute("R"))}${toHex(pres.getAttribute("G"))}${toHex(pres.getAttribute("B"))}`;
+}
+
+function proteusPresentationStroke(el) {
+    const pres = directChildrenByTag(el, "Presentation")[0];
+    const width = pres ? (parseFloat(pres.getAttribute("LineWeight")) || 0.25) : 0.25;
+    return { color: proteusPresentationColor(el), width, dashArray: "", dashOffset: 0 };
+}
+
+// Filled="Solid"/"Hatch" -> filled with the Presentation color; absent ->
+// transparent.
+function proteusPresentationFill(el) {
+    const filled = el.getAttribute("Filled");
+    return { style: filled ? "Solid" : "Transparent", color: proteusPresentationColor(el) };
+}
+
+// Converts one ShapeCatalogue entry's graphical primitive element into the
+// same primitive object shape parsePrimitive() (dexpiParser.js) produces.
+function parseProteusShapePrimitive(el, idx) {
+    const tag = el.tagName;
+    const key = `${tag}_${idx}`;
+    if (tag === "PolyLine") {
+        const points = directChildrenByTag(el, "Coordinate").map(c => ({
+            x: parseFloat(c.getAttribute("X")) || 0,
+            y: -(parseFloat(c.getAttribute("Y")) || 0),
+        }));
+        return { kind: "polyline", key, points, stroke: proteusPresentationStroke(el) };
+    }
+    if (tag === "Shape") {
+        // A closed, optionally-filled outline.
+        const points = directChildrenByTag(el, "Coordinate").map(c => ({
+            x: parseFloat(c.getAttribute("X")) || 0,
+            y: -(parseFloat(c.getAttribute("Y")) || 0),
+        }));
+        return { kind: "polygon", key, points, stroke: proteusPresentationStroke(el), fill: proteusPresentationFill(el) };
+    }
+    if (tag === "Circle") {
+        const pos = readPosition(el) || { x: 0, y: 0 };
+        const radius = parseFloat(el.getAttribute("Radius")) || 0;
+        return { kind: "circle", key, center: { x: pos.x, y: pos.y }, radius, stroke: proteusPresentationStroke(el), fill: proteusPresentationFill(el) };
+    }
+    if (tag === "Ellipse") {
+        const pos = readPosition(el) || { x: 0, y: 0, rotation: 0 };
+        const rx = parseFloat(el.getAttribute("PrimaryAxis")) || 0;
+        const ry = parseFloat(el.getAttribute("SecondaryAxis")) || 0;
+        return { kind: "ellipse", key, center: { x: pos.x, y: pos.y }, rx, ry, rotation: pos.rotation || 0, stroke: proteusPresentationStroke(el), fill: proteusPresentationFill(el) };
+    }
+    if (tag === "TrimmedCurve") {
+        const curveEl = directChildrenByTag(el, "Circle")[0] || directChildrenByTag(el, "Ellipse")[0];
+        if (!curveEl) return null;
+        const pos = readPosition(curveEl) || { x: 0, y: 0, rotation: 0 };
+        const isEllipse = curveEl.tagName === "Ellipse";
+        const rx = isEllipse ? (parseFloat(curveEl.getAttribute("PrimaryAxis")) || 0) : (parseFloat(curveEl.getAttribute("Radius")) || 0);
+        const ry = isEllipse ? (parseFloat(curveEl.getAttribute("SecondaryAxis")) || 0) : (parseFloat(curveEl.getAttribute("Radius")) || 0);
+        const startAttr = parseFloat(el.getAttribute("StartAngle")) || 0;
+        const endAttr = parseFloat(el.getAttribute("EndAngle")) || 0;
+        return {
+            kind: "ellipseArc", key,
+            center: { x: pos.x, y: pos.y }, rx, ry,
+            // Swaps and negates start/end angle to keep sweep direction correct
+            // after the Y negation above.
+            startAngle: -endAttr, endAngle: -startAttr,
+            rotation: pos.rotation || 0,
+            stroke: proteusPresentationStroke(curveEl),
+        };
+    }
+    return null; // GenericAttributes and anything else isn't drawable geometry
+}
+
+// Builds a ComponentName -> symbol map (same { key, name, variants: [...] }
+// shape as parseSymbolCatalogue(), with one unconditional variant per entry)
+// from the main document's own <ShapeCatalogue> element.
+export function buildProteusEmbeddedShapeCatalogue(mainDoc) {
+    const map = new Map();
+    const catalogue = qsa(mainDoc, "ShapeCatalogue")[0];
+    if (!catalogue) return map;
+    Array.from(catalogue.children).forEach(entryEl => {
+        const componentName = entryEl.getAttribute("ComponentName");
+        if (!componentName || map.has(componentName)) return;
+        const primitives = Array.from(entryEl.children)
+            .map((child, i) => parseProteusShapePrimitive(child, i))
+            .filter(Boolean);
+        if (primitives.length === 0) return;
+        const bounds = inferBoundsFromPrimitives(primitives);
+        const variant = {
+            key: `${componentName}_v0`, name: componentName, ...bounds,
+            primitives, variantNumber: 0, condition: null, labelTemplates: [],
+        };
+        map.set(componentName, { key: componentName, name: componentName, variants: [variant] });
     });
     return map;
 }
@@ -404,20 +419,14 @@ function resolveObjectClass(el, classIndex) {
     return { type: `Plant/Unmapped.${cc}`, matchedRule1: false };
 }
 
-// Unlike ownGenericAttributes() (which flattens across all GenericAttributes
-// groups for name-based lookups that don't care which group an attribute
-// came from), this walks group-by-group so each attribute can be tagged with
-// its enclosing group's Set="..." value. That tag lets the UI (App.jsx's
-// Data panel) distinguish real DEXPI-modeled attributes (Set="DexpiAttributes"
-// or "DexpiCustomAttributes") from vendor/tool-specific ones (any other Set,
-// or none at all) and hide the latter by default.
+// Walks GenericAttributes group-by-group (rather than flattening) so each
+// attribute can be tagged with its enclosing group's Set value.
 function resolveObjectData(el, dataPropIndex) {
     const out = [];
     directChildrenByTag(el, "GenericAttributes").forEach(group => {
         const set = group.getAttribute("Set"); // null if the group has no Set attribute
         directChildrenByTag(group, "GenericAttribute").forEach(ga => {
             const name = ga.getAttribute("Name");
-            if (name === "TypeURIAssignmentClass") return; // internal marker, not a display attribute
             const attrUri = ga.getAttribute("AttributeURI");
             const rawValue = ga.getAttribute("Value");
             const format = ga.getAttribute("Format") || "";
@@ -433,159 +442,47 @@ function resolveObjectData(el, dataPropIndex) {
 // Tree construction
 // ---------------------------------------------------------------------------
 
-// ComponentClass values that carry Proteus's instrumentation/signal-wire
-// Association vocabulary ("has logical start"/"has logical end") - see rule
-// 2 in deriveProteusFlowConnectivity()'s module comment. Exported so
-// rdlValidate.js can check that an InformationFlow element's ComponentClass
-// (if present at all) is actually one of these - confirmed against the
-// DEXPI 1.3 RDL to be the complete, exact set: SignalConveyingFunction is a
-// concrete class in its own right, with exactly two concrete subtypes,
-// MeasuringLineFunction and SignalLineFunction.
+// ComponentClass values valid for an InformationFlow element:
+// SignalConveyingFunction and its two subtypes.
 export const SIGNAL_FLOW_COMPONENT_CLASSES = new Set(["SignalConveyingFunction", "MeasuringLineFunction", "SignalLineFunction"]);
 
-// Segment/System containment ref property names (pushed by
-// deriveProteusFlowConnectivity() below - see its module doc comment's
-// "Segment/System containment" paragraph). These are pure structural/
-// membership bookkeeping ("this item sits inside this Segment/System"), not
-// a process/signal relationship - and, per that doc comment, are already
-// deliberately worded to dodge isConnectivityRefProperty()'s keyword match
-// so buildConnectivityMap() keeps them out of the blue/green/purple
-// upstream/downstream/group buckets, showing them as their own separate
-// Connections-tab category instead. That same dodge, though, means App.jsx's
-// "select sub-components" red highlight (selectedRepresentedIds) - which
-// only excludes isConnectivityRefProperty() matches - was letting these
-// leak straight through: selecting any one item belonging to a
-// PipingNetworkSegment/System would also red-highlight the segment/system
-// itself, which then, via THAT'S own reciprocal ref, could drag in
-// everything else that references it too. Concretely: selecting a pipe
-// run's own CenterLine sub-item added "indirect item of System" -> the
-// owning PipingNetworkSystem to the highlight set, which then also lit up a
-// "LineLabel-*" line-number Label placed directly under that same System
-// (see resolveLabelOwnerId() - its representedId IS that System) even
-// though only the System itself, not one of its members, should highlight
-// the label. Exported so App.jsx can exclude these from that computation
-// too, without changing isConnectivityRefProperty()/buildConnectivityMap()
-// (which must keep treating them as their own category, per above).
+// Segment/System containment ref property names (structural membership,
+// not a physical connection). Exported so App.jsx can exclude these from
+// its sub-component highlight computation.
 export const SEGMENT_SYSTEM_MEMBERSHIP_REF_PROPERTIES = new Set([
     "direct item of Segment", "segment item (direct)",
     "indirect item of System", "system item (indirect)",
 ]);
 
-// "is a part of" / "is a collection including" Association refs (see
-// buildTree()'s `refs` computation, which now keeps all of these rather
-// than stripping them) - like the Segment/System membership refs above,
-// these are pure tree-containment bookkeeping, not a process/signal
-// relationship, so while every one of them is shown in the Details panel's
-// References/Associations list (including the one that also happens to
-// establish the node's tree parent, already shown separately via "Parent
-// Component" - see XMP_1192 in FPQ-AKSO-P-XB-20130-01.XML for an element
-// with two "is a part of" refs, only one of which is its real structural
-// parent), they're excluded here so they don't red-highlight unrelated
-// objects via App.jsx's "select sub-components" propagation.
+// "is a part of" / "is a collection including" Association refs: tree-
+// containment bookkeeping, excluded from App.jsx's sub-component highlight
+// propagation.
 export const TREE_CONTAINMENT_REF_PROPERTIES = new Set(["is a part of", "is a collection including"]);
 
-// Coordinate-matching tolerance (in drawing units) used by rule 4 below.
-// DISC-authored files use byte-identical coordinates between a CenterLine's
-// endpoint and the connection-point Node it meets, but Comos/AKSO-style
-// exports can drift by a few ten-thousandths of a unit on secondary points
-// (observed: X="206" vs X="205.9998"). 0.001 comfortably covers that drift
-// without being loose enough to false-match distinct nearby points.
+// Coordinate-matching tolerance (drawing units) used by rule 4 below.
 const CENTERLINE_MATCH_TOLERANCE = 0.001;
 
 // ---------------------------------------------------------------------------
 // Proteus-specific connectivity derivation.
 //
-// IMPORTANT: the upstream/downstream/group buckets that buildConnectivityMap()
-// (dexpiParser.js) produces are meant to represent genuine PHYSICAL
-// connectivity - i.e. things derivable from x/y position (a CenterLine's
-// endpoints, or two components' connection-point Nodes literally touching).
-// Document-order facts like "this item happens to be the first/last child of
-// its enclosing Segment/System" are NOT physical connectivity (an item can be
-// the last item of a Segment without being connected to anything at all),
-// so those are deliberately kept OUT of the upstream/downstream/group
-// buckets and instead recorded under their own dedicated ref types (see
-// "Segment/System containment" below), which App.jsx's Connections tab
-// renders as their own separate, clearly-labeled categories rather than
-// folding them into Upstream/Downstream/Group.
+// Rule 4 - CenterLine (position-based): for each PipingNetworkSegment
+// CenterLine, resolves which component owns the connection-point Node
+// matching its first Coordinate (upstream) and its last Coordinate
+// (downstream), and links those two components directly.
 //
-// Rule 4 - CenterLine (position-based): a segment's CenterLine children are
-// pipe-routing geometry connecting two real components. For each CenterLine,
-// resolve which component owns the connection-point Node matching its FIRST
-// Coordinate (that component is upstream) and which owns the Node matching
-// its LAST Coordinate (downstream), then link those two components directly
-// - this is what actually produces component-to-component connectivity for
-// files (like AKSO's) that have no <Connection> elements inside their
-// PipingNetworkSegments at all. This is the primary source of the
-// upstream/downstream buckets. The two components are only cross-linked to
-// EACH OTHER when BOTH ends resolve; if only one end matches a component (the
-// other end's Coordinate doesn't land on any component's connection point,
-// and there's no PipeOffPageConnector to fall back to either), that one match
-// is still kept rather than discarded - it's recorded on the CenterLine's own
-// synthetic sub-node (see makeCenterLineNode()) as a one-sided
-// upstream-only or downstream-only match, so a short stub segment with an
-// unresolved far end doesn't lose the connection info it does have.
+// Rule 5 - Coincident connection points (position-based): two components'
+// ConnectionPoints/Node entries at the same position with no CenterLine
+// between them are recorded as a non-directional "group" link.
 //
-// Rule 5 - Coincident connection points (position-based): two different
-// components' ConnectionPoints/Node entries sometimes sit at the exact same
-// physical position with no CenterLine drawn between them at all - e.g.
-// Comos/AKSO exports mark a segment ComponentClass="OrphanPipingNetworkSegment"
-// when it couldn't resolve a pipe route, but still place the segment's items
-// touching their neighbors' connection points directly, with zero
-// <CenterLine> children anywhere in that segment. Rule 4 above only derives
-// connectivity from an explicit CenterLine's endpoints, so these direct
-// touches were previously invisible to the connectivity map entirely - see
-// buildCoincidentNodeGroups()'s doc comment for the matching/exclusion logic.
-// There's no CenterLine geometry to give these an upstream/downstream
-// ordering (both nodes are literally the same point, so there's no
-// first-vs-last coordinate to infer direction from), so they're recorded as
-// non-directional "group" links instead of a guessed upstream/downstream.
-// This is the sole source of the group bucket.
+// Segment/System containment (structural): each direct item of a
+// PipingNetworkSegment gets a "direct item of Segment" ref (and the segment
+// a reciprocal "segment item (direct)" ref); if the segment sits inside a
+// PipingNetworkSystem, its items also get "indirect item of System"
+// (reciprocal: "system item (indirect)").
 //
-// Segment/System containment (structural, NOT position-based): every direct
-// item of a PipingNetworkSegment gets a "direct item of Segment" ref pointing
-// at its segment (and the segment gets the reciprocal "segment item (direct)"
-// ref back). If that segment itself sits directly inside a PipingNetworkSystem,
-// every one of its items ALSO gets an "indirect item of System" ref pointing
-// at that system (reciprocal: "system item (indirect)") - "indirect" because
-// the item is a direct child of the Segment, only a grandchild of the System.
-// These property names are deliberately chosen to avoid the substrings
-// buildConnectivityMap()/isConnectivityRefProperty() (dexpiParser.js) match
-// on ("upstream", "downstream", "piping", "member", "function", "instrument",
-// ...), so they never leak into the upstream/downstream/group buckets - they
-// exist purely so App.jsx's Connections tab can show Segment/System
-// membership as its own separate category.
-//
-// Signal association (structural, NOT position-based): "has logical
-// start"/"has logical end" Associations live only on the InformationFlow
-// element itself (see buildTree()'s Association-to-refs mapping) and are
-// left as their raw Association Type strings rather than being renamed to
-// "upstream (Signal)"/"downstream (Signal)" - so they're likewise excluded
-// from the upstream/downstream buckets and shown as their own category. The
-// reverse-direction ref ("is logical start of"/"is logical end of") is added
-// here onto whichever component is actually referenced (the signal's
-// Source/Target), so selecting that component also surfaces the signal-wire
-// relationship, not just when selecting the wire itself.
-//
-// Rule 6 - InformationFlow CenterLine (position-based): same idea as rule 4,
-// applied to an InformationFlow (signal wire) element's own direct CenterLine
-// child instead of a PipingNetworkSegment's. The wire's first/last Coordinate
-// are matched against real components' ConnectionPoints/Node positions via
-// the same findOwner() index rule 4 uses, and the two matched components ARE
-// linked as genuine upstream/downstream - into the same buckets rule 4 feeds.
-// This is intentionally kept alongside, not instead of, the Signal
-// association info above: that reflects the file's DECLARED logical
-// endpoints, this reflects where the drawn wire geometry actually lands,
-// and the two do not always agree. As with rule 4, the two components are
-// only cross-linked to EACH OTHER when BOTH ends resolve; the InformationFlow
-// element itself gets whichever end(s) it has regardless - e.g. XMP_4985's
-// CenterLine showing a Downstream Node of XMP_3121 even on a wire whose other
-// end doesn't land on any component's connection point - so a one-sided match
-// isn't discarded just because the far end is unresolved.
-// buildConnectionPointIndex() deliberately excludes InformationFlow-owned
-// ConnectionPoints from the index this rule searches, since a wire's own
-// connection points sit at the exact same x/y as its own CenterLine ends and
-// would otherwise self-match, hiding the real neighbouring component behind
-// a self-reference to the wire itself.
+// Signal association (structural): "has logical start"/"has logical end"
+// Associations on an InformationFlow element get a reverse ref ("is logical
+// start of"/"is logical end of") added onto the referenced component.
 // ---------------------------------------------------------------------------
 
 function segmentItemElements(segEl) {
@@ -593,67 +490,38 @@ function segmentItemElements(segEl) {
 }
 
 // Fallback synthetic objectId for a PipingNetworkSegment's Nth CenterLine
-// child, used only when the CenterLine element itself has no ID attribute
-// (true for e.g. DISC-authored files). Comos/AKSO-style exports DO give
-// CenterLine its own real ID (e.g. ID="XMP_3886"), which is preferred - see
-// resolveCenterLineId() - since it's the id already used and cross-
-// referenced everywhere else in that file. This fallback just guarantees a
-// stable, unique, selectable identity exists either way, so the CenterLine
-// can appear as its own sub-component in the tree and be individually
-// clicked/highlighted in the drawing.
+// child, used when the CenterLine element has no ID attribute.
 function centerlineObjectId(segId, idx) {
     return `${segId}::CL${idx + 1}`;
 }
 
-// Resolves the id to use for one CenterLine child: its own ID attribute if
-// present, otherwise the synthetic fallback above. Shared between
-// deriveProteusFlowConnectivity() (which builds the tree node) and
-// buildProteusGraphics() (which must tag the matching polyline with the same
-// id) so the two stay in sync.
+// Resolves the id to use for one CenterLine child: its own ID attribute, or
+// the synthetic fallback above.
 function resolveCenterLineId(clEl, segId, idx) {
     return clEl.getAttribute("ID") || centerlineObjectId(segId, idx);
 }
 
 // Builds the synthetic tree node for one CenterLine, with its own
-// upstream/downstream refs (per rule 4) so selecting it - whether from the
-// tree or by clicking its polyline in the drawing - shows exactly the two
-// components it connects in the Connections panel.
+// upstream/downstream refs.
 //
-// docOrder records this CenterLine's index among its owning segment's direct
-// XML children (the same index space used for the segment's real item
-// children - see segmentItemElements()) purely so buildTree()'s final
-// sort pass can interleave CenterLines and items back into true file order;
-// it's not displayed anywhere.
+// docOrder records this CenterLine's index among its owning segment's
+// direct XML children, used by buildTree()'s sort pass to interleave
+// CenterLines with the segment's other children in file order.
 function makeCenterLineNode(objectId, pointCount, upstreamId, downstreamId, docOrder) {
     const refs = [];
     if (upstreamId) refs.push({ property: "upstream (CenterLine)", objects: [upstreamId] });
     if (downstreamId) refs.push({ property: "downstream (CenterLine)", objects: [downstreamId] });
     return {
-        // label is the objectId itself (rather than a friendly "CenterLine N"
-        // name) so the tree view - which always displays node.label - shows
-        // the same ID as the Sub-Components/Connections panels, consistent
-        // with every other node type now showing ID rather than a name.
+        // label is the objectId itself, shown by the tree view.
         id: objectId, objectId, type: "Plant/Segment.CenterLine", label: objectId,
-        tagName: "", subTagName: "", loopNum: "",
+        tagName: "", subTagName: "", loopNum: "", componentClass: null,
         data: [{ property: "Proteus/PointCount", value: pointCount, set: undefined }],
         persistentIdentifiers: [], refs, children: [], _docOrder: docOrder,
     };
 }
 
 // Indexes every component's <ConnectionPoints><Node><Position><Location X Y/>
-// by coordinate, for rule 4's (and rule 6's) tolerance-based matching. Uses a
-// spatial hash (grid bucketed at the tolerance size) so lookups stay fast
-// even on large files with thousands of connection points.
-//
-// InformationFlow elements are deliberately excluded here: a signal wire's
-// own <ConnectionPoints> "From"/"To" Nodes mark its OWN CenterLine's two
-// endpoints, at the exact same x/y - not a second, different component to
-// connect to. Left in the index, a wire's own CenterLine would frequently
-// self-match its own connection point (a plain document-order tie against
-// the real neighbouring component's node at the same position, which the
-// wire's own point can win), silently hiding the genuine upstream/downstream
-// component behind a self-reference to the wire itself. See rule 6's doc
-// comment above deriveProteusFlowConnectivity() for how this index is used.
+// by coordinate, using a spatial hash grid bucketed at the tolerance size.
 function buildConnectionPointIndex(mainDoc) {
     const bucketOf = v => Math.round(v / CENTERLINE_MATCH_TOLERANCE);
     const bucketKey = (bx, by) => `${bx},${by}`;
@@ -662,7 +530,7 @@ function buildConnectionPointIndex(mainDoc) {
     qsa(mainDoc, "ConnectionPoints").forEach(cp => {
         const owner = cp.parentElement;
         const ownerId = owner && owner.getAttribute ? owner.getAttribute("ID") : null;
-        if (!ownerId || owner.tagName === "InformationFlow") return;
+        if (!ownerId) return;
         directChildrenByTag(cp, "Node").forEach(node => {
             const posEl = directChildrenByTag(node, "Position")[0];
             const loc = posEl ? directChildrenByTag(posEl, "Location")[0] : null;
@@ -695,27 +563,15 @@ function buildConnectionPointIndex(mainDoc) {
     };
 }
 
-// Max distinct component IDs allowed to share one coincident position bucket
-// (see buildCoincidentNodeGroups() below) before that position is treated as
-// a degenerate placeholder rather than a real multi-way junction. Confirmed
-// empirically against a real AKSO file: legitimate junctions (e.g. a tee
-// where three pipe items' nodes genuinely meet at one point) top out at 3
-// distinct owners, while (0,0) - an unset/default coordinate - was shared by
-// 13 unrelated shape-catalogue elements. 4 gives a small margin above the
-// observed legitimate case without opening the door to that kind of
-// placeholder-coordinate false-matching.
+// Max distinct component IDs allowed to share one coincident position
+// bucket before it is treated as a placeholder coordinate rather than a
+// real junction.
 const COINCIDENT_NODE_MAX_OWNERS = 4;
 
 // Groups every component's <ConnectionPoints><Node> by coordinate (same
-// spatial-hash/tolerance approach as buildConnectionPointIndex() above, but
-// keeping every distinct owner at a position rather than just the nearest
-// one) and returns only the groups that look like a real physical touch: 2
-// to COINCIDENT_NODE_MAX_OWNERS distinct component IDs sharing that exact
-// position. A position with only one owner isn't a connection at all, and
-// one shared by more than the cap is far more likely to be a placeholder/
-// default coordinate (see COINCIDENT_NODE_MAX_OWNERS's doc comment) than a
-// genuine junction - excluded rather than risk fabricating false
-// connections between otherwise-unrelated components.
+// spatial-hash approach as buildConnectionPointIndex(), keeping every
+// distinct owner) and returns groups of 2 to COINCIDENT_NODE_MAX_OWNERS
+// distinct component IDs sharing that position.
 function buildCoincidentNodeGroups(mainDoc) {
     const bucketOf = v => Math.round(v / CENTERLINE_MATCH_TOLERANCE);
     const grid = new Map(); // bucketKey -> Set(ownerId)
@@ -740,26 +596,13 @@ function buildCoincidentNodeGroups(mainDoc) {
     return [...grid.values()].filter(owners => owners.size >= 2 && owners.size <= COINCIDENT_NODE_MAX_OWNERS);
 }
 
-// Fallback max distance (drawing units) for matching a CenterLine endpoint to
-// a same-segment PipeOffPageConnector - see readSegmentOffPageConnectors()'s
-// doc comment. Empirically, real AKSO off-page-connector offsets are 0-24
-// units (the connector's arrow/flag symbol is drawn a short distance from the
-// true pipe end); 50 gives comfortable margin above that while still ruling
-// out a segment somehow spanning most of a drawing.
+// Fallback max distance (drawing units) for matching a CenterLine endpoint
+// to a same-segment PipeOffPageConnector.
 const OFFPAGE_CONNECTOR_MATCH_MAX_DISTANCE = 50;
 
-// PipeOffPageConnector elements never carry their own <ConnectionPoints> in
-// real Proteus/Comos exports (confirmed empirically across AKSO files -
-// every off-page connector has only a bare <Position>, no connection node),
-// so buildConnectionPointIndex() above can never match them: a CenterLine
-// that terminates at one is left with an unresolved end, and since rule 4
-// below requires BOTH ends to resolve before recording anything, the
-// segment's OTHER, perfectly valid endpoint match is silently dropped too.
 // Reads a segment's own direct-child PipeOffPageConnector elements (id +
-// Position) so an unresolved CenterLine end can be matched against them as a
-// fallback - scoped to this one segment (rather than a document-wide looser
-// tolerance) so there's no risk of false-matching some unrelated connector
-// elsewhere in a large drawing.
+// Position), used as a fallback match for a CenterLine endpoint that
+// buildConnectionPointIndex() can't resolve, scoped to this one segment.
 function readSegmentOffPageConnectors(segEl) {
     return directChildrenByTag(segEl, "PipeOffPageConnector").map(opcEl => {
         const posEl = directChildrenByTag(opcEl, "Position")[0];
@@ -770,10 +613,8 @@ function readSegmentOffPageConnectors(segEl) {
     }).filter(o => o.id && !Number.isNaN(o.x) && !Number.isNaN(o.y));
 }
 
-// Nearest-by-distance match within a (small, same-segment) candidate list,
-// capped at OFFPAGE_CONNECTOR_MATCH_MAX_DISTANCE - used only as the fallback
-// described above, never as a replacement for the exact ConnectionPoints
-// match findOwner() already performs.
+// Nearest-by-distance match within a same-segment candidate list, capped at
+// OFFPAGE_CONNECTOR_MATCH_MAX_DISTANCE.
 function nearestOffPageConnectorId(candidates, x, y) {
     let best = null, bestDist = Infinity;
     candidates.forEach(c => {
@@ -791,12 +632,9 @@ function deriveProteusFlowConnectivity(mainDoc, nodesById) {
         const segNode = segId ? nodesById.get(segId) : null;
         const items = segmentItemElements(segEl);
 
-        // Segment/System containment - see the module doc comment above.
-        // Every direct item of this segment (not just the first/last, which
-        // the old upstream (Segment)/downstream (Segment) rule used to
-        // record), plus - if the segment sits directly inside a
-        // PipingNetworkSystem - every item's indirect membership in that
-        // system too.
+        // Segment/System containment: every direct item of this segment, plus
+        // (if the segment sits inside a PipingNetworkSystem) each item's indirect
+        // membership in that system.
         const parentEl = segEl.parentNode;
         const sysId = parentEl && parentEl.tagName === "PipingNetworkSystem" ? parentEl.getAttribute("ID") : null;
         const sysNode = sysId ? nodesById.get(sysId) : null;
@@ -814,9 +652,8 @@ function deriveProteusFlowConnectivity(mainDoc, nodesById) {
             });
         }
 
-        // Rule 4: each direct CenterLine child links two real components, and
-        // also becomes its own selectable sub-component of the segment (see
-        // makeCenterLineNode()'s doc comment).
+        // Rule 4: each direct CenterLine child links two real components and
+        // becomes its own selectable sub-component of the segment.
         const segChildren = Array.from(segEl.children);
         const segOffPageConnectors = readSegmentOffPageConnectors(segEl);
         directChildrenByTag(segEl, "CenterLine").forEach((clEl, clIdx) => {
@@ -833,20 +670,9 @@ function deriveProteusFlowConnectivity(mainDoc, nodesById) {
                     // See readSegmentOffPageConnectors()'s doc comment.
                     if (!foundUp && segOffPageConnectors.length) foundUp = nearestOffPageConnectorId(segOffPageConnectors, fx, fy);
                     if (!foundDown && segOffPageConnectors.length) foundDown = nearestOffPageConnectorId(segOffPageConnectors, lx, ly);
-                    // Record whichever end(s) resolved independently, rather than
-                    // requiring both - a CenterLine whose far end doesn't match any
-                    // component (e.g. a short stub segment with no PipeOffPageConnector
-                    // to fall back to) still has a perfectly good match at its OTHER
-                    // end, and that shouldn't be thrown away. upstreamId/downstreamId
-                    // feed makeCenterLineNode() below, which already independently
-                    // records whichever of the two it's given. The two real components
-                    // are only cross-linked to EACH OTHER (as one another's
-                    // Upstream/Downstream Node) when BOTH ends resolve, since that
-                    // link requires two distinct components to point at - a one-sided
-                    // match has only the CenterLine's own node to hang the ref off of.
-                    if (foundUp) upstreamId = foundUp;
-                    if (foundDown) downstreamId = foundDown;
                     if (foundUp && foundDown && foundUp !== foundDown) {
+                        upstreamId = foundUp;
+                        downstreamId = foundDown;
                         const upNode = nodesById.get(upstreamId);
                         const downNode = nodesById.get(downstreamId);
                         if (upNode) upNode.refs.push({ property: "downstream (CenterLine)", objects: [downstreamId] });
@@ -860,11 +686,9 @@ function deriveProteusFlowConnectivity(mainDoc, nodesById) {
         });
     });
 
-    // Rule 5: direct coincident connection points (no CenterLine involved) -
-    // see buildCoincidentNodeGroups()'s doc comment. Property name contains
-    // "piping" so buildConnectivityMap()'s generic classifier (dexpiParser.js)
-    // buckets it into the non-directional "group" set, same as it already
-    // does for other non-directional Association types.
+    // Rule 5: direct coincident connection points (no CenterLine involved).
+    // Property name contains "piping" so buildConnectivityMap()'s classifier
+    // buckets it into the non-directional "group" set.
     buildCoincidentNodeGroups(mainDoc).forEach(owners => {
         const ids = [...owners];
         for (let i = 0; i < ids.length; i++) {
@@ -877,16 +701,12 @@ function deriveProteusFlowConnectivity(mainDoc, nodesById) {
         }
     });
 
-    // Signal association, reverse direction - see the module doc comment
-    // above. "has logical start"/"has logical end" already exist as refs on
-    // the InformationFlow element itself (added in buildTree()); this adds
-    // the other side, onto the Source/Target component the association
-    // actually points at.
+    // Signal association, reverse direction: adds "is logical start of"/"is
+    // logical end of" onto the Source/Target component the association
+    // points at.
     const REVERSE_SIGNAL_LABEL = { "has logical start": "is logical start of", "has logical end": "is logical end of" };
     qsa(mainDoc, "InformationFlow[ID]").forEach(ifEl => {
         const ifId = ifEl.getAttribute("ID");
-        const ifNode = nodesById.get(ifId);
-
         directChildrenByTag(ifEl, "Association").forEach(a => {
             const reverseLabel = REVERSE_SIGNAL_LABEL[a.getAttribute("Type") || ""];
             if (!reverseLabel) return;
@@ -894,89 +714,18 @@ function deriveProteusFlowConnectivity(mainDoc, nodesById) {
             const targetNode = targetId ? nodesById.get(targetId) : null;
             if (targetNode) targetNode.refs.push({ property: reverseLabel, objects: [ifId] });
         });
-
-        // Rule 6 - InformationFlow CenterLine (position-based), deliberately
-        // separate from the "has logical start"/"has logical end" Associations
-        // handled just above: those reflect the file's DECLARED logical
-        // endpoints, while this derives genuine x/y connectivity for the
-        // wire's own drawn route, the same way rule 4 does for a piping
-        // PipingNetworkSegment's CenterLine - matching the wire's first/last
-        // Coordinate against real components' ConnectionPoints/Node positions
-        // (via the same tolerance-based findOwner() index used by rule 4).
-        // Both pieces of information are kept side by side rather than one
-        // replacing the other, since a wire's declared logical endpoints and
-        // where its drawn geometry physically lands do not always agree
-        // (e.g. a redrawn/rerouted wire, or a logical Association pointing at
-        // a loop/function element with no ConnectionPoints of its own to match).
-        //
-        // Refs are recorded both on the two matched end components (mirroring
-        // rule 4 - so selecting either one shows the other as its
-        // Upstream/Downstream Node, and the Connectivity highlight lights up
-        // the physically-wired neighbour) AND on the InformationFlow element
-        // itself, so selecting the wire (or clicking its drawn line, which
-        // represents the InformationFlow - see buildProteusGraphics()'s
-        // isSegmentCenterLine handling) shows its own Upstream/Downstream
-        // Node too, e.g. XMP_4985's CenterLine showing a Downstream Node of
-        // XMP_3121. This depends on buildConnectionPointIndex() excluding
-        // InformationFlow-owned ConnectionPoints from findOwner() (see its
-        // doc comment) - otherwise a wire's own connection points, sitting
-        // at the exact same x/y as its own CenterLine ends, would self-match
-        // and hide the real neighbouring component behind a self-reference.
-        directChildrenByTag(ifEl, "CenterLine").forEach(clEl => {
-            const coords = directChildrenByTag(clEl, "Coordinate");
-            if (coords.length < 2) return;
-            const first = coords[0], last = coords[coords.length - 1];
-            const fx = parseFloat(first.getAttribute("X")), fy = parseFloat(first.getAttribute("Y"));
-            const lx = parseFloat(last.getAttribute("X")), ly = parseFloat(last.getAttribute("Y"));
-            if ([fx, fy, lx, ly].some(Number.isNaN)) return;
-            const foundUp = findOwner(fx, fy);
-            const foundDown = findOwner(lx, ly);
-            // As with rule 4: record whichever end(s) resolved independently
-            // rather than requiring both. The two real components are only
-            // cross-linked to each other when BOTH ends resolve (that link
-            // needs two distinct components to point at), but the
-            // InformationFlow element itself - the wire's own node - gets
-            // whichever of upstream/downstream it has, even if the other end
-            // of the wire doesn't land on any component's connection point.
-            if (foundUp && foundDown && foundUp !== foundDown) {
-                const upNode = nodesById.get(foundUp);
-                const downNode = nodesById.get(foundDown);
-                if (upNode) upNode.refs.push({ property: "downstream (CenterLine)", objects: [foundDown] });
-                if (downNode) downNode.refs.push({ property: "upstream (CenterLine)", objects: [foundUp] });
-            }
-            if (ifNode) {
-                if (foundUp) ifNode.refs.push({ property: "upstream (CenterLine)", objects: [foundUp] });
-                if (foundDown) ifNode.refs.push({ property: "downstream (CenterLine)", objects: [foundDown] });
-            }
-        });
     });
 }
 
 function buildTree(mainDoc, classIndex, dataPropIndex) {
-    // InformationFlow[ID] is included even without a ComponentClass: some
-    // real-world exports (AKSO/Comos) write instrument signal-line
-    // InformationFlow elements with no ComponentClass attribute at all -
-    // structurally invalid (rdlValidate.js's dedicated check flags this),
-    // but the element still carries a real CenterLine and should still show
-    // up as a tree node and get its line drawn, rather than silently
-    // vanishing from the document entirely. Elements missing ComponentClass
-    // resolve to a "Plant/Unmapped.<tagName>" type via resolveObjectClass()
-    // below, same as any other unmapped element.
-    // <Label> elements are kept in allEls/elementById regardless of whether
-    // they sit nested inside the object they decorate (e.g. an Equipment's
-    // own tag-name label) or stand alone as an independent PlantModel item
-    // (e.g. AKSO/Comos "SpecialItemLabel-*"/"LineLabel-*" exports, which sit
-    // as siblings of the item they annotate rather than nested inside it).
-    // Both shapes need to reach buildProteusGraphics() as their own element:
-    // a Label can carry a ComponentName that resolves to a real registered
-    // symbol in the ShapeCatalogue (e.g. a lock/special-item marker symbol
-    // such as ND0048, placed at the Label's own <Position> - the same Rule 2
-    // shape-placement lookup used for ordinary Equipment/PipingComponent
-    // symbols, which only runs for elements present in elementById), a
-    // leader-line <PolyLine> pointing back at what it annotates, and/or its
-    // own <Text>. See buildProteusGraphics()'s dedicated Label handling
-    // below for how each of those is drawn without double-counting Labels
-    // nested inside another item.
+    // InformationFlow[ID] is included even without a ComponentClass; elements
+    // missing ComponentClass resolve to a "Plant/Unmapped.<tagName>" type via
+    // resolveObjectClass() below.
+    //
+    // <Label> elements are kept in allEls/elementById whether nested inside
+    // the object they decorate or standing alone as an independent PlantModel
+    // item, so each reaches buildProteusGraphics() as its own element (its own
+    // ComponentName/symbol, leader-line PolyLine, and/or Text).
     const allEls = qsa(mainDoc, "[ID][ComponentClass], InformationFlow[ID]").filter(el => {
         if (el.tagName === "MetaData") return false;
         if (el.closest && el.closest("ShapeCatalogue")) return false;
@@ -992,37 +741,26 @@ function buildTree(mainDoc, classIndex, dataPropIndex) {
         elementById.set(id, el);
         const { type, matchedRule1 } = resolveObjectClass(el, classIndex);
         if (matchedRule1) matchedRule1Count++;
+        // Raw ComponentClass attribute as written in the source XML, distinct
+        // from `type` above (the resolved DEXPI type string). Kept alongside
+        // `type` so the Details pane can show both.
+        const componentClass = el.getAttribute("ComponentClass") || null;
         const data = resolveObjectData(el, dataPropIndex);
         const tagName = (data.find(d => d.property === "DiscProfile/ItemTag") || {}).value || "";
         const displayName = (data.find(d => d.property === "DiscProfile/ObjectDisplayName") || {}).value || "";
         const persistentIdentifiers = directChildrenByTag(el, "PersistentID").map(p => ({
             context: p.getAttribute("Context") || "", value: p.getAttribute("Identifier") || "",
         }));
-        // Signal/instrument wires (InformationFlow) use Association
-        // Type="has logical start"/"has logical end" to mark their endpoints.
-        // These are left as their raw Association Type strings (rather than
-        // being renamed to "upstream (Signal)"/"downstream (Signal)") so
-        // they're shown as their own dedicated category in the Connections
-        // tab instead of being folded into the upstream/downstream buckets -
-        // see the module doc comment above deriveProteusFlowConnectivity(),
-        // which also adds the reverse-direction ref onto the referenced
-        // Source/Target component.
-        //
-        // "is a part of"/"is a collection including" Associations are kept
-        // here (unlike before, when they were unconditionally stripped) -
-        // one of them may separately get consumed below to resolve this
-        // node's tree parent (already shown via the "Parent Component"
-        // section), but an element can carry more than one of the same Type
-        // (e.g. a real structural "is a part of" its parent PLUS a separate,
-        // purely informational "is a part of" -> "ProcessPlant-1" - see
-        // XMP_1192 in FPQ-AKSO-P-XB-20130-01.XML), and both are shown here
-        // rather than guessing which one the user cares about.
+        // Association Type strings are kept as-is (e.g. "has logical
+        // start"/"has logical end" for signal wires, "is a part of"/"is a
+        // collection including" for containment); one "is a part of" ref may
+        // also be consumed below to resolve this node's tree parent.
         const refs = directChildrenByTag(el, "Association")
             .map(a => ({ property: a.getAttribute("Type") || "", objects: [a.getAttribute("ItemID")].filter(Boolean) }));
         const label = displayName || tagName || el.getAttribute("ComponentName") || id || type.split(".").pop();
         nodesById.set(id, {
             id, objectId: id, type, label, tagName, subTagName: "", loopNum: "",
-            data, persistentIdentifiers, refs, children: [],
+            componentClass, data, persistentIdentifiers, refs, children: [],
         });
     });
 
@@ -1036,9 +774,7 @@ function buildTree(mainDoc, classIndex, dataPropIndex) {
         }
     });
 
-    // Rules 1/3/4: PipingNetworkSegment/System own upstream+downstream, and
-    // CenterLine-derived component-to-component links (see the function's
-    // doc comment above buildTree for the full rule breakdown).
+    // Segment/System containment and CenterLine-derived connectivity.
     deriveProteusFlowConnectivity(mainDoc, nodesById);
 
     // Parent resolution: (1) XML nesting, (2) "is a part of", (3) "is a collection including"
@@ -1079,15 +815,9 @@ function buildTree(mainDoc, classIndex, dataPropIndex) {
         }
     });
 
-    // PipingNetworkSegment/System sub-components should list in true file
-    // order. Real item/segment children were just appended above in document
-    // order (allEls is walked in document order, so pushes onto any one
-    // parent's children stay relatively ordered) - but synthetic CenterLine
-    // children were attached earlier, in deriveProteusFlowConnectivity(),
-    // before this loop ran, so they'd otherwise all end up bunched before a
-    // segment's real items instead of interleaved where they actually sit in
-    // the XML. Re-sort each segment/system's children by their real position
-    // among the owner element's direct children to fix that.
+    // Re-sorts each segment/system's children into file order, interleaving
+    // synthetic CenterLine nodes (attached earlier) with the real item
+    // children.
     nodesById.forEach((node, id) => {
         const ownerEl = elementById.get(id);
         if (!ownerEl || (ownerEl.tagName !== "PipingNetworkSegment" && ownerEl.tagName !== "PipingNetworkSystem")) return;
@@ -1108,7 +838,7 @@ function buildTree(mainDoc, classIndex, dataPropIndex) {
     } else {
         treeRoot = {
             id: "proteus-root", objectId: null, type: "Plant/PlantModel", label: "Plant Model",
-            tagName: "", subTagName: "", loopNum: "", data: [], persistentIdentifiers: [], refs: [],
+            tagName: "", subTagName: "", loopNum: "", componentClass: null, data: [], persistentIdentifiers: [], refs: [],
             children: roots,
         };
     }
@@ -1120,58 +850,22 @@ function buildTree(mainDoc, classIndex, dataPropIndex) {
 // Graphics construction: symbol placement, labels, pipe/instrument centerlines
 // ---------------------------------------------------------------------------
 
-// Selects a symbol's SymbolVariant for a placed Proteus object. The base
-// (VariantNumber 0, unconditioned) variant is used unless one of the other
-// variants' PropertyValueCondition is satisfied - i.e. the object carries a
-// GenericAttribute for that condition's attribute whose Value matches the
-// condition's target EnumerationLiteral short code (e.g.
-// ValvePosition="NC" for a condition on ValvePosition.NormallyClose,
-// resolved to "NC" by parseSymbolCatalogue()). Proteus GenericAttribute
-// values are already written in this short-code form, so a direct string
-// comparison is enough once the condition itself has been resolved.
-// Normalizes a text rotation angle (SVG-style, clockwise-positive degrees)
-// so Profile-derived (LabelTemplate) label text is never drawn upside-down
-// or reading top-to-bottom, regardless of how the symbol it's attached to
-// is rotated - standard P&ID drafting convention keeps such labels reading
-// either plain left-to-right (roughly horizontal) or bottom-to-top (roughly
-// vertical), never the reverse of either. Folds the angle onto the
-// (-90, 90] range: anything in the opposite half (90, 270] gets flipped by
-// 180 (e.g. a symbol placed upside-down at rotation=180 draws its label at
-// an effective 0 instead of 180; one rotated 90 draws its label at -90
-// - bottom-to-top - rather than 90, which would read top-to-bottom).
+// Selects a symbol's SymbolVariant: the base (VariantNumber 0) variant
+// unless another variant's PropertyValueCondition matches a GenericAttribute
+// value on the object.
+// Normalizes a rotation angle (SVG-style, clockwise-positive degrees) to
+// (-90, 90], flipping by 180 for angles outside that range, so a
+// Profile-derived label is never drawn upside-down.
 function readableLabelRotation(deg) {
     return (((deg % 360) + 360 + 90) % 180) - 90;
 }
 
-// readableLabelRotation() above only folds the ANGLE - but folding by 180
-// degrees is, geometrically, rotating the text block 180 degrees around its
-// own anchor point. That doesn't move the anchor (still the same world
-// position, still meant to sit just outside the symbol's boundary the way
-// the LabelTemplate/Text author positioned it), but it DOES flip which
-// direction the text extends FROM that anchor: text authored to extend
-// rightward/downward from its anchor (Justification/Alignment "Left"/"Top",
-// i.e. textAnchor="start"/baseline="hanging" in renderPrimitive()) now
-// extends leftward/upward instead, and vice versa for "Right"/"Bottom" -
-// Center/Middle are unaffected since they extend equally both ways. Left
-// uncorrected, a folded label keeps its ORIGINAL alignment despite the
-// visual 180-degree flip, so it ends up extending back across its anchor -
-// typically INTO the symbol it was authored to sit just outside of (e.g.
-// ND0034C in FPQ-AKSO-P-XB-20130-01.XML, mirrored+rotated 180, Scale
-// X="1.2": its Profile LabelTemplate offset already scales correctly with
-// that 1.2x via readScale()/the lx*scale.x*mirror math below, but without
-// this alignment flip the folded rotation alone still draws the label on
-// the wrong side of its own anchor, undoing that outward placement).
-// Swapping Left<->Right and Top<->Bottom exactly when the angle folds keeps
-// the label on the SAME SIDE of its anchor in world space it was authored
-// for, in addition to keeping it right-side-up/readable.
+// readableLabelRotation() only folds the angle; a 180-degree fold also
+// requires swapping Left<->Right and Top<->Bottom alignment to keep the
+// label on the same side of its anchor.
 //
-// The flip boundary matches readableLabelRotation() exactly (verified
-// numerically, not just by the (90,270] description in its doc comment
-// above, which is imprecise at the exact endpoints): normalizing deg to
-// [0,360), the fold happens for wrapped in [90,270) - NOT (90,270] - since
-// readableLabelRotation(270) returns -90, which is the SAME angle as 270
-// (mod 360), i.e. no real flip, while readableLabelRotation(90) returns
-// -90, which is 180 away from 90 - i.e. a real flip.
+// The flip applies when the angle (normalized to [0,360)) falls in
+// [90,270).
 function readableLabelOrientation(deg, horizontal, vertical) {
     const wrapped = ((deg % 360) + 360) % 360;
     const flip = wrapped >= 90 && wrapped < 270;
@@ -1182,56 +876,19 @@ function readableLabelOrientation(deg, horizontal, vertical) {
     };
 }
 
-// Certain Profile LabelTemplate tokens are explicitly meant to read as a
-// vertical STACK OF INDIVIDUAL CHARACTERS, each on its own horizontal
-// line, top line first - rather than a single string (rotated sideways or
-// otherwise). e.g. ND0003 (the ProcessInstrumentationFunction/instrument-
-// bubble symbol)'s "D" LabelTemplate, whose "<NonSasFunction>" token (the
-// non-SAS/local-control-system designator run down the side of the
-// bubble) is drawn per AKSO's own drafting convention as one letter per
-// line reading downward - e.g. "ASC" as "A" over "S" over "C" - not as a
-// single word rotated sideways. Matched against the template's raw,
-// unresolved Text (not the resolved per-instance value), so it keys off
-// which LabelTemplate this is regardless of what value ends up
-// substituted - kept as an explicit opt-in set rather than a general
-// rule, since every other Profile-driven label in the file still wants
-// its own plain single-line/rotated text.
-//
-// Splitting the resolved value into one character per line reuses
-// renderPrimitive()'s existing "text" case unchanged (App.jsx): a value
-// containing embedded line breaks is already rendered as stacked <tspan>
-// lines, first line at the smallest y (top), each subsequent line
-// lineHeight further down - exactly "top to bottom" - so turning "ASC"
-// into "A\nS\nC" is all that's needed to get one-character-per-line
-// stacking for free. The label's own configured Rotation (270 in the
-// Profile, meant for the old single-line-sideways rendering) is
-// deliberately NOT applied for these templates - each line is drawn
-// upright, tilted only by whatever the symbol instance's own placement
-// rotation (pos.rotation) already applies to every other (non-tilted)
-// LabelTemplate on this same symbol, so the stacked characters stay
-// level with the rest of the drawing instead of running sideways.
+// LabelTemplate tokens listed here are drawn as one character per line
+// (vertical stack) instead of a single string. Matched against the
+// template's raw, unresolved text. The template's own Rotation is not
+// applied for these; each line follows the symbol's own placement rotation.
 const CHARACTER_STACKED_LABEL_TEMPLATE_TEXTS = new Set(["<NonSasFunction>"]);
 
 function isCharacterStackedLabelTemplate(lt) {
     return CHARACTER_STACKED_LABEL_TEMPLATE_TEXTS.has((lt.text || "").trim());
 }
 
-// Resolves which OTHER object a standalone <Label> element is annotating -
-// used both for its representedId (so selecting/highlighting the annotated
-// object also picks up the label - and vice versa) and, for a Label whose
-// own ComponentName resolves to a real ShapeCatalogue-registered symbol
-// (see Rule 2 above - e.g. a lock/special-item marker symbol such as
-// ND0048), as the data source for that symbol's own Profile LabelTemplate
-// token resolution (e.g. ND0048's "<SpecialItemNumber>" - SpecialItemNumber
-// lives on the decorated valve, not on the Label placing the lock symbol
-// next to it). Preference order: an explicit "is about"/"is associated
-// with"/"refers to" Association's target (the standard Proteus vocabulary
-// for a Label's subject - see proteus-4.1.1-disc.xsd's Association Type
-// enumeration), then the Label's own immediate XML parent when that parent
-// is itself a real placed item (matching prior behaviour for ordinary
-// tag-name labels nested inside their owner), and finally the Label itself
-// as a last resort. A no-op (returns el's own id) for anything that isn't a
-// <Label> - every other element kind already IS its own data owner.
+// Resolves which object a standalone <Label> element is annotating: an
+// explicit "is about"/"is associated with"/"refers to" Association target,
+// else the Label's own XML parent (if tracked), else the Label itself.
 function resolveLabelOwnerId(el, id, elementById) {
     if (el.tagName !== "Label") return id;
     const aboutAssoc = directChildrenByTag(el, "Association")
@@ -1260,32 +917,13 @@ function pickVariant(symbol, dataArr) {
 }
 
 // Matches "<AttributeName>" or "RelatedClass:<AttributeName>" placeholder
-// tokens inside a Profile/LabelTemplate's Text value - see
-// resolveLabelTemplateText()'s doc comment below for the full token
-// vocabulary this was derived from (surveyed across the loaded
-// DiscProfile.xml's ~300 real LabelTemplate objects).
+// tokens inside a Profile/LabelTemplate's Text value.
 const LABEL_TEMPLATE_TOKEN_RE = /(?:([A-Za-z]\w*):)?<([^<>]+)>/g;
 
-// Looks up one attribute's display value from a resolved data array (the
-// same shape App.jsx's Data panel already renders - see
-// resolveObjectData()) - i.e. matches on "DiscProfile/<name>" first (the
-// resolved DEXPI property name, when the attribute's AttributeURI was
-// resolvable against the loaded DiscProfile.xml), then falls back to
-// "Proteus/<name>" (the raw GenericAttribute name, when it wasn't - and the
-// loaded DiscProfile.xml's class model happens to already spell that name
-// without a suffix), and finally to "Proteus/<name>AssignmentClass" - every
-// GenericAttribute in real AKSO/Comos Proteus exports is named
-// "<DEXPI-property-base-name>AssignmentClass" (e.g. "ItemTagAssignmentClass",
-// "ProcessPlantIdentificationCodeAssignmentClass" - see resolveObjectData()'s
-// `Proteus/${name}` fallback, which keeps that raw suffixed name verbatim
-// whenever Rule 3 can't map the attribute's AttributeURI - e.g. because the
-// loaded DiscProfile.xml doesn't happen to define that particular
-// DataProperty), so a LabelTemplate token written as the bare DEXPI name
-// (e.g. "<ProcessPlantIdentificationCode>") still resolves even when Rule 3
-// mapping isn't available. Reduces the same value shapes App.jsx's
-// formatDataValue() handles (PhysicalQuantity, DataReference, plain scalars)
-// down to a plain display string, since a LabelTemplate's Text is always
-// flat text - no units/enum badges here.
+// Looks up one attribute's display value from a resolved data array,
+// matching "DiscProfile/<name>" first, then "Proteus/<name>", then
+// "Proteus/<name>AssignmentClass". Reduces PhysicalQuantity/DataReference/
+// scalar value shapes to a plain display string.
 function lookupAttributeText(dataArr, attrName) {
     const found = (dataArr || []).find(d => d.property === `DiscProfile/${attrName}` || d.property === `Proteus/${attrName}` || d.property === `Proteus/${attrName}AssignmentClass`);
     if (!found || found.value === null || found.value === undefined) return "";
@@ -1296,85 +934,33 @@ function lookupAttributeText(dataArr, attrName) {
     return String(v);
 }
 
-// Plain (no "RelatedClass:" prefix) LabelTemplate tokens that never live on
-// the labeled object's own data, but on the PlantStructureItem it belongs to
-// - ProcessPlantIdentificationCode/PlantSystemIdentificationCode (seen e.g.
-// composed as "<ProcessPlantIdentificationCode>-<PlantSystemIdentificationCode>"
-// in real DiscProfile.xml LabelTemplates, matching AKSO/Comos's own "D-43"-
-// style plant/system code prefix on tag names). Each PlantStructureItem
-// (ComponentClass "ProcessPlant"/"PlantSystem" - see PlantModel's own
-// top-level <PlantStructureItem> elements) carries its own code as a
-// GenericAttribute, and every plant item is linked to its owning
-// ProcessPlant/PlantSystem via a same-named <Association Type="..."> back
-// on the item itself (observed: Type="is a part of" -> ProcessPlant,
-// Type="is located in" -> PlantSystem) - not the token's related-object
-// syntax used elsewhere (RelatedClass:<AttributeName>), which is keyed by
-// the *target's* ComponentClass rather than a fixed Association Type, so
-// these two get their own dedicated fallback below instead of being folded
-// into that generic mechanism.
+// Plain LabelTemplate tokens that live on the owning PlantStructureItem
+// (ProcessPlant/PlantSystem) rather than on the labeled object itself,
+// resolved via a fixed Association Type back to that structure item.
 const PLANT_STRUCTURE_ATTRIBUTE_FALLBACKS = {
     ProcessPlantIdentificationCode: { assocType: "is a part of", targetClass: "ProcessPlant" },
     PlantSystemIdentificationCode: { assocType: "is located in", targetClass: "PlantSystem" },
 };
 
-// PipeOffPageConnector/SignalOffPageConnector (or a ComponentClass subtype of
-// either, e.g. FlowInPipeOffPageConnector/FlowOutSignalOffPageConnector) never
-// carry the referenced-drawing info themselves - it lives on a nested
-// <PipeOffPageConnectorReference>/<SignalOffPageConnectorReference> child
-// element instead (its own ID + own <GenericAttributes>, ComponentClass
-// typically "Pipe/SignalOffPageConnectorReferenceByNumber" - see the RDL's
-// PipeOffPageConnectorReferenceByNumber/SignalOffPageConnectorReferenceByNumber
-// classes and their ReferencedDrawingNumber/ReferencedConnectorNumber/
-// ReferencedDrawingDescriptor properties). Real DiscProfile.xml LabelTemplates
-// for these symbols reference those properties as bare tokens (e.g.
-// "<ReferencedDrawingNumber>"), so without this fallback they'd always
-// resolve empty: lookupAttributeText(ownData, attrName) only ever sees the
-// connector's own attributes, never its reference child's. buildTree() above
-// already gives that nested reference element its own elementById/
-// dataByObjectId entry (it's picked up by the same "[ID][ComponentClass]"
-// selector as everything else), so once its id is found this is just another
-// dataByObjectId lookup, same as the PLANT_STRUCTURE_ATTRIBUTE_FALLBACKS one.
+// PipeOffPageConnector/SignalOffPageConnector attributes referenced by a
+// LabelTemplate live on a nested PipeOffPageConnectorReference/
+// SignalOffPageConnectorReference child element rather than on the
+// connector itself.
 const OFF_PAGE_CONNECTOR_REFERENCE_CHILD_TAGS = ["PipeOffPageConnectorReference", "SignalOffPageConnectorReference"];
 
 // Substitutes every "<AttributeName>" / "RelatedClass:<AttributeName>" token
-// in a LabelTemplate's raw Text (see parseLabelTemplate() in dexpiParser.js)
-// with the real value it stands for, preserving all literal text (including
-// embedded newlines - see App.jsx's multi-line <tspan> handling in
-// renderPrimitive()) around/between tokens unchanged.
+// in a LabelTemplate's raw Text with its resolved value, preserving literal
+// text around/between tokens.
 //
-// "<AttributeName>" resolves against the labeled object's own attribute
-// data - except for ProcessPlantIdentificationCode/PlantSystemIdentificationCode,
-// which fall back to the associated ProcessPlant/PlantSystem PlantStructureItem
-// (see PLANT_STRUCTURE_ATTRIBUTE_FALLBACKS above) when not found directly on
-// the object, since those two codes are defined once on the plant structure
-// rather than repeated onto every item; and except for PipeOffPageConnector/
-// SignalOffPageConnector attributes that instead live on their nested
-// PipeOffPageConnectorReference/SignalOffPageConnectorReference child (see
-// OFF_PAGE_CONNECTOR_REFERENCE_CHILD_TAGS above). "RelatedClass:<AttributeName>"
-// (observed e.g. on alarm-setpoint labels: "SignalConveyingFunction:<AlarmValue>")
-// resolves against a DIFFERENT object - one this element directly references
-// via its own <Association> children whose target's ComponentClass matches
-// RelatedClass - since the attribute in question (e.g. an alarm's AlarmValue)
-// lives on that related object, not on the labeled element itself. If no such
-// association/attribute can be resolved, the token is replaced with an
-// empty string rather than left as raw "<...>" text, so a missing/optional
-// attribute just quietly omits that part of the label instead of showing
-// template syntax to the user.
+// "<AttributeName>" resolves against the labeled object's own data, falling
+// back to PLANT_STRUCTURE_ATTRIBUTE_FALLBACKS or the object's off-page
+// connector reference child when not found directly.
+// "RelatedClass:<AttributeName>" resolves against a related object
+// referenced via an <Association> whose target's ComponentClass matches
+// RelatedClass. An unresolved token becomes an empty string.
 //
-// Besides the substituted text, also reports whether the template contained
-// any token at all (hasToken) and whether at least one of those tokens
-// actually resolved to a non-empty value (hasValue). This is what lets the
-// caller (buildProteusGraphics()'s label-template fallback below) tell a
-// template that's ALL literal text (always worth showing) apart from a
-// template whose only content is an unresolved token wrapped in literal
-// decoration - e.g. real DiscProfile.xml alarm-setpoint LabelTemplates like
-// "HH=' & SignalConveyingFunction:<AlarmValue>": when that instrument has no
-// AlarmValue configured, resolveLabelTemplateText() already replaces the
-// token with "", but the surrounding literal text ("HH=' & ") is non-empty
-// on its own, so the plain text.trim() check the caller also does isn't
-// enough to suppress it - it would otherwise draw a bare "HH=' & " label
-// next to every such symbol regardless of whether that setpoint is
-// populated.
+// Also reports whether the template contained any token (hasToken) and
+// whether at least one resolved to a non-empty value (hasValue).
 function resolveLabelTemplateText(rawText, el, ownData, elementById, dataByObjectId) {
     if (!rawText) return { text: "", hasToken: false, hasValue: false };
     let hasToken = false;
@@ -1414,248 +1000,282 @@ function resolveLabelTemplateText(rawText, el, ownData, elementById, dataByObjec
     return { text, hasToken, hasValue };
 }
 
-function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, dataByObjectId) {
+// ---------------------------------------------------------------------------
+// "Invalid Text Template Attribute Reference" validation
+//
+// A Proteus <Text> can carry a <TextStringFormatSpecification> declaring
+// which of the owning object's attributes its literal String value
+// represents (DependantAttribute). Once a DiscProfile.xml is loaded, that
+// attribute is only valid if it is one the resolved symbol's own
+// LabelTemplates declare.
+// ---------------------------------------------------------------------------
+
+// Union of every distinct "<AttributeName>" token referenced across all of
+// a Profile/Symbol's variants' LabelTemplates.
+export function symbolLabelAttributeNames(symbol) {
+    const names = new Set();
+    (symbol?.variants || []).forEach(variant => {
+        (variant.labelTemplates || []).forEach(lt => {
+            const re = /(?:[A-Za-z]\w*:)?<([^<>]+)>/g;
+            let m;
+            while ((m = re.exec(lt.text || ""))) names.add(m[1]);
+        });
+    });
+    return names;
+}
+
+// Reads the DependantAttribute+ItemID pairs from a Text element's own
+// TextStringFormatSpecification/ObjectAttributesReference children. Returns
+// null when the Text has no TextStringFormatSpecification.
+export function readTextTemplateReferences(textEl) {
+    const specEl = directChildrenByTag(textEl, "TextStringFormatSpecification")[0];
+    if (!specEl) return null;
+    return directChildrenByTag(specEl, "ObjectAttributesReference")
+        .map(ref => ({ attribute: ref.getAttribute("DependantAttribute"), itemId: ref.getAttribute("ItemID") }))
+        .filter(r => r.attribute);
+}
+
+// Convenience wrapper over readTextTemplateReferences() returning just the
+// attribute-name strings.
+export function readTextTemplateDependantAttributes(textEl) {
+    const refs = readTextTemplateReferences(textEl);
+    return refs ? refs.map(r => r.attribute) : null;
+}
+
+// A reference whose ItemID resolves to a <Note ComponentClass="Note">
+// element is always valid, independent of the annotated item's own symbol
+// or whether a DiscProfile.xml is loaded.
+const NOTE_COMPONENT_CLASS = "Note";
+
+// Looks up one GenericAttribute's raw Value off the object a reference's
+// ItemID points to, scanning all GenericAttributes groups. Matches by exact
+// name first, then by "<attributeName>AssignmentClass". Returns null when
+// the ItemID doesn't resolve or no attribute matches either form.
+function resolveDependantAttributeValue(itemId, attributeName, elementById) {
+    const target = itemId ? elementById?.get(itemId) : null;
+    if (!target) return null;
+    const suffixedName = `${attributeName}AssignmentClass`;
+    let suffixedValue = null;
+    for (const group of directChildrenByTag(target, "GenericAttributes")) {
+        for (const ga of directChildrenByTag(group, "GenericAttribute")) {
+            const name = ga.getAttribute("Name");
+            if (name === attributeName) return ga.getAttribute("Value");
+            if (suffixedValue === null && name === suffixedName) suffixedValue = ga.getAttribute("Value");
+        }
+    }
+    return suffixedValue;
+}
+
+// Resolves the value a Text's own TextStringFormatSpecification should
+// display: every <ObjectAttributesReference>, concatenated in document
+// order. A reference with no ItemID contributes its own DependantAttribute
+// text verbatim (a literal separator). A reference with an ItemID
+// contributes the live GenericAttribute Value off its target, but only once
+// validated: it targets a Note (see NOTE_COMPONENT_CLASS), or its
+// DependantAttribute is in the resolved symbol's declared label attributes.
+// Returns null when there is no TextStringFormatSpecification, no
+// ItemID-bearing reference, or any reference fails to validate or resolve.
+export function resolveTextTemplateValue(textEl, allowedAttrNames, elementById) {
+    const refs = readTextTemplateReferences(textEl);
+    if (!refs || refs.length === 0) return null;
+    const parts = [];
+    let hasItemIdRef = false;
+    for (const ref of refs) {
+        if (!ref.itemId) {
+            parts.push(ref.attribute);
+            continue;
+        }
+        hasItemIdRef = true;
+        const isNoteRef = elementById?.get(ref.itemId)?.getAttribute("ComponentClass") === NOTE_COMPONENT_CLASS;
+        if (!isNoteRef && !(allowedAttrNames && allowedAttrNames.has(ref.attribute))) return null;
+        const value = resolveDependantAttributeValue(ref.itemId, ref.attribute, elementById);
+        if (value === null) return null;
+        parts.push(value);
+    }
+    if (!hasItemIdRef) return null;
+    return parts.join("");
+}
+
+// True when resolveTextTemplateValue() finds a valid, resolvable reference.
+export function isValidTextTemplateAttribute(textEl, allowedAttrNames, elementById) {
+    return resolveTextTemplateValue(textEl, allowedAttrNames, elementById) !== null;
+}
+
+function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, embeddedShapeMap, dataByObjectId, discProfileLoaded) {
     const elements = [];
-    // Keyed by the same representedId a symbolUsage element carries (i.e.
-    // the id of whichever element in elementById actually owns the
-    // ComponentName+Position that placed it - a Label itself, for a symbol
-    // placed via a standalone Label such as a SpecialItemLabel, not the
-    // object the label happens to annotate) - see App.jsx's "Symbol
-    // Reference" Details-panel section, which looks this up by selectedId.
+    // Keyed by the id of the element that owns the ComponentName+Position that
+    // placed it, for the Details panel's "Symbol Reference" section.
     const symbolReferences = new Map();
-    // Keyed by the OWNER object's id (e.g. a GateValve/Equipment/PipingComponent)
-    // -> an array of that owner's own nested <Label ComponentName="..."> Symbol
-    // Reference entries (e.g. GateValve-1's actuator/instrument marker Label,
-    // ComponentName="IM005B_SHAPE") - so selecting the OWNER directly shows
-    // its Label's own separate symbol placement too (as a "Label Symbol
-    // Reference" section in App.jsx), without having to separately select the
-    // nested Label's own tree node to see it via symbolReferences above. A
-    // standalone Label that IS its own owner (resolveLabelOwnerId(el, id,
-    // elementById) === id) is intentionally NOT duplicated here, since its
-    // own symbolReferences entry (keyed by its own id) already covers it.
+    // Keyed by the owner object's id -> an array of that owner's nested
+    // <Label ComponentName="..."> Symbol Reference entries, for the Details
+    // panel's "Label Symbol Reference" section.
     const labelSymbolReferencesByOwner = new Map();
-    // Keyed by representedId (the same id App.jsx's Details pane looks up by
-    // selectedId elsewhere) -> a Set of Note object ItemIDs any of that
-    // item's real <Label> Texts reference via their own
-    // TextStringFormatSpecification/ObjectAttributesReference - powers
-    // App.jsx's "Notes" Details-pane section. Purely informational:
-    // populated regardless of whether the reference resolves to anything
-    // meaningful - "this item has a Label pointing at this Note" is true
-    // either way. Converted from Set to array just before this function
-    // returns.
+    // Keyed by representedId -> a Set of Note object ItemIDs referenced by
+    // that item's Label Texts, for the Details panel's "Notes" section.
+    // Converted to an array before this function returns.
     const noteReferencesByOwner = new Map();
 
     elementById.forEach((el, id) => {
         const componentName = el.getAttribute("ComponentName");
         const pos = readPosition(el);
         let placedVariant = null; // captured for the label-template fallback below
+        // True only when placedVariant came from the loaded DiscProfile.xml, not
+        // the embedded-ShapeCatalogue fallback.
+        let placedFromDiscProfile = false;
+        // The DiscProfile-resolved Profile/Symbol object (all its variants),
+        // captured when placedFromDiscProfile is true, for
+        // symbolLabelAttributeNames().
+        let placedProfileSymbol = null;
 
-        // Rule 2: shape placement
+        // Rule 2: shape placement - resolve geometry from the loaded
+        // DiscProfile.xml first (ComponentName -> SymbolRegistrationNumber ->
+        // Profile/Symbol), falling back to the Proteus file's own embedded
+        // <ShapeCatalogue> primitives when no DiscProfile.xml is loaded or it
+        // doesn't register this ComponentName.
         if (componentName && pos) {
             const regNum = shapeCatalogue.get(componentName);
-            const symbol = regNum ? symbolMap.get(`DiscProfile/${regNum}`) : null;
+            const profileSymbol = regNum ? symbolMap.get(`DiscProfile/${regNum}`) : null;
+
+            // With a profile loaded, a ComponentName that references a symbol is
+            // drawn from that reference or not at all; the embedded primitives are
+            // only used when no profile is loaded or the ComponentName has no
+            // registration number.
+            const referenceUnresolved = discProfileLoaded && !!regNum && !profileSymbol;
+            const symbol = profileSymbol
+                || (referenceUnresolved ? null : embeddedShapeMap.get(componentName) || null);
+            const symbolFromProfile = !!profileSymbol;
             if (symbol) {
                 const variant = pickVariant(symbol, dataByObjectId.get(id));
                 if (variant) {
                     placedVariant = variant;
-                    // A symbol placement with no <Scale> element at all (e.g.
-                    // ControlledActuator-1 in FPQ-AKSO-P-XB-20130-01.XML) has
-                    // no authored size information - readScale() already
-                    // falls back to a 1x1 scale for this case (see its own
-                    // doc comment), and that same fallback is used to
-                    // actually draw the symbol here too (rather than
-                    // skipping it), matching OldDEXPIVersion's behavior: a
-                    // symbol with no Scale should still show up at a default
-                    // 1x1 size instead of silently vanishing from the
-                    // canvas. This also matters for fullBounds (see
-                    // boundsFromElements in dexpiParser.js) - dropping these
-                    // symbols entirely was shrinking the computed drawing
-                    // extent enough to visibly throw off the BG reference
-                    // image's auto-fit/contain placement relative to
-                    // OldDEXPIVersion. (In OldDEXPIVersion this same
-                    // fallback is additionally flagged by a
-                    // "zero-scale-symbol" rdlValidate.js warning so the
-                    // synthesized default is never silent - this app's
-                    // rdlValidate.js/xsdValidate.js aren't wired into
-                    // App.jsx, so no equivalent warning surfaces here yet.)
-                    // (An explicit but malformed <Scale> - e.g. non-numeric X/Y - is
-                    // unaffected by this: readScale() already renders that
-                    // as a collapsed zero-size point, per its own doc
-                    // comment, unchanged here.)
-                    const rawScale = readRawScale(el);
+                    placedFromDiscProfile = symbolFromProfile;
+                    placedProfileSymbol = symbolFromProfile ? profileSymbol : null;
+                    // A symbol placement with no <Scale> element draws at readScale()'s
+                    // default 1x1 fallback. A malformed <Scale> (non-numeric X/Y) still
+                    // collapses to a zero-size point.
                     const scale = readScale(el);
                     elements.push({
                         kind: "symbolUsage", key: `sym_${id}`, representedId: id, elementRole: "symbol",
                         symbol, variant, position: { x: pos.x, y: pos.y }, rotation: pos.rotation,
                         scaleX: scale.x, scaleY: scale.y, isMirrored: pos.isMirrored,
                     });
-                    const axisRef = readAxisReference(el);
-                    const ref = {
-                        regNum, componentName,
-                        axis: axisRef?.axis || null, reference: axisRef?.reference || null,
-                        scale: rawScale,
-                    };
-                    symbolReferences.set(id, ref);
-                    // Also index under the owning object, when `el` is itself
-                    // a nested/standalone <Label> annotating something else -
-                    // see labelSymbolReferencesByOwner's doc comment above.
-                    if (el.tagName === "Label") {
-                        const labelOwnerId = resolveLabelOwnerId(el, id, elementById);
-                        if (labelOwnerId !== id) {
-                            if (!labelSymbolReferencesByOwner.has(labelOwnerId)) labelSymbolReferencesByOwner.set(labelOwnerId, []);
-                            labelSymbolReferencesByOwner.get(labelOwnerId).push({ labelId: id, ...ref });
-                        }
-                    }
+                }
+            }
+            // Symbol Reference info (Details pane) - recorded for every element
+            // carrying a ComponentName+Position, regardless of whether it resolved
+            // to a drawable symbol.
+            const axisRef = readAxisReference(el);
+            const ref = {
+                regNum: regNum || null, componentName,
+                axis: axisRef?.axis || null, reference: axisRef?.reference || null,
+                scale: readRawScale(el),
+            };
+            symbolReferences.set(id, ref);
+            // Also indexes under the owning object when `el` is a Label
+            // annotating something else.
+            if (el.tagName === "Label") {
+                const labelOwnerId = resolveLabelOwnerId(el, id, elementById);
+                if (labelOwnerId !== id) {
+                    if (!labelSymbolReferencesByOwner.has(labelOwnerId)) labelSymbolReferencesByOwner.set(labelOwnerId, []);
+                    labelSymbolReferencesByOwner.get(labelOwnerId).push({ labelId: id, ...ref });
                 }
             }
         }
 
-        // Text labels: `el` here can be either a normal placed item that
-        // owns nested <Label> children (e.g. an Equipment's own tag-name
-        // label - the common case) OR a <Label> itself, when it's one of
-        // the (possibly many) <Label> elements buildTree()'s allEls filter
-        // now always includes as their own elementById entry - both nested
-        // inside the object they decorate and standalone, sitting as a
-        // sibling of it (e.g. AKSO/Comos "SpecialItemLabel-*"/"LineLabel-*"
-        // exports). `ownLabelEls` covers the first shape (Label as a direct
-        // child one level down); `el.tagName === "Label"` covers the second
-        // (Label as `el` itself) - together every <Label> in the document
-        // gets its <Text>/leader-line drawn exactly once, whichever shape it
-        // takes. (Rule 2 above already handles a Label's own ComponentName
-        // resolving to a real ShapeCatalogue-registered symbol - e.g. a
-        // lock/special-item marker symbol - generically, since it runs for
-        // every elementById entry regardless of tag.)
+        // "Profile labels" support: computes isDiscProfileLabel/isProfileGoverned/
+        // hasProfileAttributeBacking/validRawProfileText for a placed symbol's
+        // real <Label> Text. A Proteus <Text> is always a plain literal String, so
+        // isProfileGoverned is identical to isDiscProfileLabel here.
+        //
+        // ownerId/ownerEl/ownData resolve the object every real <Label> under
+        // `el` represents, computed once for reuse below.
+        const ownerId = resolveLabelOwnerId(el, id, elementById);
+        const ownerEl = elementById.get(ownerId) || el;
+        const ownData = dataByObjectId.get(ownerId) || [];
+        // isDiscProfileLabel: true when this element's symbol was placed from
+        // the loaded DiscProfile.xml catalogue (not the embedded-ShapeCatalogue
+        // fallback).
+        const isDiscProfileLabel = placedFromDiscProfile;
+        // Only the first catalog LabelTemplate (labelTemplates[0]) counts for
+        // backing/resolution purposes.
+        const catalogTemplateText = placedVariant?.labelTemplates?.[0]?.text;
+        const hasProfileAttributeBacking = !!(catalogTemplateText && /[<>]/.test(catalogTemplateText));
+        const resolvedProfileTemplate = hasProfileAttributeBacking
+            ? resolveLabelTemplateText(catalogTemplateText, ownerEl, ownData, elementById, dataByObjectId)
+            : { text: "", hasToken: false, hasValue: false };
+        const validRawProfileText = resolvedProfileTemplate.text;
+        // False only when every token in the template resolved to an empty
+        // value; a purely literal template (no tokens) stays true.
+        const hasProfileAttributeValue = !resolvedProfileTemplate.hasToken || resolvedProfileTemplate.hasValue;
+        // Allowed label-attribute set for this element's placed symbol; null
+        // when isDiscProfileLabel is false.
+        const allowedLabelAttrNames = isDiscProfileLabel ? symbolLabelAttributeNames(placedProfileSymbol) : null;
+
+        // Text labels: `el` can be a normal placed item with nested <Label>
+        // children (ownLabelEls), or a standalone <Label> with no tracked XML
+        // parent (labelSelfEls) - together these cover every <Label> in the
+        // document exactly once. Rule 2 above already handles a Label's own
+        // ComponentName resolving to a registered symbol.
+        const parentId = el.parentNode?.getAttribute?.("ID");
+        const isNestedLabel = el.tagName === "Label" && !!parentId && elementById.has(parentId);
         const ownLabelEls = directChildrenByTag(el, "Label");
-        const labelSelfEls = el.tagName === "Label" ? [el] : [];
-        // True once ANY <Text> with a real (non-empty) String has actually
-        // been pushed below, across every <Label> handled in this pass - see
-        // the "Fallback" block after this forEach, which uses this (rather
-        // than ownLabelEls.length) to decide whether to also synthesize a
-        // catalog LabelTemplate overlay. A <Label> element can exist purely
-        // as a leader line with no <Text> child at all (e.g.
-        // PressureVessel-1-Label-1/ND0041_SHAPE in DISC_EXAMPLE-05-10.xml,
-        // which carries only a <PolyLine>), or carry a <Text> whose String
-        // is the empty string (e.g. Nozzle-10-Label-1/ND0002_SHAPE in the
-        // same file) - in both cases ownLabelEls.length is nonzero even
-        // though no real label text was ever drawn, so gating the fallback
-        // on ownLabelEls.length alone silently suppressed the profile's own
-        // ObjectDisplayName-templated label for exactly these placements.
-        let hasRealLabelText = false;
+        const labelSelfEls = (el.tagName === "Label" && !isNestedLabel) ? [el] : [];
         [...ownLabelEls, ...labelSelfEls].forEach((labelEl, li) => {
-            // representedId is the object this label is annotating - see
-            // resolveLabelOwnerId() above for the resolution order. Nested
-            // Labels (labelEl !== el, el being their owner) always just
-            // represent their owner directly, matching prior behaviour for
-            // ordinary nested tag-name labels.
+            // representedId is the object this label is annotating (see
+            // resolveLabelOwnerId()); a nested Label represents its owner directly.
             const representedId = labelEl === el ? resolveLabelOwnerId(el, id, elementById) : id;
 
             directChildrenByTag(labelEl, "Text").forEach((textEl, ti) => {
                 const str = textEl.getAttribute("String");
-                // "Notes" Details-pane section support - see
-                // noteReferencesByOwner's doc comment above. Purely
-                // informational, so this runs unconditionally (even when
-                // str is empty, or the reference below fails to resolve).
-                const templateRefs = readTextTemplateReferences(textEl);
-                templateRefs?.forEach(ref => {
+                if (!str) return;
+                // "Notes" Details-pane section support: runs unconditionally, before
+                // the validity gate below.
+                readTextTemplateReferences(textEl)?.forEach(ref => {
                     if (ref.itemId && elementById.get(ref.itemId)?.getAttribute("ComponentClass") === NOTE_COMPONENT_CLASS) {
                         if (!noteReferencesByOwner.has(representedId)) noteReferencesByOwner.set(representedId, new Set());
                         noteReferencesByOwner.get(representedId).add(ref.itemId);
                     }
                 });
-                // A Text governed by its own TextStringFormatSpecification/
-                // ObjectAttributesReference must be DRAWN from that
-                // reference's resolved attribute value, never from the
-                // Text's own cached @String - per the Proteus schema, the
-                // reference is the actual source of truth and @String is
-                // only ever a rendering hint the authoring tool wrote down
-                // at export time. Concretely: a Note callout's identifier
-                // Text in a real AKSO export (e.g. Note-3 in
-                // FPQ-AKSO-P-XB-26055-01.XML) carries String="3." but
-                // references DependantAttribute="NoteIdentifier" - a name
-                // that doesn't match any of that Note's own
-                // GenericAttributes (only "NoteRegistrationNumberAssignment
-                // Class"/"LocalNoteIdentifierAssignmentClass" exist there),
-                // so the reference can't resolve. Falling back to the
-                // cached "3." in that case would silently show stale/
-                // placeholder text as if the reference were fine; instead
-                // this Text must render nothing until the reference itself
-                // is fixed. A Text with no TextStringFormatSpecification at
-                // all (templateRefs === null, the common plain-literal-
-                // Label case) is unaffected and keeps using its own @String.
-                const displayStr = templateRefs && templateRefs.length
-                    ? templateRefs.map(ref => lookupAttributeText(dataByObjectId.get(ref.itemId), ref.attribute)).filter(Boolean).join(" ")
-                    : str;
-                if (!displayStr) return;
-                // A Text doesn't count as this owner's own real tag/
-                // ObjectDisplayName text - and so must NOT suppress the
-                // "Fallback" catalog-LabelTemplate overlay below for the
-                // owner's OWN placed symbol - in two cases, both seen in
-                // real AKSO/Comos exports sitting alongside a leader-only,
-                // profile-governed tag Label (e.g. an Equipment's own
-                // ND0041_SHAPE elevation-marker Label):
-                //   1. Its TextStringFormatSpecification references ANOTHER
-                //      object's attribute via ItemID (e.g. a Note callout -
-                //      ItemID="Note-1"/"Note-13" - as with PressureVessel-1's
-                //      "NOTE 1" Label in DISC_EXAMPLE-05-01.xml, or
-                //      TagNoteLabel-12's "NOTE 13, 16" in
-                //      FPQ-AKSO-P-XB-26055-01.XML) - an annotation ABOUT that
-                //      other object, not this owner's own text.
-                //   2. labelEl itself carries its own ComponentName, meaning
-                //      it places its OWN separate symbol (Rule 2 above) and
-                //      is itself an auxiliary callout in its own right - not
-                //      a plain literal annotation of the owner - e.g.
-                //      SpecialItemLabel-21 (ComponentName="LZ009A_SHAPE",
-                //      literal Text "1523", no TextStringFormatSpecification
-                //      at all) next to XMP_4160/A4VRAZ8KOE's own
-                //      ND0041_SHAPE ElevationLabel-20 in the same file - its
-                //      "1523" special-item number isn't a competing
-                //      ObjectDisplayName, so it must not blank out
-                //      XMP_4160's own "D-26LE001" catalog overlay either.
-                // A plain literal Text with no TextStringFormatSpecification
-                // AND no ComponentName of its own (a genuine per-instance
-                // tag Label) still counts normally.
-                const labelHasOwnSymbol = !!labelEl.getAttribute("ComponentName");
-                const isForeignReference = !!templateRefs?.some(ref => ref.itemId);
-                if (!labelHasOwnSymbol && !isForeignReference) hasRealLabelText = true;
+                // "Invalid Text Template Attribute Reference": once a DiscProfile.xml
+                // is loaded, a real <Label> Text is only drawn if its
+                // TextStringFormatSpecification reference validates (or is
+                // Note-exempt); when drawn, it shows the live resolved value from
+                // resolveTextTemplateValue(), not the exported literal String.
+                const resolvedTemplateValue = discProfileLoaded ? resolveTextTemplateValue(textEl, allowedLabelAttrNames, elementById) : null;
+                if (discProfileLoaded && resolvedTemplateValue === null) return;
+                // hasOwnValidatedTemplate: true when this Text's own
+                // TextStringFormatSpecification reference validated, independent of
+                // the owner's isDiscProfileLabel/hasProfileAttributeBacking.
+                const hasOwnValidatedTemplate = discProfileLoaded;
                 const tPos = readPosition(textEl) || (labelEl === el ? pos : null);
                 const j = parseJustification(textEl.getAttribute("Justification"));
-                // A Text's own <Position> is read exactly like a symbol
-                // placement (readPosition() above), so its raw .rotation
-                // reflects that Position's Axis/Reference verbatim -
-                // including, for a mirrored placement such as ND0034C's own
-                // Axis Z="-1"/Reference X="-1" Y="0" (rotation=180 before
-                // folding), an angle that would draw the text upside-down/
-                // reversed. readableLabelOrientation() (see its doc comment
-                // - already used for Profile LabelTemplate overlays below)
-                // folds that into a readable rotation AND swaps the
-                // Justification-derived horizontal/vertical alignment right
-                // along with it, so the label stays on the same side of its
-                // anchor (critical for multi-line String values - embedded
-                // \n / &#xA; - whose tspans stack top-to-bottom in local
-                // space and would otherwise render bottom-to-top/on the
-                // wrong side of the anchor once rotated by the raw,
-                // unfolded angle with its ORIGINAL, now-mismatched
-                // alignment).
+                // A Text's own <Position> is read like a symbol placement (readPosition()
+                // above). readableLabelOrientation() folds its rotation into a readable
+                // angle and swaps the Justification-derived alignment to match.
                 const orient = tPos ? readableLabelOrientation(tPos.rotation, j.horizontal, j.vertical) : { rotation: 0, horizontal: j.horizontal, vertical: j.vertical };
                 elements.push({
                     kind: "primitive", key: `lbl_${id}_${li}_${ti}`, representedId, elementRole: "label",
                     primitive: {
                         kind: "text", key: `lbltxt_${id}_${li}_${ti}`,
                         position: tPos ? { x: tPos.x, y: tPos.y } : { x: 0, y: 0 },
-value: (typeof displayStr !== 'undefined' && displayStr !== null) ? displayStr : str, rotation: (tPos && typeof tPos.rotation !== 'undefined') ? tPos.rotation : ((orient && typeof orient.rotation !== 'undefined') ? orient.rotation : 0),
+                        value: str, rotation: orient.rotation,
                         style: {
                             color: { r: 0, g: 0, b: 0 },
                             font: textEl.getAttribute("Font") || "Arial",
                             size: parseFloat(textEl.getAttribute("Height")) || 3.5,
                             horizontal: orient.horizontal, vertical: orient.vertical,
                         },
+                        // See the "Profile labels" support block above. hasOwnValidatedTemplate
+                        // overrides the "Profile labels" checkbox gating when true.
+                        isDiscProfileLabel, isProfileGoverned: isDiscProfileLabel,
+                        hasProfileAttributeBacking, hasProfileAttributeValue, validRawProfileText,
+                        hasOwnValidatedTemplate, resolvedTemplateValue,
                     },
                 });
             });
 
-            // Leader/pointer line (e.g. connecting a SpecialItemLabel's
-            // symbol/text back to the item it annotates) - drawn as a thin
-            // connector line, same primitive shape CenterLines use below.
+            // Leader/pointer line, drawn as a thin connector line (same primitive
+            // shape CenterLines use below).
             directChildrenByTag(labelEl, "PolyLine").forEach((plEl, pli) => {
                 const points = directChildrenByTag(plEl, "Coordinate").map(c => ({
                     x: parseFloat(c.getAttribute("X")) || 0, y: -(parseFloat(c.getAttribute("Y")) || 0),
@@ -1668,81 +1288,34 @@ value: (typeof displayStr !== 'undefined' && displayStr !== null) ? displayStr :
             });
         });
 
-        // Fallback: this element had no real (non-empty) <Text> drawn above
-        // for it - either because it carries no <Label> XML elements of its
-        // own at all, or because the <Label>(s) it does carry are leader-
-        // line-only (no <Text> child) or carry a <Text> whose String is
-        // empty (see hasRealLabelText's doc comment above) - but the symbol
-        // variant just placed for it (Rule 2 above) may define its own
-        // LabelTemplates in the loaded DiscProfile.xml (see
-        // parseSymbolCatalogue()'s labelTemplates field in dexpiParser.js) -
-        // real Proteus/Comos exports commonly omit per-instance <Label>
-        // Text entirely and rely on the profile to define what a
-        // symbol's label should show. A LabelTemplate's own Position/
-        // Rotation are in the same symbol-local coordinate space as the
-        // symbol's own primitives/bounds (both are Core/Diagram.Shape-
-        // composed data - see Profile.xml's SymbolVariant class, which
-        // composes MinX/MinY/MaxX/MaxY and LabelTemplates side by side), so
-        // it's transformed through the exact same translate/rotate/scale/
-        // mirror math as the symbol placement itself to get a world
-        // position - consistent with "position relative to the symbol".
-        // Text content comes from resolveLabelTemplateText() substituting
-        // the template's <AttributeName> tokens against this object's own
-        // resolved data - EXCEPT when `el` is itself a standalone <Label>
-        // placing a symbol via Rule 2 above (e.g. ND0048, a lock/special-
-        // item marker: its LabelTemplate Text is the bare token
-        // "<SpecialItemNumber>", but SpecialItemNumber is a GenericAttribute
-        // of the valve/equipment the label decorates, not of the Label
-        // element itself - which typically carries no GenericAttributes of
-        // its own at all). resolveLabelOwnerId() resolves that owning
-        // object the same way the Text-labels pass above already does for
-        // representedId, so the token resolves against the owner's real
-        // data (and, symmetrically, the synthesized label counts as
-        // representing the owner for selection/highlight purposes) instead
-        // of silently coming up empty.
-        if (!hasRealLabelText && placedVariant && placedVariant.labelTemplates?.length) {
+        // Catalog "Profile labels" overlay: for every placed symbol variant with
+        // its own LabelTemplates in the loaded DiscProfile.xml, synthesizes a
+        // "lbltpl_"-prefixed overlay text for each one. A LabelTemplate's
+        // Position/Rotation are in the symbol-local coordinate space and are
+        // transformed through the same translate/rotate/scale/mirror math as the
+        // symbol placement. Token text is resolved against ownerId/ownerEl/ownData
+        // (the owning object), not `el` directly, so a standalone Label placing a
+        // symbol resolves tokens against the object it decorates.
+        if (placedVariant && placedVariant.labelTemplates?.length) {
             const scale = readScale(el);
             const mirror = pos.isMirrored ? -1 : 1;
             const rad = pos.rotation * Math.PI / 180;
             const cos = Math.cos(rad), sin = Math.sin(rad);
-            const ownerId = resolveLabelOwnerId(el, id, elementById);
-            const ownerEl = elementById.get(ownerId) || el;
-            const ownData = dataByObjectId.get(ownerId) || [];
             placedVariant.labelTemplates.forEach((lt, li) => {
                 const { text, hasToken, hasValue } = resolveLabelTemplateText(lt.text, ownerEl, ownData, elementById, dataByObjectId);
                 if (!text.trim()) return;
-                // A template built entirely around token(s) that all came back
-                // empty (e.g. an alarm-setpoint "HH="/"H="/"L="/"LL=" label
-                // whose AlarmValue isn't populated on this instrument) still
-                // has non-empty literal decoration around the missing value,
-                // so the plain text.trim() check above doesn't catch it - skip
-                // it explicitly instead of drawing a value-less "HH=" label.
-                // A purely literal template (no tokens at all) is unaffected -
-                // hasToken is false for those, so this never suppresses them.
+                // Skips a template whose only content is unresolved token(s) with
+                // non-empty literal decoration around the missing value.
                 if (hasToken && !hasValue) return;
                 const lx = lt.position.x * scale.x * mirror;
                 const ly = lt.position.y * scale.y;
                 const wx = pos.x + (lx * cos - ly * sin);
                 const wy = pos.y + (lx * sin + ly * cos);
-                // readableLabelOrientation() (see its doc comment above)
-                // folds pos.rotation + lt.rotation into a readable angle AND
-                // swaps the template's own Left/Right/Top/Bottom alignment
-                // right along with it whenever that fold is a real 180-degree
-                // flip - keeping the label on the SAME SIDE of its (wx,wy)
-                // anchor the template author placed it on. Without this, a
-                // symbol like ND0034C (mirrored, rotation=180) still gets its
-                // label's ANCHOR positioned correctly outside the symbol's
-                // boundary by the lx/ly scale+mirror+rotate math just above -
-                // scale.x/scale.y already keeps that offset proportional to
-                // the symbol's own (possibly non-uniform, e.g. Scale
-                // X="1.2") size - but the text would extend from that anchor
-                // in its ORIGINAL, un-swapped direction once folded readable,
-                // i.e. right back across the anchor and into the symbol
-                // instead of staying outside it.
-                // See isCharacterStackedLabelTemplate()'s doc comment above:
-                // these templates skip their own Rotation (it was authored
-                // for the old sideways-string rendering) and instead draw
-                // their value as one upright character per line.
+                // readableLabelOrientation() folds pos.rotation + lt.rotation into a
+                // readable angle and swaps the template's Left/Right/Top/Bottom
+                // alignment to match, keeping the label on the same side of its anchor.
+                // Character-stacked templates skip their own Rotation and draw one
+                // upright character per line.
                 const stacked = isCharacterStackedLabelTemplate(lt);
                 const orient = readableLabelOrientation(pos.rotation + (stacked ? 0 : lt.rotation), lt.alignment.horizontal, lt.alignment.vertical);
                 const displayText = stacked ? Array.from(text).join("\n") : text;
@@ -1761,35 +1334,20 @@ value: (typeof displayStr !== 'undefined' && displayStr !== null) ? displayStr :
             });
         }
 
-        // Pipe / instrument-loop centerlines (absolute coordinates, same
-        // Y-up Proteus frame as <Location> - negate Y for the same reason).
+        // Pipe / instrument-loop centerlines (Y-up Proteus frame, Y negated).
         // A PipingNetworkSegment's own CenterLine children each get their own
-        // selectable identity (matching the synthetic sub-component node
-        // built in deriveProteusFlowConnectivity()), so clicking the drawn
-        // line selects/highlights that specific CenterLine and shows its
-        // rule-4 upstream/downstream in the Connections panel - rather than
-        // selecting the whole segment. CenterLines owned by other element
-        // types (e.g. InformationFlow signal wires, whose own upstream/
-        // downstream already comes from rule 2) keep the prior behaviour of
-        // representing their owner element.
+        // selectable identity (matching the synthetic sub-component node built
+        // in deriveProteusFlowConnectivity()); CenterLines owned by other
+        // element types represent their owner element.
         const isSegmentCenterLine = el.tagName === "PipingNetworkSegment";
         // InformationFlow elements represent signal/instrument wires; their
-        // drawn CenterLine is decorated per the DEXPI custom attribute
-        // SignalConveyingFunctionTypeRepresentationAssignmentClass
-        // (Set="DexpiCustomAttributes") - named with the "...AssignmentClass"
-        // suffix like this file's other GenericAttribute-Name lookups
-        // (TypeURIAssignmentClass, SymbolRegistrationNumberAssignmentClass).
-        // The raw value is carried through onto the graphics element below
-        // and interpreted by App.jsx's SIGNAL_CONVEYING_MARKS (e.g.
-        // "ElectricalSignalConveying" draws a repeated italic "E" along the
-        // line). Only read for InformationFlow so other element kinds
-        // (pipes, symbols) never pay this lookup cost.
+        // CenterLine is decorated per the SignalConveyingFunctionTypeRepresentation
+        // AssignmentClass GenericAttribute (Set="DexpiCustomAttributes"),
+        // interpreted by App.jsx's SIGNAL_CONVEYING_MARKS.
         const signalConveyingType = el.tagName === "InformationFlow"
             ? ownGenericAttributeValue(el, "DexpiCustomAttributes", "SignalConveyingFunctionTypeRepresentationAssignmentClass")
             : null;
-        // Plain "SignalConveying" (no more specific sub-type) is drawn as a
-        // dashed line rather than a repeated mark - see
-        // SIGNAL_CONVEYING_DASH_ARRAY.
+        // Plain "SignalConveying" (no sub-type) is drawn as a dashed line.
         const dashArray = signalConveyingType === "SignalConveying" ? SIGNAL_CONVEYING_DASH_ARRAY : "";
         directChildrenByTag(el, "CenterLine").forEach((clEl, ci) => {
             const points = directChildrenByTag(clEl, "Coordinate").map(c => ({
@@ -1801,23 +1359,14 @@ value: (typeof displayStr !== 'undefined' && displayStr !== null) ? displayStr :
                 kind: "primitive", key: `cl_${id}_${ci}`, representedId, elementRole: "connector",
                 signalConveyingType: signalConveyingType || undefined,
                 primitive: { kind: "polyline", key: `clprim_${id}_${ci}`, points, stroke: { color: "#000000", width: 0.25, dashArray } },
-                // Bridges this polyline to its owning PipingNetworkSegment's own
-                // id for heat-trace lookup purposes only (see App.jsx's heat-trace
-                // overlay rendering) - the synthetic CenterLine tree node itself
-                // (type "Plant/Segment.CenterLine") is never RDL-eligible for
-                // HeatTracingType inheritance (see dexpiParser.js's
-                // DEXPI_BUILTIN_HT_ELIGIBLE/buildHtEligibility()), so
-                // heatTraceSet never has an entry keyed by the CenterLine's own
-                // representedId even when its owning segment's heat tracing is
-                // active - only set for a segment's own CenterLine children, not
-                // e.g. an InformationFlow signal wire's CenterLine.
+                // Bridges this polyline to its owning PipingNetworkSegment's id for
+                // heat-trace lookup; set only for a segment's own CenterLine children.
                 htSegmentId: isSegmentCenterLine ? id : undefined,
             });
         });
     });
 
-    // Convert noteReferencesByOwner's Set values to plain arrays for
-    // straightforward use by App.jsx.
+    // Converts noteReferencesByOwner's Set values to plain arrays.
     const noteReferencesByOwnerArr = new Map();
     noteReferencesByOwner.forEach((set, ownerId) => noteReferencesByOwnerArr.set(ownerId, [...set]));
 
@@ -1832,23 +1381,30 @@ export function parseProteusPackage(mainXml, discProfileXml) {
     const parser = new DOMParser();
     const mainDoc = parser.parseFromString(mainXml, "application/xml");
     if (mainDoc.querySelector("parsererror")) throw new Error("Proteus XML is not well-formed.");
-    if (!isProteusDoc(mainDoc)) throw new Error("File does not appear to be a Proteus / DEXPI 1.3 PlantModel document.");
+    if (!isProteusDoc(mainDoc)) throw new Error("File does not appear to be a Proteus / DEXPI PlantModel document.");
 
+    // A DiscProfile.xml is optional. Every downstream index
+    // (buildClassRdlUriIndex, buildDataPropertyRdlUriIndex,
+    // parseSymbolCatalogue, buildHeatTraceSet) tolerates a null discDoc by
+    // returning an empty Map/Set.
     const discDoc = discProfileXml ? parser.parseFromString(discProfileXml, "application/xml") : null;
     if (discDoc && discDoc.querySelector("parsererror")) throw new Error("DiscProfile XML is not well-formed.");
-    if (!discDoc) throw new Error("A DiscProfile.xml must be loaded to resolve DEXPI 2.x classes, attributes and symbols for a Proteus file.");
 
     const classIndex = buildClassRdlUriIndex(discDoc);
     const dataPropIndex = buildDataPropertyRdlUriIndex(discDoc);
     const proteusShapeCatalogue = buildProteusShapeCatalogue(mainDoc);
     const symbolMap = parseSymbolCatalogue(discDoc);
+    // Fallback symbol geometry source, built from the main document's own
+    // <ShapeCatalogue>, consulted when the DiscProfile.xml route doesn't
+    // resolve a given ComponentName.
+    const embeddedShapeMap = buildProteusEmbeddedShapeCatalogue(mainDoc);
 
     const { tree, elementById, diagnostics } = buildTree(mainDoc, classIndex, dataPropIndex);
     const flatTree = flattenTree(tree);
     const treeMap = new Map(flatTree.filter(n => n.objectId).map(n => [n.objectId, n]));
     const dataByObjectId = new Map(flatTree.filter(n => n.objectId).map(n => [n.objectId, n.data]));
 
-    const graphics = buildProteusGraphics(elementById, symbolMap, proteusShapeCatalogue, dataByObjectId);
+    const graphics = buildProteusGraphics(elementById, symbolMap, proteusShapeCatalogue, embeddedShapeMap, dataByObjectId, !!discDoc);
 
     const metaEl = qsa(mainDoc, "MetaData")[0];
     const metaGas = metaEl ? ownGenericAttributes(metaEl) : [];

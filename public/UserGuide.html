@@ -1,268 +1,1394 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AKSO DEXPI Viewer — User Guide</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
-  <style>
-    *, *::before, *::after { box-sizing: border-box; }
-
-    body {
-      margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
-      font-size: 15px;
-      color: #24292f;
-      background: #f6f8fa;
-    }
-
-    /* ── Header bar ── */
-    header {
-      position: sticky;
-      top: 0;
-      z-index: 100;
-      background: #1b4f9b;
-      color: #fff;
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      padding: 10px 24px;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.25);
-    }
-    header h1 {
-      margin: 0;
-      font-size: 17px;
-      font-weight: 600;
-      flex: 1;
-    }
-    header a.back {
-      color: #c8dcf7;
-      font-size: 13px;
-      text-decoration: none;
-    }
-    header a.back:hover { color: #fff; text-decoration: underline; }
-
-    /* ── Layout ── */
-    .layout {
-      display: flex;
-      max-width: 1200px;
-      margin: 0 auto;
-      padding: 24px 16px;
-      gap: 28px;
-      align-items: flex-start;
-    }
-
-    /* ── TOC sidebar ── */
-    nav#toc {
-      flex: 0 0 220px;
-      position: sticky;
-      top: 60px;
-      max-height: calc(100vh - 80px);
-      overflow-y: auto;
-      background: #fff;
-      border: 1px solid #d0d7de;
-      border-radius: 8px;
-      padding: 14px 16px;
-      font-size: 13px;
-    }
-    nav#toc p {
-      margin: 0 0 8px;
-      font-weight: 700;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      color: #57606a;
-    }
-    nav#toc a {
-      display: block;
-      padding: 3px 0;
-      color: #0969da;
-      text-decoration: none;
-      line-height: 1.4;
-    }
-    nav#toc a:hover { text-decoration: underline; }
-    nav#toc a.l2 { padding-left: 12px; font-size: 12px; color: #57606a; }
-    nav#toc a.l2:hover { color: #0969da; }
-
-    /* ── Article ── */
-    article {
-      flex: 1;
-      min-width: 0;
-      background: #fff;
-      border: 1px solid #d0d7de;
-      border-radius: 8px;
-      padding: 32px 40px;
-    }
-
-    /* ── Markdown styles ── */
-    article h1 {
-      font-size: 26px;
-      font-weight: 700;
-      color: #1b4f9b;
-      border-bottom: 2px solid #2e75b6;
-      padding-bottom: 8px;
-      margin: 32px 0 16px;
-    }
-    article h1:first-child { margin-top: 0; }
-
-    article h2 {
-      font-size: 19px;
-      font-weight: 600;
-      color: #2e75b6;
-      margin: 28px 0 10px;
-      border-bottom: 1px solid #e1e4e8;
-      padding-bottom: 4px;
-    }
-
-    article h3 {
-      font-size: 16px;
-      font-weight: 600;
-      color: #24292f;
-      margin: 20px 0 8px;
-    }
-
-    article p { margin: 0 0 14px; line-height: 1.65; }
-
-    article a { color: #0969da; }
-    article a:hover { text-decoration: underline; }
-
-    article ul, article ol {
-      margin: 0 0 14px;
-      padding-left: 28px;
-    }
-    article li { margin-bottom: 4px; line-height: 1.6; }
-
-    article blockquote {
-      margin: 0 0 14px;
-      padding: 8px 14px;
-      border-left: 4px solid #2e75b6;
-      background: #f0f6ff;
-      color: #404040;
-      border-radius: 0 4px 4px 0;
-    }
-    article blockquote p { margin: 0; }
-
-    article code {
-      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-      font-size: 13px;
-      background: #f0f3f6;
-      padding: 1px 5px;
-      border-radius: 4px;
-      color: #b00000;
-    }
-
-    article pre {
-      background: #f6f8fa;
-      border: 1px solid #d0d7de;
-      border-radius: 6px;
-      padding: 14px 18px;
-      overflow-x: auto;
-      margin: 0 0 16px;
-    }
-    article pre code {
-      background: none;
-      padding: 0;
-      color: #24292f;
-      font-size: 13px;
-    }
-
-    article table {
-      border-collapse: collapse;
-      width: 100%;
-      margin: 0 0 18px;
-      font-size: 14px;
-    }
-    article th {
-      background: #1b4f9b;
-      color: #fff;
-      padding: 8px 12px;
-      text-align: left;
-      font-weight: 600;
-    }
-    article td {
-      padding: 7px 12px;
-      border-bottom: 1px solid #e1e4e8;
-      vertical-align: top;
-    }
-    article tr:nth-child(even) td { background: #f0f6fa; }
-
-    article hr {
-      border: none;
-      border-top: 1px solid #d0d7de;
-      margin: 28px 0;
-    }
-
-    /* ── Loading state ── */
-    #loading {
-      text-align: center;
-      padding: 60px 0;
-      color: #57606a;
-      font-size: 15px;
-    }
-
-    @media (max-width: 768px) {
-      nav#toc { display: none; }
-      article { padding: 20px; }
-      .layout { padding: 12px; }
-    }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DEXPI 1.4 / DISC Profile Viewer — User Guide</title>
+<style>
+:root{
+  --bg:#ffffff; --fg:#1f2328; --muted:#57606a; --line:#d8dee4; --soft:#f6f8fa;
+  --accent:#0969da; --code:#0a3069; --shadow:0 1px 3px rgba(31,35,40,.08);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:15px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+.wrap{display:grid;grid-template-columns:260px minmax(0,1fr);gap:0;max-width:1240px;margin:0 auto}
+nav{position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto;
+  padding:26px 18px 40px;border-right:1px solid var(--line);font-size:13px}
+nav .brand{font-weight:700;font-size:14px;margin-bottom:12px;line-height:1.35}
+nav .brand span{display:block;font-weight:400;color:var(--muted);font-size:12px;margin-top:2px}
+nav ul{list-style:none;margin:0;padding:0}
+nav li{margin:0 0 2px}
+nav a{display:block;padding:4px 8px;border-radius:5px;color:var(--muted);text-decoration:none}
+nav a:hover{background:var(--soft);color:var(--accent)}
+main{padding:30px 34px 90px;min-width:0}
+h1{font-size:27px;line-height:1.25;margin:0 0 6px;letter-spacing:-.01em}
+h2{font-size:20px;margin:40px 0 10px;padding-top:14px;border-top:1px solid var(--line);letter-spacing:-.01em}
+h3{font-size:16px;margin:26px 0 8px}
+h4{font-size:14px;margin:20px 0 6px;color:var(--muted)}
+p,li{max-width:80ch}
+a{color:var(--accent)}
+hr{display:none}
+code{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;font-size:12.5px;
+  background:var(--soft);color:var(--code);padding:1px 5px;border-radius:4px;white-space:nowrap}
+pre{background:var(--soft);border:1px solid var(--line);border-radius:7px;padding:12px 14px;overflow:auto}
+pre code{background:none;padding:0;white-space:pre;color:var(--fg)}
+blockquote{margin:16px 0;padding:9px 14px;border-left:3px solid #d4a72c;background:#fff8e6;
+  border-radius:0 6px 6px 0;color:#4d3800}
+blockquote p{margin:0}
+.tablewrap{overflow-x:auto;margin:14px 0}
+table{border-collapse:collapse;width:100%;font-size:13.5px;box-shadow:var(--shadow);border-radius:7px}
+th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}
+th{background:var(--soft);font-weight:600;white-space:nowrap}
+tbody tr:nth-child(even){background:#fbfcfd}
+td code{white-space:nowrap}
+.toc{display:none}
+footer{margin-top:60px;padding-top:14px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}
+@media (max-width:900px){
+  .wrap{grid-template-columns:1fr}
+  nav{position:static;max-height:none;border-right:none;border-bottom:1px solid var(--line)}
+  main{padding:22px 16px 60px}
+}
+@media print{nav{display:none}.wrap{display:block}main{padding:0}}
+</style>
 </head>
 <body>
-
-<header>
-  <h1>AKSO DEXPI Viewer — User Guide</h1>
-  <a class="back" href="./">← Back to application</a>
-</header>
-
-<div class="layout">
-  <nav id="toc">
-    <p>Contents</p>
-    <!-- populated by JS -->
-  </nav>
-  <article id="content">
-    <div id="loading">Loading guide…</div>
-  </article>
+<div class="wrap">
+<nav>
+  <div class="brand">DEXPI 1.4 / DISC Profile Viewer<span>User Guide</span></div>
+  <ul><li><a href="#1-introduction">1. Introduction</a></li>
+<li><a href="#2-getting-started">2. Getting Started</a></li>
+<li><a href="#3-interface-overview">3. Interface Overview</a></li>
+<li><a href="#4-left-panel">4. Left Panel</a></li>
+<li><a href="#5-centre-panel-pid-drawing">5. Centre Panel — P&amp;ID Drawing</a></li>
+<li><a href="#6-right-panel-object-details">6. Right Panel — Object Details</a></li>
+<li><a href="#7-how-validation-works">7. How Validation Works</a></li>
+<li><a href="#8-validation-code-reference">8. Validation Code Reference</a></li>
+<li><a href="#9-csv-and-excel-export">9. CSV and Excel Export</a></li>
+<li><a href="#10-troubleshooting">10. Troubleshooting</a></li></ul>
+</nav>
+<main>
+<h1 id="dexpi-14-disc-profile-viewer-user-guide">DEXPI 1.4 / DISC Profile Viewer — User Guide</h1>
+<p>A browser-based viewer and validation tool for legacy <strong>DEXPI 1.4 / Proteus 4.1.1</strong> XML files, rendered and checked using <strong>DEXPI 2.x profile</strong> symbols, classes and attributes by way of a loaded <code>DiscProfile.xml</code>.</p>
+<p>Developed by <strong>Tonia Pedersen</strong>.</p>
+<hr />
+<hr />
+<h2 id="1-introduction">1. Introduction</h2>
+<p>The viewer reads a Proteus 4.1.1 / DEXPI 1.4 XML file and provides three things at once:</p>
+<ul>
+<li><strong>Graphical rendering</strong> — the P&amp;ID is drawn directly from the XML: symbols, piping and signal lines, labels, heat-trace overlays and connectors, using the symbol geometry of the loaded profile where one is supplied.</li>
+<li><strong>Object model exploration</strong> — a containment tree of every object, with its properties, references, connectivity, symbol placement and raw <code>ComponentClass</code>.</li>
+<li><strong>Validation</strong> — two engines behind one issue list: the <strong>ProteusPIDSchema 4.1.1 disc.xsd</strong> schema check, and a model/profile check of classes, attributes, enumerations, cardinality, symbol usage and geometry against the <strong>DEXPI 1.4 information model</strong> (taken from the official DEXPI P&amp;ID Specification 1.4 XMI) and the loaded <strong>DiscProfile.xml</strong>.</li>
+</ul>
+<p>Everything runs in the browser — no server, and no file of yours leaves the machine. The single request the app makes to the network is for the default <code>DiscProfile.xml</code> it loads at startup (see <a href="#22-loading-files">2.2</a>); the XML files you open, and the folders you validate, are read locally and are never sent anywhere.</p>
+<p>A <code>DiscProfile.xml</code> is loaded <strong>automatically</strong> at startup, from the <a href="https://github.com/ToniaPedersen/DISCDEXPI_2026Pack">DISCDEXPI_2026Pack</a> repository, so the profile-dependent checks are live from the first file opened. It stays optional: unload it, or start with no way to reach it, and the file is still drawn and the schema and model checks still run in full — only the profile-dependent codes step aside and report <em>not-evaluated</em> rather than passing silently.</p>
+<hr />
+<h2 id="2-getting-started">2. Getting Started</h2>
+<h3 id="21-running-the-application">2.1 Running the application</h3>
+<pre><code class="language-bash">npm install
+npm run dev
+</code></pre>
+<p><code>npm run build</code> produces a static bundle in <code>dist/</code> that can be hosted anywhere.</p>
+<p>This guide is generated: edit <code>public/UserGuide.md</code>, then run <code>python scripts/build-guide.py</code> (needs <code>pip install markdown</code>) to rebuild <code>public/UserGuide.html</code>.</p>
+<h3 id="22-loading-files">2.2 Loading files</h3>
+<p>In the left panel:</p>
+<ol>
+<li><strong>Load Proteus XML</strong> — the drawing renders immediately and the Topology tree populates. Required.</li>
+<li><strong>Load DiscProfile.xml</strong> — optional, and usually unnecessary, because one is already loaded (see below). Picking a file here replaces the default, which is what you want when checking against a profile revision of your own. A profile resolves symbols, classes and attribute usage and switches on every profile-dependent check; the Proteus file is re-parsed automatically when a profile is added or removed.</li>
+</ol>
+<p>Both buttons show a ✓ and turn blue once loaded, and the file names are listed underneath. The small <strong>x</strong> next to the profile name unloads the profile and returns to plain DEXPI viewing.</p>
+<p><strong>The default profile.</strong> At startup the app fetches <code>Profile/xml/DiscProfile.xml</code> from the <a href="https://github.com/ToniaPedersen/DISCDEXPI_2026Pack">DISCDEXPI_2026Pack</a> repository and loads it, listed as <code>DiscProfile.xml (DISCDEXPI_2026Pack)</code>. It is fetched with no caching, so a profile published to that repository is picked up on the next page reload. While the fetch is in flight the panel reads <em>Loading default DiscProfile.xml…</em>; if it cannot be reached — no network, or GitHub unavailable — an amber note appears with a <strong>Retry</strong> button and the viewer carries on without a profile. A profile loaded by hand always wins: the startup fetch never overwrites one, and unloading the default with <strong>x</strong> does not pull it back.</p>
+<p>Under the file names, a diagnostics line reports how many objects were parsed and how many had their class mapped via the TypeURI rule.</p>
+<h3 id="23-running-validation">2.3 Running validation</h3>
+<p>Both engines run <strong>automatically</strong> when a file is opened, so the Validation tab is filled in by the time the drawing is on screen; its label carries the total issue count. Re-parsing after a profile is loaded or unloaded re-runs the model/profile engine against that profile — the schema engine depends on the file text alone and re-runs only when the file changes.</p>
+<p><strong>Run Validation</strong> (the blue, full-width button) re-runs both engines on the file already loaded. It is there for a deliberate re-check; nothing has to be clicked to get results.</p>
+<p>To check a whole folder rather than one file, use <strong>Validate Folder…</strong> (see <a href="#43-folder-tab-validating-a-whole-folder">4.3</a>).</p>
+<hr />
+<h2 id="3-interface-overview">3. Interface Overview</h2>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Left panel</strong></td>
+<td>File loading, Run Validation, and the Topology / Validation / Folder tabs.</td>
+</tr>
+<tr>
+<td><strong>Centre panel</strong></td>
+<td>The rendered P&amp;ID drawing and its toolbar.</td>
+</tr>
+<tr>
+<td><strong>Right panel</strong></td>
+<td>Object / Connections / Issues for the current selection.</td>
+</tr>
+</tbody>
+</table></div>
+<p>The side panels collapse with the <code>&lt;</code> / <code>&gt;</code> button in their header, giving the drawing the full width.</p>
+<hr />
+<h2 id="4-left-panel">4. Left Panel</h2>
+<h3 id="41-topology-tab">4.1 Topology tab</h3>
+<p>The full object model as an expandable tree, organised by containment (e.g. <code>PlantModel</code> → <code>PipingNetworkSystem</code> → <code>PipingNetworkSegment</code>).</p>
+<ul>
+<li><strong>Search</strong> — filters the tree live on tag, type, object ID or persistent identifier.</li>
+<li><strong>Expand all / Collapse all</strong> — the whole tree in one click. The object count is shown on the right.</li>
+</ul>
+<p>Clicking a node selects it: the matching graphics are highlighted in the drawing and the right panel fills with its details.</p>
+<h3 id="42-validation-tab">4.2 Validation tab</h3>
+<p>Both engines' results merged into one list, populated as soon as a file is opened. The header row shows the total issue count, which engines contributed, and a <strong>CSV</strong> button (<a href="#9-csv-and-excel-export">section 9</a>).</p>
+<ul>
+<li><strong>All / Error / Warning / Info</strong> chips filter the list by type and show the count for each.</li>
+<li>Issues are <strong>grouped by code</strong>. The group header carries the type badge, the code, the code's title and the number of issues in it; click it to fold the group, or use <strong>Expand all / Collapse all</strong>.</li>
+<li>Each row shows the type badge, the code, the source line where one is known, the code's title, the specific message, and the object ID. A row marked ⊕ can be clicked to select that object — the drawing highlights it and the right panel switches to its Issues tab. An object with no graphics is marked <strong>⚠ no symbol</strong> and is not clickable.</li>
+</ul>
+<p>Two notices can appear above the list:</p>
+<ul>
+<li><strong>XSD schema validation unavailable</strong> — the schema check could not run against this file (the reason is shown). Model and profile checks are unaffected.</li>
+<li><strong>non-DEXPI attribute groups excluded</strong> — how many vendor <code>GenericAttributes</code> Sets were left out of the XSD check. Only <code>Set="DexpiAttributes"</code> and <code>Set="DexpiCustomAttributes"</code> are schema-checked.</li>
+</ul>
+<h3 id="43-folder-tab-validating-a-whole-folder">4.3 Folder tab — validating a whole folder</h3>
+<p><strong>Validate Folder…</strong>, under the two load buttons, checks every <code>.xml</code> file in a folder — and its subfolders — against the same two engines.</p>
+<blockquote>
+<p><strong>Nothing is uploaded.</strong> The files are read and validated inside your browser, on your own machine, and are never sent to a server. The browser asks permission first, worded as <em>"view and copy files"</em>, <em>"let this site view files"</em> or <em>"upload N files to this site"</em> depending on the browser and version. Every one of those is the browser asking whether the page may <strong>read</strong> those files into itself — read access is the only folder permission the app requests, and there is no weaker one. Nothing is sent anywhere, which you can confirm in DevTools → Network: no requests are made while a folder is validated.</p>
+</blockquote>
+<p>The currently loaded <code>DiscProfile.xml</code> is used for every file in the run — by default the one fetched at startup (2.2), so there is normally nothing to load first. If no profile is loaded, the app asks for confirmation before starting and names what will be skipped — the run then covers the schema and the DEXPI 1.4 model only, and the header says "no profile". A progress line reports each file as it goes, with <strong>Stop</strong> to end the run early and keep what has been done so far.</p>
+<p>Results arrive as one list grouped by file:</p>
+<ul>
+<li>The header shows the folder name, the total issue count, how many files were checked, and which profile was used.</li>
+<li><strong>All / Error / Warning / Info</strong> chips filter across every file at once; a file with nothing left after filtering drops out of the list.</li>
+<li>Each file's header shows its finding count, or a green <strong>clean</strong> / red <strong>failed</strong> badge. Click it to fold the file; <strong>Expand all / Collapse all</strong> work on the whole run.</li>
+<li><strong>Open</strong> on any file loads it into the viewer, so a finding can be traced on the drawing.</li>
+<li><strong>Explorer</strong> opens the drill-down view over the whole run — Layer → Category → Code, and from a code into the documents and lines behind it (<a href="#44-error-explorer">4.4</a>).</li>
+<li><strong>CSV</strong> and <strong>Excel</strong> download the whole run as one file — the only file the browser writes, and it goes to your Downloads folder, not back into the folder you picked. Both use the column layout in <a href="#9-csv-and-excel-export">section 9</a>.</li>
+</ul>
+<p>A file that cannot be parsed appears with its error instead of findings, rather than dropping out of the run.</p>
+<h3 id="44-error-explorer">4.4 Error explorer</h3>
+<p><strong>Explorer</strong>, in the Folder tab's button row, opens a drill-down over the findings of the whole folder run in a panel a little over half the width of the window. <strong>Esc</strong>, <strong>Close</strong> or a click outside it returns to the viewer; the run, the filters and the viewer's state are untouched.</p>
+<p>The explorer answers a different question from the Folder tab. The Folder tab asks <em>what is wrong with this file</em>; the explorer asks <em>what is wrong across the set, and where</em>.</p>
+<p><strong>Drilling down.</strong> The panel opens on the four layers and steps inward on a click: <strong>Layer → Category → Code</strong>. Each row is a bar sized by the level's share of the run and split by type — red Error, amber Warning, blue Info — so the shape of the problem is visible before any of it is read. The breadcrumb above the bars steps back out.</p>
+<ul>
+<li><strong>Size by</strong> — <em>Occurrences</em> sizes bars by raw finding count; <em>Documents hit</em> sizes them by how many files carry the finding at all. A code that fires thousands of times in two files and a code that fires twice in ninety look very different under the two, and the second is usually the one to fix first.</li>
+<li><strong>All / Error / Warning / Info</strong> filter the whole tree by type, with counts.</li>
+</ul>
+<p><strong>At the code level</strong> the bars give way to the documents the code was raised in, most hits first, each with its count. Click a document to expand it into the individual findings, ordered by line, each one showing:</p>
+<ul>
+<li>the type badge and the <strong>line number</strong>;</li>
+<li>the <strong>location</strong> — the element, and the attribute where the message names one;</li>
+<li>the object ID, where the finding carries one;</li>
+<li>the message;</li>
+<li>the <strong>source line itself</strong>, read from the file you picked and shown as it appears in the XML.</li>
+</ul>
+<p>Source lines are read once per document, straight from the folder pick — no file is re-read from disk until you expand it, and nothing is re-validated. <strong>Open</strong>, on a document row, loads that file into the viewer and closes the explorer, so a finding can be followed onto the drawing.</p>
+<p><strong>The summary panel</strong> on the right tracks whatever is in focus: occurrences, documents hit, the per-type split, and — for a single code — its severity, what the check needs, its scope, and the documents carrying the most hits.</p>
+<h2 id="5-centre-panel-pid-drawing">5. Centre Panel — P&amp;ID Drawing</h2>
+<p>The drawing number, name and subtitle from the file are shown at the top left of the toolbar.</p>
+<h3 id="51-navigation">5.1 Navigation</h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Action</th>
+<th>How</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Zoom</td>
+<td>Scroll the mouse wheel over the drawing (zooms toward the cursor)</td>
+</tr>
+<tr>
+<td>Pan</td>
+<td>Hold <strong>Space</strong> and drag</td>
+</tr>
+<tr>
+<td>Fit to window</td>
+<td><strong>Fit</strong> button</td>
+</tr>
+<tr>
+<td>Select</td>
+<td>Click a symbol or line — it is outlined red (orange for labels)</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="52-toolbar-controls">5.2 Toolbar controls</h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Control</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Fit</strong></td>
+<td>Fits the whole drawing into the window.</td>
+</tr>
+<tr>
+<td><strong>Reset Z-Order (n)</strong></td>
+<td>Appears once objects have been sent to back; restores the file's original paint order for all of them.</td>
+</tr>
+<tr>
+<td><strong>Line Boost %</strong></td>
+<td>Stroke-width multiplier for connector/centerlines. 100% is unchanged; raise it to bulk up thin lines, e.g. to match the weight of a background reference image.</td>
+</tr>
+<tr>
+<td><strong>Include symbol outlines</strong></td>
+<td>Applies the same Line Boost percentage to symbol outlines as well. Off by default.</td>
+</tr>
+<tr>
+<td><strong>Save PNG</strong> / <strong>Save PDF</strong></td>
+<td>Saves the current view — drawing plus background image, if visible. The PDF is a single full-page image, long edge ≈ 420 mm (A3-ish); DEXPI coordinates are not reliably tied to real-world units, so this is a print-friendly fit, not a to-scale export. The file name is taken from the drawing number.</td>
+</tr>
+<tr>
+<td><strong>Connectivity</strong></td>
+<td>Colour-codes the selected object's network neighbours (see below). Off by default.</td>
+</tr>
+<tr>
+<td><strong>Sub-components</strong></td>
+<td>Makes a selection also highlight every child of the selected object — useful when selecting a container such as a <code>PipingNetworkSystem</code>. Off by default.</td>
+</tr>
+<tr>
+<td><strong>Profile labels</strong></td>
+<td>Shown only when a profile is loaded (see 5.5).</td>
+</tr>
+<tr>
+<td><strong>BG Image</strong> / <strong>BG Controls</strong></td>
+<td>Reference image behind the drawing (see 5.6).</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="53-connectivity-highlighting">5.3 Connectivity highlighting</h3>
+<p>With <strong>Connectivity</strong> checked, selecting an object colours its neighbours, and a legend appears in the lower-left corner:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Colour</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>🔴 Red</td>
+<td>The selected object</td>
+</tr>
+<tr>
+<td>🔵 Blue</td>
+<td>Upstream — flows into the selection</td>
+</tr>
+<tr>
+<td>🟢 Green</td>
+<td>Downstream — flows out of the selection</td>
+</tr>
+<tr>
+<td>🟣 Purple</td>
+<td>Group — same piping network segment or instrumentation loop</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="54-signal-conveying-line-styles">5.4 Signal-conveying line styles</h3>
+<p>A <code>SignalConveyingFunction</code> whose signal type resolves from the file is decorated automatically with a repeated mark along its line, independent of the line style encoded in the file's own graphics.</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Signal type</th>
+<th>Line decoration</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ElectricalSignalConveying</code></td>
+<td>Repeated italic <strong>E</strong></td>
+</tr>
+<tr>
+<td><code>HydraulicSignalConveying</code></td>
+<td>Repeated upright <strong>L</strong></td>
+</tr>
+<tr>
+<td><code>BusSignalConveying</code></td>
+<td>Repeated small circle</td>
+</tr>
+<tr>
+<td><code>PneumaticSignalConveying</code></td>
+<td>Repeated <strong>^</strong> chevron</td>
+</tr>
+<tr>
+<td><code>CapillarySignalConveying</code></td>
+<td>Repeated small <strong>x</strong></td>
+</tr>
+<tr>
+<td><code>UndefinedSignalConveying</code></td>
+<td>Repeated <strong>/</strong> slash</td>
+</tr>
+<tr>
+<td><code>ElectromagneticGuidedSignalConveying</code></td>
+<td>Repeated <strong>∿</strong> squiggle</td>
+</tr>
+<tr>
+<td><code>ElectromagneticUnguidedSignalConveying</code></td>
+<td>Only the repeated <strong>∿</strong> squiggle — the line itself is hidden, as there is no physical conductor to draw</td>
+</tr>
+</tbody>
+</table></div>
+<p>Selecting a decorated line, or highlighting it through Connectivity mode, recolours the line and its marks together.</p>
+<h3 id="55-heat-trace-overlay">5.5 Heat trace overlay</h3>
+<p>When a profile is loaded, heat-traced items are detected from the <code>HeatTracingType</code> property and drawn with dashed overlays on top of the drawing — along piping centerlines, as a dashed box around inline components and nozzles, and as a dashed rectangle around instrument symbols. No toggle: an item is overlaid when its resolved heat-tracing type is an actual tracing system rather than <code>NoHeatTracingSystem</code>.</p>
+<h3 id="56-profile-labels">5.6 Profile labels</h3>
+<p>With a profile loaded, a <strong>Profile labels</strong> checkbox appears.</p>
+<ul>
+<li><strong>Checked</strong> — every catalogued symbol placement shows the value built from the profile symbol's own <code>Profile/LabelTemplate</code>, as an overlay, even for symbols that carry no <code>&lt;Label&gt;</code> of their own in the file.</li>
+<li><strong>Unchecked</strong> — the profile's attribute-resolved value replaces the symbol's own literal label text.</li>
+</ul>
+<h3 id="57-background-image">5.7 Background image</h3>
+<p><strong>BG Image</strong> loads a reference image behind the drawing; <strong>BG Controls</strong> then exposes:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Blend</td>
+<td>−1 to 1. Centre (0) shows both fully; right fades the image out, left fades the drawing out.</td>
+</tr>
+<tr>
+<td>Scale</td>
+<td>Uniform factor on the auto-fit size; the native aspect ratio is always preserved.</td>
+</tr>
+<tr>
+<td>X / Y</td>
+<td>Offset from the auto-fit (centred) position, <strong>in drawing units</strong> — not screen pixels.</td>
+</tr>
+<tr>
+<td>Reset fit</td>
+<td>Back to scale 1 and offset 0, i.e. the auto-fit placement.</td>
+</tr>
+<tr>
+<td>⬇ Download PNG with placement</td>
+<td>PNG only. Writes the current Scale / X / Y into a copy of the PNG's own metadata and downloads it; the original file is untouched. Loading that copy later starts pre-aligned, on any machine or browser.</td>
+</tr>
+<tr>
+<td>Clear Default</td>
+<td>Shown once a loaded PNG carries an embedded placement; downloads a copy with it removed.</td>
+</tr>
+<tr>
+<td>Remove</td>
+<td>Unloads the image.</td>
+</tr>
+</tbody>
+</table></div>
+<p>The image sits in the same coordinate space as the drawing, so it pans and zooms in lockstep and stays aligned at any zoom. Only PNG can carry an embedded placement — other image types re-fit each time they are loaded.</p>
+<h3 id="58-draw-order-send-to-back">5.8 Draw order — Send to Back</h3>
+<p>Objects are painted in file order, and whatever paints last sits on top for both display and clicking. When a large symbol covers smaller items, select the covering object and click <strong>⇩ Send to Back</strong> in the right panel's Object tab: its graphics move behind everything else and the items underneath become clickable. The button becomes <strong>↺ Restore order</strong> for that object, and <strong>Reset Z-Order (n)</strong> in the centre toolbar restores all of them at once.</p>
+<blockquote>
+<p>This affects the on-screen draw/click order for the current session only. Nothing is written back to the XML, and it resets when a new file is loaded.</p>
+</blockquote>
+<hr />
+<h2 id="6-right-panel-object-details">6. Right Panel — Object Details</h2>
+<h3 id="61-object-tab">6.1 Object tab</h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Section</th>
+<th>Content</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Label and type</td>
+<td>Display name and the resolved DEXPI type (e.g. <code>Plant/Piping.CentrifugalPump</code>).</td>
+</tr>
+<tr>
+<td>ComponentClass</td>
+<td>The raw <code>ComponentClass="…"</code> attribute exactly as written in the Proteus file, shown alongside the resolved type — the two legitimately differ when a TypeURI assignment maps a custom class onto a profile class. Proteus/1.4 files only.</td>
+</tr>
+<tr>
+<td>Object ID</td>
+<td>The XML <code>ID</code>, with the <strong>⇩ Send to Back</strong> button when the object has graphics.</td>
+</tr>
+<tr>
+<td>Persistent Identifiers</td>
+<td>Each <code>PersistentIdentifier</code> with its context.</td>
+</tr>
+<tr>
+<td>Data</td>
+<td>Properties with values and units. <strong>Show non-DEXPI attributes</strong> reveals vendor <code>GenericAttributes</code> Sets, which are hidden by default; the count of hidden entries is shown.</td>
+</tr>
+<tr>
+<td>Symbol Reference</td>
+<td>The <code>SymbolRegistrationNumberAssignmentClass</code> and the raw <code>Axis</code> / <code>Reference</code> / <code>Scale</code> of the Position block that placed the symbol.</td>
+</tr>
+<tr>
+<td>Label Symbol Reference</td>
+<td>The same, for any symbol placed by a nested <code>&lt;Label&gt;</code> of this object (e.g. an actuator or special-item marker).</td>
+</tr>
+<tr>
+<td>Notes</td>
+<td>Note ItemIDs referenced by this object's text templates; click to navigate.</td>
+</tr>
+<tr>
+<td>References / Associations</td>
+<td>Outgoing references — blue when the target resolves, red when it does not.</td>
+</tr>
+<tr>
+<td>Parent Component</td>
+<td>The containing object; click to navigate.</td>
+</tr>
+<tr>
+<td>Sub-Components</td>
+<td>Children, with their type suffix and child count; click to navigate.</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="62-connections-tab">6.2 Connections tab</h3>
+<p>The connectivity map for the selection: <strong>Upstream Node</strong> (blue), <strong>Downstream Node</strong> (green) and <strong>Group</strong> (purple), followed by the structural associations — segment/system containment, logical start/end, and any other association type — each under its own heading. Every entry is clickable.</p>
+<h3 id="63-issues-tab">6.3 Issues tab</h3>
+<p>The validation issues attached to the selected object, with type, code, title and message. Populated as soon as the file is opened and validated; schema findings carry a line number rather than an object, so they appear only in the Validation tab.</p>
+<hr />
+<h2 id="7-how-validation-works">7. How Validation Works</h2>
+<h3 id="71-two-engines-one-vocabulary">7.1 Two engines, one vocabulary</h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Engine</th>
+<th>What it checks</th>
+<th>Needs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>XSD schema</strong></td>
+<td>The file against <code>ProteusPIDSchema 4.1.1 disc.xsd</code>, via <code>xmllint-wasm</code>.</td>
+<td><code>xmllint-wasm</code> resolving</td>
+</tr>
+<tr>
+<td><strong>Model / profile</strong></td>
+<td>Classes, properties, multiplicity, references, symbol usage, profile scope and node geometry against the DEXPI 1.4 information model and the loaded <code>DiscProfile.xml</code>.</td>
+<td>Always runs</td>
+</tr>
+</tbody>
+</table></div>
+<p>Both speak the same classification codes, so a code shown in the viewer, a code in an exported CSV or Excel report and a code in the classification register are the same identifier.</p>
+<h3 id="72-anatomy-of-a-code">7.2 Anatomy of a code</h3>
+<p>A code reads <code>LAYER-CATEGORY-NN</code>, e.g. <code>MDL-PRP-03</code>. The layer is the first three letters:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>SER</strong></td>
+<td>Serialization &amp; schema — is the file valid XML, and valid against the schema?</td>
+</tr>
+<tr>
+<td><strong>MDL</strong></td>
+<td>Effective information model — do classes, properties, multiplicities and references hold up?</td>
+</tr>
+<tr>
+<td><strong>PRF</strong></td>
+<td>DISC profile — symbols, label templates, allowed classes and properties.</td>
+</tr>
+<tr>
+<td><strong>GEO</strong></td>
+<td>Node placement &amp; geometry — grid, node positions, connection alignment.</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="73-pass-fail-and-not-evaluated">7.3 pass, fail, and not-evaluated</h3>
+<p>Two independent facts gate every code:</p>
+<ul>
+<li><strong>Needs</strong> — what data the check requires: the XSD alone, the information model, the profile, or both. <code>Model (+ profile if DISC)</code> means the profile is required only when the file claims DISC — the profile declares 172 classes of its own, so a DISC file checked without it cannot have its class names resolved at all.</li>
+<li><strong>Scope</strong> — which files the check is meaningful for: all DEXPI files, or only a file that claims the DISC profile. Asking whether a plain DEXPI file stays inside the DISC <code>AllowedClasses</code> list is meaningless, because it never claimed to.</li>
+</ul>
+<p>A check that cannot be answered reports <strong>not-evaluated</strong>, never <em>pass</em>. That is the difference between a file that is clean and a file that was never really checked. In the viewer an unevaluated code produces no findings at all.</p>
+<p>Codes marked as not implemented in <a href="#8-validation-code-reference">section 8</a> are registered and reserved, but the check behind them is not written yet — they always report not-evaluated.</p>
+<hr />
+<h2 id="8-validation-code-reference">8. Validation Code Reference</h2>
+<p>81 codes are registered; 40 are implemented today. <strong>Type</strong> is the default the viewer gives the code (Major → Error, Minor → Warning). <strong>Needs</strong> and <strong>Scope</strong> are the gates described in 7.3, and <strong>Implemented</strong> marks the checks that actually run today.</p>
+<p>The five DEXPI 2.0-only codes (<code>SER-FMT-03</code>, <code>SER-FMT-05</code>, <code>MDL-REF-06</code>, <code>PRF-LBL-05</code>, <code>PRF-SYM-05</code>) are deliberately absent: this tool can never produce them for a 1.3/1.4 file, and carrying them would report them as not-evaluated for ever.</p>
+<h3 id="ser-serialization-schema">SER — Serialization &amp; schema</h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Issue</th>
+<th>Category</th>
+<th>Type</th>
+<th>Needs</th>
+<th>Scope</th>
+<th style="text-align: center;">Implemented</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SER-CNT-01</code></td>
+<td>Declared count disagrees with actual children</td>
+<td>Declared counts</td>
+<td>Warning</td>
+<td>XSD only</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>SER-FMT-01</code></td>
+<td>File is not well-formed XML</td>
+<td>File format</td>
+<td>Error</td>
+<td>XSD only</td>
+<td>All files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>SER-FMT-02</code></td>
+<td>Wrong root element for the declared version</td>
+<td>File format</td>
+<td>Error</td>
+<td>XSD only</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>SER-FMT-04</code></td>
+<td>Declared version does not match the content</td>
+<td>File format</td>
+<td>Error</td>
+<td>XSD only</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>SER-IDN-01</code></td>
+<td>Duplicate id within the file</td>
+<td>Identity &amp; references</td>
+<td>Error</td>
+<td>XSD only</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>SER-IDN-02</code></td>
+<td>id does not match the ID pattern</td>
+<td>Identity &amp; references</td>
+<td>Error</td>
+<td>XSD only</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>SER-IDN-03</code></td>
+<td>Reference does not resolve inside the file</td>
+<td>Identity &amp; references</td>
+<td>Error</td>
+<td>XSD only</td>
+<td>All files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>SER-IDN-04</code></td>
+<td>Name collision in one scope</td>
+<td>Identity &amp; references</td>
+<td>Error</td>
+<td>XSD only</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>SER-REQ-01</code></td>
+<td>Required attribute missing</td>
+<td>Required content</td>
+<td>Error</td>
+<td>XSD only</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>SER-REQ-02</code></td>
+<td>Required child element missing</td>
+<td>Required content</td>
+<td>Error</td>
+<td>XSD only</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>SER-STR-01</code></td>
+<td>Element not permitted in this parent</td>
+<td>Document structure</td>
+<td>Error</td>
+<td>XSD only</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>SER-STR-02</code></td>
+<td>Element order violates the schema sequence</td>
+<td>Document structure</td>
+<td>Warning</td>
+<td>XSD only</td>
+<td>All files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>SER-STR-03</code></td>
+<td>Foreign element or attribute</td>
+<td>Document structure</td>
+<td>Warning</td>
+<td>XSD only</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>SER-VAL-01</code></td>
+<td>Value does not match its lexical pattern</td>
+<td>Lexical values</td>
+<td>Error</td>
+<td>XSD only</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>SER-VAL-02</code></td>
+<td>Empty or placeholder reference string</td>
+<td>Lexical values</td>
+<td>Error</td>
+<td>XSD only</td>
+<td>All files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>SER-VAL-03</code></td>
+<td>Value not lexically valid for its datatype</td>
+<td>Lexical values</td>
+<td>Error</td>
+<td>XSD only</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>SER-VAL-04</code></td>
+<td>Enumeration literal not declared</td>
+<td>Lexical values</td>
+<td>Error</td>
+<td>XSD only</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="mdl-effective-information-model">MDL — Effective information model</h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Issue</th>
+<th>Category</th>
+<th>Type</th>
+<th>Needs</th>
+<th>Scope</th>
+<th style="text-align: center;">Implemented</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>MDL-CLS-01</code></td>
+<td>Class not defined in the model</td>
+<td>Class usage</td>
+<td>Error</td>
+<td>Model (+ profile if DISC)</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>MDL-CLS-02</code></td>
+<td>Abstract class used as an object class</td>
+<td>Class usage</td>
+<td>Error</td>
+<td>Model (+ profile if DISC)</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>MDL-CLS-03</code></td>
+<td>Class contradicts other evidence in the file</td>
+<td>Class usage</td>
+<td>Error</td>
+<td>Model + profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>MDL-CLS-04</code></td>
+<td>Type URI unresolvable or echoes the class name</td>
+<td>Class usage</td>
+<td>Warning</td>
+<td>Model + profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>MDL-CLS-05</code></td>
+<td>Vendor marker class emitted</td>
+<td>Class usage</td>
+<td>Warning</td>
+<td>Model (+ profile if DISC)</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>MDL-CMP-01</code></td>
+<td>Components property not defined for the parent class</td>
+<td>Composition</td>
+<td>Error</td>
+<td>Model (+ profile if DISC)</td>
+<td>All files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>MDL-CMP-02</code></td>
+<td>Child class not permitted by the composition property</td>
+<td>Composition</td>
+<td>Error</td>
+<td>Model (+ profile if DISC)</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>MDL-CMP-03</code></td>
+<td>Required sub-component missing</td>
+<td>Composition</td>
+<td>Error</td>
+<td>Model (+ profile if DISC)</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>MDL-CMP-04</code></td>
+<td>Container present but empty</td>
+<td>Composition</td>
+<td>Warning</td>
+<td>Model (+ profile if DISC)</td>
+<td>All files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>MDL-CYC-01</code></td>
+<td>Cyclic dependency</td>
+<td>Cyclic dependency</td>
+<td>Error</td>
+<td>Model</td>
+<td>All files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>MDL-MUL-01</code></td>
+<td>Multiplicity bound violated</td>
+<td>Multiplicity</td>
+<td>Error</td>
+<td>Model (+ profile if DISC)</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>MDL-MUL-03</code></td>
+<td>Opposite multiplicity exceeded</td>
+<td>Multiplicity</td>
+<td>Error</td>
+<td>Model (+ profile if DISC)</td>
+<td>All files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>MDL-MUL-04</code></td>
+<td>Duplicate entry in a unique property</td>
+<td>Multiplicity</td>
+<td>Warning</td>
+<td>Model (+ profile if DISC)</td>
+<td>All files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>MDL-PRP-01</code></td>
+<td>Property not defined on the class or an ancestor</td>
+<td>Properties</td>
+<td>Error</td>
+<td>Model (+ profile if DISC)</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>MDL-PRP-02</code></td>
+<td>Property value type does not match the declared type</td>
+<td>Properties</td>
+<td>Error</td>
+<td>Model (+ profile if DISC)</td>
+<td>All files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>MDL-PRP-03</code></td>
+<td>Required property absent</td>
+<td>Properties</td>
+<td>Error</td>
+<td>Model (+ profile if DISC)</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>MDL-PRP-04</code></td>
+<td>Property value outside its declared constraint</td>
+<td>Properties</td>
+<td>Warning</td>
+<td>Model (+ profile if DISC)</td>
+<td>All files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>MDL-PRP-05</code></td>
+<td>Standard namespace claimed for a non-standard attribute</td>
+<td>Properties</td>
+<td>Warning</td>
+<td>Model (+ profile if DISC)</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>MDL-PRP-06</code></td>
+<td>Serialized attribute name does not reduce to a model property</td>
+<td>Properties</td>
+<td>Warning</td>
+<td>Model (+ profile if DISC)</td>
+<td>All files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>MDL-REF-01</code></td>
+<td>Reference target absent from the file</td>
+<td>References &amp; endpoints</td>
+<td>Error</td>
+<td>Model (+ profile if DISC)</td>
+<td>All files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>MDL-REF-02</code></td>
+<td>Target class not permitted by the reference property</td>
+<td>References &amp; endpoints</td>
+<td>Error</td>
+<td>Model (+ profile if DISC)</td>
+<td>All files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>MDL-REF-03</code></td>
+<td>Endpoint role violated</td>
+<td>References &amp; endpoints</td>
+<td>Error</td>
+<td>Model (+ profile if DISC)</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>MDL-REF-04</code></td>
+<td>Endpoint class cannot be determined</td>
+<td>References &amp; endpoints</td>
+<td>Warning</td>
+<td>Model (+ profile if DISC)</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>MDL-REF-05</code></td>
+<td>Object never participates where the model expects it to</td>
+<td>References &amp; endpoints</td>
+<td>Warning</td>
+<td>Model (+ profile if DISC)</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>MDL-TAG-01</code></td>
+<td>Taggable object carries no identifier</td>
+<td>Identification</td>
+<td>Warning</td>
+<td>Model</td>
+<td>All files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>PRF-EXT-01</code></td>
+<td>Extension property used off its baseType</td>
+<td>Properties</td>
+<td>Error</td>
+<td>Model + profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>PRF-EXT-02</code></td>
+<td>Extension attribute emitted without the vendor namespace</td>
+<td>Properties</td>
+<td>Warning</td>
+<td>Model + profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>PRF-EXT-04</code></td>
+<td>Object rdl_uri disagrees with the profile class it claims</td>
+<td>Class usage</td>
+<td>Warning</td>
+<td>Model + profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>PRF-MAP-01</code></td>
+<td>1.4 class has no counterpart by name</td>
+<td>Class usage</td>
+<td>Warning</td>
+<td>Model + profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>PRF-MAP-02</code></td>
+<td>RDL URI does not resolve against the profile</td>
+<td>Class usage</td>
+<td>Warning</td>
+<td>Model + profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>PRF-MAP-03</code></td>
+<td>Custom wrapper does not match the family its URI resolves to</td>
+<td>Class usage</td>
+<td>Error</td>
+<td>Model + profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>PRF-MAP-04</code></td>
+<td>Class mapped by name across a version rename</td>
+<td>Class usage</td>
+<td>Error</td>
+<td>Model + profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">—</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="prf-disc-profile-symbols-scope">PRF — DISC profile — symbols &amp; scope</h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Issue</th>
+<th>Category</th>
+<th>Type</th>
+<th>Needs</th>
+<th>Scope</th>
+<th style="text-align: center;">Implemented</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PRF-EXT-03</code></td>
+<td>Type code outside the symbol's AllowedTypeCodes</td>
+<td>Symbol usage</td>
+<td>Warning</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>PRF-LBL-01</code></td>
+<td>Label references an attribute the symbol does not permit</td>
+<td>Label templates</td>
+<td>Error</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>PRF-LBL-02</code></td>
+<td>Label is literal text with no attribute template</td>
+<td>Label templates</td>
+<td>Warning</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>PRF-LBL-04</code></td>
+<td>Label template index or position not defined by the variant</td>
+<td>Label templates</td>
+<td>Warning</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>PRF-MAP-05</code></td>
+<td>1.4 Shape class used where 2.0 expects SymbolUsage</td>
+<td>1.4 → DISC mapping</td>
+<td>Warning</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>PRF-MAP-06</code></td>
+<td>Serialized symbol name does not reduce to a profile symbol</td>
+<td>1.4 → DISC mapping</td>
+<td>Warning</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>PRF-SCP-01</code></td>
+<td>Class outside the DISC AllowedClasses list</td>
+<td>DISC scope</td>
+<td>Error</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>PRF-SCP-02</code></td>
+<td>Property outside the DISC AllowedProperties list</td>
+<td>DISC scope</td>
+<td>Warning</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>PRF-SYM-01</code></td>
+<td>Symbol not in the SymbolCatalogue</td>
+<td>Symbol usage</td>
+<td>Error</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>PRF-SYM-02</code></td>
+<td>Symbol used for a class its usage does not cover</td>
+<td>Symbol usage</td>
+<td>Error</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>PRF-SYM-03</code></td>
+<td>Drawn object places no symbol</td>
+<td>Symbol usage</td>
+<td>Warning</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>PRF-SYM-04</code></td>
+<td>Placeholder or disabled symbol name emitted</td>
+<td>Symbol usage</td>
+<td>Warning</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>PRF-TRN-01</code></td>
+<td>Transform applied where the profile forbids it</td>
+<td>Symbol transforms</td>
+<td>Warning</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>PRF-TRN-05</code></td>
+<td>Zero or negative scale</td>
+<td>Symbol transforms</td>
+<td>Error</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>PRF-VAR-01</code></td>
+<td>Variant condition not satisfied</td>
+<td>Variant selection</td>
+<td>Warning</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>PRF-VAR-02</code></td>
+<td>No variant selected or VariantNumber out of range</td>
+<td>Variant selection</td>
+<td>Warning</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">—</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="geo-node-placement-geometry">GEO — Node placement &amp; geometry</h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Issue</th>
+<th>Category</th>
+<th>Type</th>
+<th>Needs</th>
+<th>Scope</th>
+<th style="text-align: center;">Implemented</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GEO-ALN-01</code></td>
+<td>Connected items not coincident</td>
+<td>Connection alignment</td>
+<td>Error</td>
+<td>Model</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>GEO-ALN-02</code></td>
+<td>Zero-length connector</td>
+<td>Connection alignment</td>
+<td>Error</td>
+<td>Model</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>GEO-ALN-03</code></td>
+<td>Duplicate ports co-located</td>
+<td>Connection alignment</td>
+<td>Warning</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>GEO-DIR-01</code></td>
+<td>Connection approaches at a direction the node forbids</td>
+<td>Approach direction</td>
+<td>Warning</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>GEO-GRD-01</code></td>
+<td>SymbolUsage position not on the grid</td>
+<td>Grid alignment</td>
+<td>Error</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>GEO-GRD-02</code></td>
+<td>Node position not on the grid</td>
+<td>Grid alignment</td>
+<td>Error</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>GEO-NCT-01</code></td>
+<td>Node referenced by no connection</td>
+<td>Node counts</td>
+<td>Warning</td>
+<td>Model</td>
+<td>All files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>GEO-NCT-02</code></td>
+<td>Connection count outside the node's declared bounds</td>
+<td>Node counts</td>
+<td>Error</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>GEO-NCT-04</code></td>
+<td>Component declares more ports than are referenced</td>
+<td>Node counts</td>
+<td>Warning</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>GEO-NPS-01</code></td>
+<td>Node not at a connection point of the placed symbol</td>
+<td>Node position</td>
+<td>Error</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>GEO-NPS-02</code></td>
+<td>Node position cannot be checked — no symbol placed</td>
+<td>Node position</td>
+<td>Warning</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>GEO-NPS-03</code></td>
+<td>Profile symbol declares no connection points</td>
+<td>Node position</td>
+<td>Warning</td>
+<td>Model</td>
+<td>All files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>GEO-NTY-01</code></td>
+<td>Piping node used by a non-piping connection</td>
+<td>Node type usage</td>
+<td>Error</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>GEO-NTY-03</code></td>
+<td>Instrumentation node used by a piping connection</td>
+<td>Node type usage</td>
+<td>Error</td>
+<td>Profile</td>
+<td>DISC files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>GEO-SNS-01</code></td>
+<td>Sensing location not coincident with the measured item</td>
+<td>Sensing location</td>
+<td>Warning</td>
+<td>Model</td>
+<td>All files</td>
+<td style="text-align: center;">—</td>
+</tr>
+<tr>
+<td><code>GEO-SNS-02</code></td>
+<td>Sensing location references an impermissible object type</td>
+<td>Sensing location</td>
+<td>Error</td>
+<td>Model</td>
+<td>All files</td>
+<td style="text-align: center;">—</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong><code>GEO-ALN-01</code> — piping segment continuity.</strong> For each <code>PipingNetworkSegment</code>, the check takes the first and last point of every CenterLine and the connection-node positions of every component, and requires that:</p>
+<ul>
+<li>all items in the segment join into a single run, with touching end points (within 0.01 drawing units). If they don't, one finding lists the separate runs, e.g. <em>run 1: CenterLine 1, BallValve-3; run 2: BlindFlange-1</em>.</li>
+<li>the segment's start and end sit on the nodes named in its <code>Connection</code> (<code>FromID</code>/<code>FromNode</code>, <code>ToID</code>/<code>ToNode</code>). If not, the finding gives the expected node position, the nearest point in the segment and the distance between them. An end that connects to another segment, or to a node with no position, is skipped.</li>
+</ul>
+<p>Items with neither points nor positioned nodes, such as flow arrows, are ignored. The finding is reported on the segment.</p>
+<hr />
+<h2 id="9-csv-and-excel-export">9. CSV and Excel Export</h2>
+<p>The <strong>CSV</strong> button in the Validation tab writes every issue of the current run (all types, not just the filtered ones). The Folder tab's <strong>CSV</strong> and <strong>Excel</strong> buttons write every issue of a whole folder run. All three use the same columns, one row per finding:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Classification code</td>
+<td>The code, e.g. <code>SER-VAL-02</code>. Blank on a row reporting a file that could not be validated.</td>
+</tr>
+<tr>
+<td>Causes</td>
+<td>Always blank — kept for alignment with the issue lists this feeds into.</td>
+</tr>
+<tr>
+<td>Nr</td>
+<td>Sequence number within the file, starting at 1.</td>
+</tr>
+<tr>
+<td>Source URI</td>
+<td>Blank unless the finding carries one.</td>
+</tr>
+<tr>
+<td>File</td>
+<td>The file the finding came from.</td>
+</tr>
+<tr>
+<td>Line</td>
+<td>Source line, where one could be resolved.</td>
+</tr>
+<tr>
+<td>Location</td>
+<td>The element, and the attribute where the message names one: <code>&lt;References&gt;, attribute "objects"</code>.</td>
+</tr>
+<tr>
+<td>Level</td>
+<td><code>ERROR</code>, <code>WARNING</code> or <code>INFO</code>.</td>
+</tr>
+<tr>
+<td>Type</td>
+<td><code>Schema Error</code>, <code>Model Error</code>, <code>Profile Error</code> or <code>Geometry Error</code>, from the code's layer.</td>
+</tr>
+<tr>
+<td>Description</td>
+<td>The specific detail — the object, attribute or value at fault.</td>
+</tr>
+</tbody>
+</table></div>
+<p>CSV files are UTF-8 with CRLF line endings and quoted fields.</p>
+<blockquote>
+<p>If characters look garbled in Excel, open the CSV with <strong>Data → From Text/CSV</strong> and select UTF-8.</p>
+</blockquote>
+<hr />
+<h2 id="10-troubleshooting">10. Troubleshooting</h2>
+<p><strong>Default DiscProfile.xml unavailable</strong>
+The startup fetch could not reach GitHub — no network, a proxy in the way, or the repository moved. Use <strong>Retry</strong> in the amber note, or load a <code>DiscProfile.xml</code> by hand; everything except the profile-dependent codes works meanwhile.</p>
+<p><strong>Explorer: "source line unavailable"</strong>
+The picked folder is no longer readable — the permission lapsed, or the file changed since the run. Re-run <strong>Validate Folder…</strong> on the folder.</p>
+<p><strong>No PRF or GEO findings at all</strong>
+Those codes need a profile. Check that one is listed under the load buttons — if the default could not be fetched, load a <code>DiscProfile.xml</code> by hand. Without one the codes report not-evaluated rather than passing.</p>
+<p><strong>Everything reports not-evaluated for a DISC file</strong>
+The file claims DISC but no profile was loaded, so its class names cannot be resolved. Load the profile.</p>
+<p><strong>Drawing renders blank or partially</strong>
+The file may reference profile symbols that are not loaded. Load the matching <code>DiscProfile.xml</code> — the file is re-parsed automatically when a profile is added.</p>
+<p><strong>An item cannot be clicked in the drawing</strong>
+Something is painted over it. Select the covering object and use <strong>⇩ Send to Back</strong> (5.8).</p>
+<p><strong>Background image will not line up, or resets every time</strong>
+Offsets are in drawing units, not pixels; <strong>Reset fit</strong> returns to the auto-fit placement. Only PNG can carry a saved placement, and only the copy downloaded with <strong>⬇ Download PNG with placement</strong> carries it — the original file is never modified.</p>
+<p><strong>Excel shows garbled characters in the CSV</strong>
+Open it with <strong>Data → From Text/CSV</strong> in Excel and select UTF-8.</p>
+<footer>DEXPI 1.4 / DISC Profile Viewer — Tonia Pedersen. Generated from <code>UserGuide.md</code>.</footer>
+</main>
 </div>
-
-<script>
-  // Disable marked's built-in header id generation so we fully control anchor ids.
-  marked.use({ headerIds: false, mangle: false });
-
-  // Fetch the markdown file (same origin — works on GitHub Pages)
-  fetch('./UserGuide.md')
-    .then(r => {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.text();
-    })
-    .then(md => {
-      const article = document.getElementById('content');
-      article.innerHTML = marked.parse(md);
-
-      // Assign stable anchor ids to every h1/h2, then build the TOC sidebar.
-      // We do this AFTER rendering so we fully own the ids — marked does not set any.
-      const toc = document.getElementById('toc');
-      const seen = {};
-      article.querySelectorAll('h1, h2').forEach(h => {
-        // Generate a slug from the heading text, deduplicated with a counter suffix.
-        const base = h.textContent.trim()
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '-')
-          .replace(/^-+|-+$/g, '');
-        seen[base] = (seen[base] || 0) + 1;
-        h.id = seen[base] > 1 ? base + '-' + seen[base] : base;
-
-        const a = document.createElement('a');
-        a.href = '#' + h.id;
-        // Strip leading "N. " or "N.N " numbering from display text
-        a.textContent = h.textContent.replace(/^\d+[\d.]*\s+/, '');
-        a.className = h.tagName === 'H2' ? 'l2' : '';
-        toc.appendChild(a);
-      });
-    })
-    .catch(err => {
-      document.getElementById('content').innerHTML =
-        '<p style="color:#cf222e">Could not load UserGuide.md: ' + err.message + '</p>';
-    });
-</script>
 </body>
 </html>

@@ -534,6 +534,8 @@
 					<xsd:enumeration value="is upstream of" />
 					<xsd:enumeration value="is downstream of" />
 					<xsd:enumeration value="is the responsibility of" />
+					<xsd:enumeration value="drives" />
+					<xsd:enumeration value="is driven by" />
 				</xsd:restriction>
 			</xsd:simpleType>
 		</xsd:attribute>

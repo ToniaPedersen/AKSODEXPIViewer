@@ -5,20 +5,43 @@ import {
     parseColor, isConnectivityRefProperty,
 } from "./dexpiParser.js";
 import { parseProteusPackage, SEGMENT_SYSTEM_MEMBERSHIP_REF_PROPERTIES, TREE_CONTAINMENT_REF_PROPERTIES } from "./proteusParser.js";
+import { validateProteusXsd } from "./xsdValidate.js";
+import { validateAgainstRdl } from "./rdlValidate.js";
+import { ISSUE_CODES, ALL_CODES } from "./issueCodes.js";
+import { pickXmlFiles, pickDirectory, supportsDirectoryPicker, validateFiles, buildFolderReport } from "./folderValidate.js";
+import { buildReportRows, buildTagIndex, locationFromModel, locationFromXsd } from "./reportColumns.js";
+import { buildXlsxBlob } from "./xlsxBlob.js";
+import { buildLineResolver } from "./lineResolve.js";
+import ErrorExplorer from "./errorExplorer.jsx";
 import { jsPDF } from "jspdf";
-import {
-    isPngBytes, readPngEmbeddedPlacement, writePngEmbeddedPlacement, png_stripPlacementChunk,
-} from "./pngPlacement.js";
 
-// Connections tab: friendly display labels for the "other" (non-upstream/
-// downstream/group) ref types produced by proteusParser.js's
-// deriveProteusFlowConnectivity() - Segment/System containment and signal
-// Association types. Any property not listed here falls back to showing its
-// raw string as-is (e.g. pre-existing Association types like "is located
-// in"), so this map only needs entries where the raw internal property key
-// (deliberately plain, to avoid colliding with isConnectivityRefProperty()'s
-// substring matching - see that function's doc comment) isn't already a
-// good enough display label on its own.
+// Issue classification codes reported here come from issueCodes.js, shared by xsdValidate.js and rdlValidate.js.
+
+const VALIDATION_CODE_LABELS = Object.fromEntries(
+    ALL_CODES.map(code => [code, ISSUE_CODES[code].title])
+);
+
+// Default severity per code: Major -> Error, Minor -> Warning. The Config tab can override any code (see resolveValidationSeverity below).
+const DEFAULT_VALIDATION_SEVERITIES = Object.fromEntries(
+    ALL_CODES.map(code => [code, ISSUE_CODES[code].severity === "major" ? "error" : "warning"])
+);
+
+function resolveValidationSeverity(code, severityConfig) {
+    if (severityConfig && severityConfig[code]) return severityConfig[code];
+    if (DEFAULT_VALIDATION_SEVERITIES[code]) return DEFAULT_VALIDATION_SEVERITIES[code];
+    return "error"; // unknown validation code: defaults to "error"
+}
+
+// DiscProfile.xml fetched at startup from the DISCDEXPI_2026Pack repo, so the viewer
+// starts with a profile without one being picked. A profile loaded by hand replaces it.
+const DEFAULT_PROFILE_URL = "https://raw.githubusercontent.com/ToniaPedersen/DISCDEXPI_2026Pack/main/Profile/xml/DiscProfile.xml";
+const DEFAULT_PROFILE_NAME = "DiscProfile.xml (DISCDEXPI_2026Pack)";
+
+const SEV_COLORS = { error: "#cf222e", warning: "#b45309", info: "#0969da" };
+const SEV_LABELS = { error: "Error", warning: "Warning", info: "Info" };
+
+// Display labels for "other" (non-upstream/downstream/group) connectivity ref types in the Connections tab.
+// A property not listed here falls back to showing its raw string value.
 const CONNECTION_TYPE_LABELS = {
     "direct item of Segment": "Direct Item of PipingNetworkSegment",
     "segment item (direct)": "Direct Items (PipingNetworkSegment)",
@@ -30,20 +53,141 @@ const CONNECTION_TYPE_LABELS = {
     "is logical end of": "Is Logical End Of",
 };
 
-// GenericAttributes/@Set values that carry real DEXPI-modeled attributes.
-// Everything else (vendor/tool-specific Sets, or GenericAttributes with no
-// Set at all) is hidden from the Data panel by default - see
-// proteusParser.js's resolveObjectData() for where each data entry's `set`
-// field comes from. Entries with `set === undefined` (native DEXPI 2.x files,
-// which have no GenericAttributes/Set concept at all) are always shown.
+// GenericAttributes/@Set values treated as DEXPI-modeled attributes; others are hidden from the Data panel by default.
+// Attributes with no Set are always shown.
 const DEXPI_ATTRIBUTE_SETS = new Set(["DexpiAttributes", "DexpiCustomAttributes"]);
+
+// ---------- BG image default placement (embedded in the PNG itself) --------
+// The placement ({scale, offsetX, offsetY}) is stored in a tEXt chunk inside the PNG file itself. Only PNG images support this.
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+const PNG_PLACEMENT_KEYWORD = "dexpi:bgPlacement";
+
+function isPngBytes(bytes) {
+    if (!bytes || bytes.length < 8) return false;
+    return PNG_SIGNATURE.every((b, i) => bytes[i] === b);
+}
+
+function png_concat(...arrays) {
+    const total = arrays.reduce((n, a) => n + a.length, 0);
+    const out = new Uint8Array(total);
+    let pos = 0;
+    arrays.forEach(a => { out.set(a, pos); pos += a.length; });
+    return out;
+}
+
+// Standard PNG CRC-32 (ISO 3309 / ITU-T V.42) over a chunk's type and data bytes, per the PNG spec.
+const PNG_CRC_TABLE = (() => {
+    const table = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+        let c = n;
+        for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+        table[n] = c >>> 0;
+    }
+    return table;
+})();
+function png_crc32(bytes) {
+    let c = 0xffffffff;
+    for (let i = 0; i < bytes.length; i++) c = PNG_CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+}
+function png_u32be(n) {
+    return new Uint8Array([(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff]);
+}
+function png_readU32be(bytes, offset) {
+    return ((bytes[offset] << 24) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3]) >>> 0;
+}
+
+// Walks a PNG byte array's chunk structure, returning [{ type, dataStart, dataLength, chunkStart, chunkEnd }, ...] in file order.
+// Stops at IEND or on a malformed chunk header.
+function png_readChunks(bytes) {
+    const chunks = [];
+    let offset = 8; // past the 8-byte signature
+    while (offset + 8 <= bytes.length) {
+        const length = png_readU32be(bytes, offset);
+        const type = String.fromCharCode(bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7]);
+        const dataStart = offset + 8;
+        const dataEnd = dataStart + length;
+        const chunkEnd = dataEnd + 4; // + CRC
+        if (chunkEnd > bytes.length) break;
+        chunks.push({ type, dataStart, dataLength: length, chunkStart: offset, chunkEnd });
+        offset = chunkEnd;
+        if (type === "IEND") break;
+    }
+    return chunks;
+}
+
+// Decodes a tEXt chunk's "Keyword\0Text" payload (Latin-1).
+function png_decodeTextChunk(bytes, chunk) {
+    const data = bytes.subarray(chunk.dataStart, chunk.dataStart + chunk.dataLength);
+    const nul = data.indexOf(0);
+    if (nul < 0) return null;
+    const keyword = String.fromCharCode(...data.subarray(0, nul));
+    const text = String.fromCharCode(...data.subarray(nul + 1));
+    return { keyword, text };
+}
+
+function png_buildTextChunk(keyword, text) {
+    const kwBytes = Uint8Array.from(keyword, ch => ch.charCodeAt(0));
+    const txtBytes = Uint8Array.from(text, ch => ch.charCodeAt(0));
+    const typeBytes = Uint8Array.from("tEXt", ch => ch.charCodeAt(0));
+    const data = png_concat(kwBytes, new Uint8Array([0]), txtBytes);
+    const crc = png_crc32(png_concat(typeBytes, data));
+    return png_concat(png_u32be(data.length), typeBytes, data, png_u32be(crc));
+}
+
+// Returns new PNG bytes with any existing placement tEXt chunk removed.
+function png_stripPlacementChunk(bytes) {
+    const chunks = png_readChunks(bytes);
+    const keep = chunks.filter(c => {
+        if (c.type !== "tEXt") return true;
+        const kv = png_decodeTextChunk(bytes, c);
+        return !(kv && kv.keyword === PNG_PLACEMENT_KEYWORD);
+    });
+    const parts = [bytes.subarray(0, 8)];
+    keep.forEach(c => parts.push(bytes.subarray(c.chunkStart, c.chunkEnd)));
+    return png_concat(...parts);
+}
+
+// Returns new PNG bytes with the given {scale, offsetX, offsetY} written as a tEXt chunk before IEND.
+// Does not mutate the input; throws if the PNG has no IEND chunk.
+function writePngEmbeddedPlacement(bytes, placement) {
+    const stripped = png_stripPlacementChunk(bytes);
+    const chunks = png_readChunks(stripped);
+    if (!chunks.some(c => c.type === "IEND")) throw new Error("Not a valid PNG (no IEND chunk found).");
+    const newChunk = png_buildTextChunk(PNG_PLACEMENT_KEYWORD, JSON.stringify({
+        scale: placement.scale, offsetX: placement.offsetX, offsetY: placement.offsetY,
+    }));
+    const parts = [stripped.subarray(0, 8)];
+    chunks.forEach(c => {
+        if (c.type === "IEND") parts.push(newChunk);
+        parts.push(stripped.subarray(c.chunkStart, c.chunkEnd));
+    });
+    return png_concat(...parts);
+}
+
+// Reads the saved BG placement embedded in a PNG's tEXt metadata; returns {scale, offsetX, offsetY} or null.
+function readPngEmbeddedPlacement(bytes) {
+    try {
+        if (!isPngBytes(bytes)) return null;
+        for (const chunk of png_readChunks(bytes)) {
+            if (chunk.type !== "tEXt") continue;
+            const kv = png_decodeTextChunk(bytes, chunk);
+            if (!kv || kv.keyword !== PNG_PLACEMENT_KEYWORD) continue;
+            const parsedPlacement = JSON.parse(kv.text);
+            if (parsedPlacement && Number.isFinite(parsedPlacement.scale) && Number.isFinite(parsedPlacement.offsetX) && Number.isFinite(parsedPlacement.offsetY)) {
+                return { scale: parsedPlacement.scale, offsetX: parsedPlacement.offsetX, offsetY: parsedPlacement.offsetY };
+            }
+            return null;
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
 
 // ---------- Data value formatting --------------------------------------------
 
-/**
- * Render a parsed data value into a human-readable string or JSX.
- * Handles PhysicalQuantity (UoM), DataReference (enums), strings, numbers, etc.
- */
+/* Renders a parsed data value into a human-readable string or JSX. Handles PhysicalQuantity, DataReference, strings, numbers, booleans. */
 function formatDataValue(value) {
     if (value === null || value === undefined) return { text: "—", uom: null };
 
@@ -80,6 +224,8 @@ const S = {
     btn: { padding: "6px 10px", border: "1px solid #c7ced6", background: "white", borderRadius: 6, cursor: "pointer", fontSize: 13 },
     btnSmall: { padding: "3px 7px", border: "1px solid #c7ced6", background: "white", borderRadius: 4, cursor: "pointer", fontSize: 12 },
     btnPrimary: { padding: "6px 10px", border: "1px solid #0969da", background: "#0969da", color: "white", borderRadius: 6, cursor: "pointer", fontSize: 13 },
+    // Small bordered "remove" button, used for the DiscProfile.xml unload control and other destructive actions.
+    btnDanger: { padding: "3px 7px", border: "1px solid #cf222e", background: "white", color: "#cf222e", borderRadius: 4, cursor: "pointer", fontSize: 12 },
     input: { width: "100%", padding: "6px 8px", border: "1px solid #c7ced6", borderRadius: 6, boxSizing: "border-box", fontSize: 13 },
     numBox: { width: 52, padding: "2px 4px", border: "1px solid #c7ced6", borderRadius: 4, boxSizing: "border-box", fontSize: 12 },
     // Wide enough for an "nnn.nnnn" value (3 integer digits, 4 decimal places) without clipping.
@@ -90,6 +236,16 @@ const S = {
     badge: (color) => ({ display: "inline-block", padding: "2px 7px", borderRadius: 999, fontSize: 11, fontWeight: 600, background: color || "#eef2f6", color: color ? "white" : "#444" }),
 };
 
+// Small rotating spinner shown while validation is running. CSS keyframes are injected via a <style> tag below.
+const SPINNER_CSS = `
+@keyframes dexpi-spin { to { transform: rotate(360deg); } }
+.dexpi-spinner {
+    display: inline-block; width: 10px; height: 10px; margin-right: 6px;
+    border: 2px solid #c7ced6; border-top-color: #0969da; border-radius: 50%;
+    animation: dexpi-spin 0.7s linear infinite; vertical-align: -1px;
+}
+`;
+function Spinner() { return <span className="dexpi-spinner" aria-hidden="true" />; }
 
 // ---------- EllipseArc SVG helper --------------------------------------------
 
@@ -115,7 +271,7 @@ function ellipseArcToPath(cx, cy, rx, ry, startDeg, endDeg, rotation) {
 
 // ---------- SVG Rendering ----------------------------------------------------
 
-function renderPrimitive(primitive, key, textColorOverride = null, strokeMult = 1) {
+function renderPrimitive(primitive, key, textColorOverride = null, strokeMult = 1, showProfileLabels = false) {
     const fill = v => v?.style === "Transparent" ? "none" : (v?.color || "none");
     const sw = v => v * strokeMult;
     if (primitive.kind === "polyline") return <polyline key={key} points={primitive.points.map(p => `${p.x},${p.y}`).join(" ")} fill="none" stroke={primitive.stroke.color} strokeWidth={sw(primitive.stroke.width)} strokeDasharray={primitive.stroke.dashArray || undefined} vectorEffect="non-scaling-stroke" />;
@@ -127,14 +283,18 @@ function renderPrimitive(primitive, key, textColorOverride = null, strokeMult = 
         const anchor = primitive.style.horizontal.toLowerCase().includes("left") ? "start" : primitive.style.horizontal.toLowerCase().includes("right") ? "end" : "middle";
         const baseline = primitive.style.vertical.toLowerCase().includes("bottom") ? "baseline" : primitive.style.vertical.toLowerCase().includes("top") ? "hanging" : "middle";
         const textFill = textColorOverride || parseColor(primitive.style.color);
-        // Proteus/DEXPI Text String values can carry embedded line breaks
-        // (XML char refs like &#xA; decode to real \n characters before we
-        // ever see them here). A single SVG <text> doesn't auto-wrap on \n,
-        // so each line is rendered as its own <tspan>, stacked vertically,
-        // with the block anchored (top/middle/bottom) around position.y the
-        // same way a single line would be - so single-line text renders
-        // identically to before.
-        const lines = String(primitive.value ?? "").split(/\r\n|\r|\n/);
+        // Text display value: a validated own-reference (hasOwnValidatedTemplate) always uses resolvedTemplateValue.
+        // With showProfileLabels on, a DiscProfile-catalogued label is blanked (its catalog overlay is drawn separately); other text shows its own literal value.
+        // With showProfileLabels off, a DiscProfile-catalogued label shows the profile's resolved value when available, else nothing; other text shows its own literal value.
+        const displayText = primitive.hasOwnValidatedTemplate
+            ? (primitive.resolvedTemplateValue ?? "")
+            : showProfileLabels
+                ? (primitive.isDiscProfileLabel ? "" : (primitive.value ?? ""))
+                : (primitive.isDiscProfileLabel
+                    ? (primitive.hasProfileAttributeBacking && primitive.hasProfileAttributeValue ? primitive.validRawProfileText : "")
+                    : (primitive.value ?? ""));
+        // Text values can contain embedded line breaks; each line is rendered as its own <tspan>, with the block anchored around position.y.
+        const lines = String(displayText ?? "").split(/\r\n|\r|\n/);
         const lineHeight = primitive.style.size * 1.2;
         const y0 = baseline === "hanging" ? primitive.position.y
             : baseline === "baseline" ? primitive.position.y - (lines.length - 1) * lineHeight
@@ -154,13 +314,22 @@ function renderPrimitive(primitive, key, textColorOverride = null, strokeMult = 
     return null;
 }
 
-// Proteus/DISC files (parsed via proteusParser.js) represent pipe/instrument
-// centerlines as plain "primitive" polylines (elementRole "connector"), NOT
-// as the "connectorLine" kind that dexpiParser.js's own pipeline produces -
-// so Line Boost has to be applied here too. Width is a non-scaling-stroke
-// (constant screen-pixel width regardless of zoom), matching this element's
-// original rendering - boostPct=100 is a no-op, so nothing changes unless
-// the user raises it.
+function highlightPrimitive(p, key, color) {
+    const sw = Math.max((p.stroke?.width || 0.25) * 2.5, 0.9);
+    if (p.kind === "polyline") return <polyline key={key} points={p.points.map(pt => `${pt.x},${pt.y}`).join(" ")} fill="none" stroke={color} strokeWidth={sw} vectorEffect="non-scaling-stroke" opacity="0.85" />;
+    if (p.kind === "polygon") return <polygon key={key} points={p.points.map(pt => `${pt.x},${pt.y}`).join(" ")} fill="none" stroke={color} strokeWidth={sw} vectorEffect="non-scaling-stroke" opacity="0.85" />;
+    if (p.kind === "circle") return <circle key={key} cx={p.center.x} cy={p.center.y} r={p.radius} fill="none" stroke={color} strokeWidth={sw} vectorEffect="non-scaling-stroke" opacity="0.85" />;
+    if (p.kind === "ellipse") return <ellipse key={key} cx={p.center.x} cy={p.center.y} rx={p.rx} ry={p.ry} fill="none" stroke={color} strokeWidth={sw} vectorEffect="non-scaling-stroke" opacity="0.85" />;
+    if (p.kind === "rect") return <rect key={key} x={p.center.x - p.width / 2} y={p.center.y - p.height / 2} width={p.width} height={p.height} fill="none" stroke={color} strokeWidth={sw} vectorEffect="non-scaling-stroke" opacity="0.85" />;
+    if (p.kind === "ellipseArc") {
+        const d = ellipseArcToPath(p.center.x, p.center.y, p.rx, p.ry, p.startAngle, p.endAngle, p.rotation);
+        return <path key={key} d={d} fill="none" stroke={color} strokeWidth={sw} vectorEffect="non-scaling-stroke" opacity="0.85" />;
+    }
+    return null;
+}
+
+// Proteus centerline polylines (elementRole "connector"), unlike the "connectorLine" kind, so Line Boost is applied here too.
+// Stroke width is non-scaling (constant screen-pixel width regardless of zoom).
 function ConnectorPolyline({ prim, boostPct }) {
     const baseWidth = prim.stroke.width;
     const sw = baseWidth * (boostPct / 100);
@@ -172,20 +341,7 @@ function ConnectorPolyline({ prim, boostPct }) {
 }
 
 // ---------- Signal-conveying line decorations -------------------------------
-// Proteus InformationFlow (signal/instrument wire) CenterLines are decorated
-// according to the DEXPI custom attribute SignalConveyingFunctionType-
-// Representation (Set="DexpiCustomAttributes") - see proteusParser.js's
-// buildProteusGraphics(), which carries the raw attribute value through as
-// el.signalConveyingType. Each entry here is the small glyph repeated along
-// the line's length for that representation value; only
-// "ElectricalSignalConveying" (italic "E"), "HydraulicSignalConveying"
-// (upright "L"), "BusSignalConveying" (small circle),
-// "PneumaticSignalConveying" (a "^" chevron), "CapillarySignalConveying"
-// (a small "x"), "UndefinedSignalConveying" (a small "/") and
-// "ElectromagneticGuidedSignalConveying"/"ElectromagneticUnguidedSignal-
-// Conveying" (a small "∿" sine-wave squiggle) have a defined convention so
-// far - plain "SignalConveying" is left undecorated until its own
-// convention is specified.
+// Proteus InformationFlow CenterLines are decorated with a small repeated glyph based on the DEXPI SignalConveyingFunctionTypeRepresentation attribute (el.signalConveyingType); see SIGNAL_CONVEYING_MARKS below.
 const SIGNAL_CONVEYING_MARKS = {
     ElectricalSignalConveying: "E",
     HydraulicSignalConveying: "L",
@@ -196,85 +352,53 @@ const SIGNAL_CONVEYING_MARKS = {
     ElectromagneticGuidedSignalConveying: "∿",
     ElectromagneticUnguidedSignalConveying: "∿",
 };
-// Representation values whose own drawn CenterLine should be hidden
-// entirely, leaving only the repeated mark - used for
-// ElectromagneticUnguidedSignalConveying, which (unlike a guided wire) has
-// no physical conductor to draw a continuous line for.
+// Representation values whose own line is hidden, leaving only the repeated mark.
 const SIGNAL_MARK_HIDE_LINE_TYPES = new Set(["ElectromagneticUnguidedSignalConveying"]);
 const SIGNAL_MARK_SPACING = 14;  // world units between repeated glyphs
 const SIGNAL_MARK_HEIGHT = 2.4;  // glyph cap-height, world units
 const SIGNAL_MARK_WIDTH = 1.6;   // glyph width, world units (E only - L's arms are square, see below)
-const SIGNAL_MARK_STROKE = 0.16; // glyph stroke width, world units - thin, close to the line's own weight
-const SIGNAL_MARK_LEAN = 0.55;   // horizontal shear per unit of y (~29 deg) - a pronounced italic slant, E only
+const SIGNAL_MARK_STROKE = 0.16; // glyph stroke width, world units
+const SIGNAL_MARK_LEAN = 0.55;   // horizontal shear per unit of y (~29 deg), E only
 const SIGNAL_MARK_CIRCLE_RADIUS = 0.9; // "O" (Bus) circle radius, world units
 const SIGNAL_MARK_CARET_WIDTH = 1.8;   // "^" (Pneumatic) chevron width, world units
 const SIGNAL_MARK_X_WIDTH = 1.6;       // "x" (Capillary) cross width, world units
 const SIGNAL_MARK_SLASH_WIDTH = 1.6;   // "/" (Undefined) stroke width, world units
 const SIGNAL_MARK_WAVE_WIDTH = 2.4;    // "∿" (Electromagnetic Guided) one full wave cycle's width, world units
 
-// Vector glyph paths for the marks above, drawn as monoline strokes rather
-// than system-font text: font-based dominant-baseline centering doesn't
-// reliably land on a letter's own visual middle (varies by browser/font),
-// and font glyphs don't give exact control over stroke weight or slant
-// angle. Each path is built in a local frame where y=0 is the line the
-// glyph sits on - so placing a mark at (x, y) on the polyline with y=0 in
-// this local frame puts the glyph precisely on the line (not just its
-// bounding box), and x=0 is the glyph's leading edge along the line's own
-// direction.
+// Vector glyph paths for the marks above, built in a local frame where y=0 is the line the glyph sits on, and x=0 is the glyph's leading edge.
 function buildSignalMarkPaths() {
     const h2 = SIGNAL_MARK_HEIGHT / 2;
     const w = SIGNAL_MARK_WIDTH;
     const lean = SIGNAL_MARK_LEAN;
-    // Italic "E": lean is baked directly into each stroke's endpoints
-    // (rather than an SVG skewX transform) so it reads correctly regardless
-    // of the per-mark rotation applied afterwards. y=0 (the line) passes
-    // through the glyph's middle bar.
+    // Italic "E": lean is baked directly into each stroke's endpoints. y=0 passes through the glyph's middle bar.
     const lx = (x, y) => x - lean * y; // shifts top-of-glyph right, bottom left (standard italic lean)
     const tl = { x: lx(0, -h2), y: -h2 }, tr = { x: lx(w, -h2), y: -h2 };
     const bl = { x: lx(0, h2), y: h2 }, br = { x: lx(w, h2), y: h2 };
     const ml = { x: lx(0, 0), y: 0 }, mr = { x: lx(w * 0.75, 0), y: 0 };
     const ePath = `M${tl.x},${tl.y} L${tr.x},${tr.y} M${tl.x},${tl.y} L${bl.x},${bl.y} M${bl.x},${bl.y} L${br.x},${br.y} M${ml.x},${ml.y} L${mr.x},${mr.y}`;
 
-    // Upright "L": vertical and horizontal arms are the same length
-    // (SIGNAL_MARK_HEIGHT), and the line (y=0) passes through the middle of
-    // the vertical arm, which runs from -h2 to +h2 with the horizontal arm
-    // extending right from its foot.
+    // Upright "L": vertical and horizontal arms are the same length; the line (y=0) passes through the middle of the vertical arm.
     const lTop = { x: 0, y: -h2 }, lBottom = { x: 0, y: h2 }, lFoot = { x: SIGNAL_MARK_HEIGHT, y: h2 };
     const lPath = `M${lTop.x},${lTop.y} L${lBottom.x},${lBottom.y} L${lFoot.x},${lFoot.y}`;
 
-    // "O" (Bus): a small circle whose center sits at y=0, so the line
-    // passes straight through its middle. Drawn as two half-circle arcs
-    // (the usual SVG trick for a full circle in one path, since a single
-    // arc command can't span 360deg), positioned so it starts at its own
-    // leading edge (x=0) the same way the other glyphs do.
+    // "O" (Bus): a small circle centered at y=0, drawn as two half-circle arcs.
     const r = SIGNAL_MARK_CIRCLE_RADIUS;
     const oPath = `M${r * 2},0 A${r},${r} 0 1 0 0,0 A${r},${r} 0 1 0 ${r * 2},0`;
 
-    // "^" (Pneumatic): a chevron whose apex sits above the line and whose
-    // two feet sit below it, symmetric about y=0 so the line runs through
-    // the vertical middle of the shape (same convention as the "L" arm and
-    // "O" circle above).
+    // "^" (Pneumatic): a chevron with its apex above the line and both feet below, symmetric about y=0.
     const cw = SIGNAL_MARK_CARET_WIDTH;
     const caretLeft = { x: 0, y: h2 }, caretApex = { x: cw / 2, y: -h2 }, caretRight = { x: cw, y: h2 };
     const caretPath = `M${caretLeft.x},${caretLeft.y} L${caretApex.x},${caretApex.y} L${caretRight.x},${caretRight.y}`;
 
-    // "x" (Capillary): two diagonal strokes corner-to-corner of a bounding
-    // box centered on y=0. Diagonals of a rectangle always cross at its
-    // center, so the line automatically runs straight through the cross
-    // point without any extra alignment math.
+    // "x" (Capillary): two diagonal strokes of a bounding box centered on y=0.
     const xw = SIGNAL_MARK_X_WIDTH;
     const xPath = `M0,${-h2} L${xw},${h2} M0,${h2} L${xw},${-h2}`;
 
-    // "/" (Undefined): a single diagonal stroke, bottom-left to top-right,
-    // within a bounding box centered on y=0 - its midpoint therefore falls
-    // exactly on the line, same "diagonal of a centered box" trick as "x".
+    // "/" (Undefined): a single diagonal stroke, bottom-left to top-right, in a bounding box centered on y=0.
     const sw_ = SIGNAL_MARK_SLASH_WIDTH;
     const slashPath = `M0,${h2} L${sw_},${-h2}`;
 
-    // "∿" (Electromagnetic Guided): one full sine-like wave cycle, built
-    // from two symmetric cubic-bezier humps. It starts and ends on y=0 and
-    // also crosses y=0 at its midpoint, so - like the other marks - the
-    // line runs straight through its vertical center throughout.
+    // "∿" (Electromagnetic Guided): one full wave cycle, built from two cubic-bezier humps, starting and ending on y=0.
     const ww = SIGNAL_MARK_WAVE_WIDTH;
     const waveQ = ww / 4;
     const wavePath = `M0,0 C${waveQ},${-h2} ${waveQ},${-h2} ${waveQ * 2},0 `
@@ -284,11 +408,7 @@ function buildSignalMarkPaths() {
 }
 const SIGNAL_MARK_PATHS = buildSignalMarkPaths();
 
-// Marches at a fixed spacing along a polyline's arc length and returns a
-// {x, y, angleDeg} sample at each step. angleDeg follows the local segment's
-// direction but is normalized to stay within (-90, 90] so the glyph is
-// always drawn upright/readable regardless of which way the line's points
-// happen to be ordered.
+// Marches at a fixed spacing along a polyline, returning {x, y, angleDeg} samples. angleDeg is normalized to (-90, 90] so glyphs stay upright.
 function markPointsAlongPolyline(points, spacing, startOffset = spacing / 2) {
     const marks = [];
     if (!points || points.length < 2) return marks;
@@ -312,9 +432,7 @@ function markPointsAlongPolyline(points, spacing, startOffset = spacing / 2) {
     return marks;
 }
 
-// Renders a small italic vector glyph (e.g. "E" for ElectricalSignalConveying)
-// repeated along an InformationFlow signal wire's drawn length - see
-// SIGNAL_CONVEYING_MARKS/SIGNAL_MARK_PATHS above.
+// Renders a small vector glyph repeated along an InformationFlow signal wire; see SIGNAL_CONVEYING_MARKS/SIGNAL_MARK_PATHS above.
 function SignalConveyingMarks({ points, markKey, color }) {
     const d = SIGNAL_MARK_PATHS[markKey];
     if (!d) return null;
@@ -328,20 +446,6 @@ function SignalConveyingMarks({ points, markKey, color }) {
             ))}
         </g>
     );
-}
-
-function highlightPrimitive(p, key, color) {
-    const sw = Math.max((p.stroke?.width || 0.25) * 2.5, 0.9);
-    if (p.kind === "polyline") return <polyline key={key} points={p.points.map(pt => `${pt.x},${pt.y}`).join(" ")} fill="none" stroke={color} strokeWidth={sw} vectorEffect="non-scaling-stroke" opacity="0.85" />;
-    if (p.kind === "polygon") return <polygon key={key} points={p.points.map(pt => `${pt.x},${pt.y}`).join(" ")} fill="none" stroke={color} strokeWidth={sw} vectorEffect="non-scaling-stroke" opacity="0.85" />;
-    if (p.kind === "circle") return <circle key={key} cx={p.center.x} cy={p.center.y} r={p.radius} fill="none" stroke={color} strokeWidth={sw} vectorEffect="non-scaling-stroke" opacity="0.85" />;
-    if (p.kind === "ellipse") return <ellipse key={key} cx={p.center.x} cy={p.center.y} rx={p.rx} ry={p.ry} fill="none" stroke={color} strokeWidth={sw} vectorEffect="non-scaling-stroke" opacity="0.85" />;
-    if (p.kind === "rect") return <rect key={key} x={p.center.x - p.width / 2} y={p.center.y - p.height / 2} width={p.width} height={p.height} fill="none" stroke={color} strokeWidth={sw} vectorEffect="non-scaling-stroke" opacity="0.85" />;
-    if (p.kind === "ellipseArc") {
-        const d = ellipseArcToPath(p.center.x, p.center.y, p.rx, p.ry, p.startAngle, p.endAngle, p.rotation);
-        return <path key={key} d={d} fill="none" stroke={color} strokeWidth={sw} vectorEffect="non-scaling-stroke" opacity="0.85" />;
-    }
-    return null;
 }
 
 function ConnectorLineSvg({ el, nodePosMap, selected, connColor, boostPct }) {
@@ -380,31 +484,21 @@ function ConnectorLineSvg({ el, nodePosMap, selected, connColor, boostPct }) {
 }
 
 // Colour used when a graphical element is selected:
-//   label elements  → orange  (they are annotation overlays, not primary symbols)
+//   label elements  → orange
 //   all other types → red
 function selectionColor(elementRole) {
     return elementRole === "label" ? "#e06c00" : "#d1242f";
 }
 
 // ---------- Heat trace overlays ----------------------------------------------
-// Ported from the main DEXPIViewer app's src/App.jsx (same constants/visual
-// style, so heat tracing looks identical here) - see
-// dexpiParser.js's buildHeatTraceSet() for how parsed.heatTraceSet
-// (objectId -> "inline"|"nozzle"|"pif"|"piping") is computed from
-// HeatTracingType inheritance down the tree.
+// Uses dexpiParser.js's buildHeatTraceSet() (objectId -> "inline"|"nozzle"|"pif"|"piping"), computed from HeatTracingType inheritance down the tree.
 const HT_COLOR  = "#e06000";
 const HT_DASH   = "6 2 6 2";  // dash-dash pattern
 const HT_SW     = 0.6;         // stroke width (SVG units)
 const HT_OFF    = 1.5;         // offset distance (~1 pt) from pipe / symbol edge
 const HT_THRESH = 0.15;        // |sin| or |cos| threshold for axis-alignment (~8.6 deg)
 
-// Heat trace dashed line for a Proteus CenterLine polyline (a segment's own
-// pipe-routing geometry - see proteusParser.js's buildProteusGraphics()).
-// Unlike DEXPIViewer's native-DEXPI HeatTraceConnectorLine (which resolves
-// its points from a sourceRef/targetRef/nodePosMap), a Proteus polyline
-// already carries its own absolute world-space points directly, so this is
-// a simplified variant of the same per-segment horizontal/vertical offset
-// logic, with no point-resolution step needed.
+// Heat trace dashed line for a Proteus CenterLine polyline, using the polyline's own world-space points directly.
 function HeatTracePolyline({ points }) {
     if (!points || points.length < 2) return null;
     const segs = [];
@@ -434,10 +528,7 @@ function HeatTracePolyline({ points }) {
     );
 }
 
-// Computes the axis-aligned bounding box of a symbol in diagram (world)
-// space by transforming all four local corners through the full placement
-// transform - used by HeatTraceSymbol below to place its offset line
-// correctly for any rotation/mirror.
+// Computes the axis-aligned bounding box of a symbol in diagram space by transforming its local corners through the placement transform.
 function symbolDiagramBBox(el) {
     const mirror = el.isMirrored ? -1 : 1;
     const rad = (el.rotation || 0) * Math.PI / 180;
@@ -458,9 +549,7 @@ function symbolDiagramBBox(el) {
 }
 
 // Heat trace dashed line for an inline symbol (valve, fitting, nozzle).
-// Orientation is determined from el.rotation: horizontal pipe -> line 1 pt
-// below the symbol in diagram space; vertical pipe -> line 1 pt right of the
-// symbol; corner/diagonal -> line 1 pt below (default).
+// Orientation follows el.rotation: horizontal pipe -> line below; vertical pipe -> line to the right; otherwise below.
 function HeatTraceSymbol({ el }) {
     const normRot = ((el.rotation || 0) % 360 + 360) % 360;
     const isVertical = (normRot > 75 && normRot < 105) || (normRot > 255 && normRot < 285);
@@ -478,11 +567,8 @@ function HeatTraceSymbol({ el }) {
     }
 }
 
-// Heat trace overlay for a ProcessInstrumentationFunction symbol: traces the
-// actual outer boundary primitives of the symbol (circle, ellipse, polygon)
-// expanded outward, so it follows the real symbol shape rather than a
-// bounding-box rectangle. Falls back to a bounding-box rect when no boundary
-// primitive is found.
+// Heat trace overlay for a ProcessInstrumentationFunction symbol: traces its outer boundary primitives (circle, ellipse, polygon), expanded outward.
+// Falls back to a bounding-box rect when none is found.
 function HeatTracePIF({ el }) {
     const mirror = el.isMirrored ? -1 : 1;
     const transform = `translate(${el.position.x} ${el.position.y}) rotate(${el.rotation}) scale(${el.scaleX * mirror} ${el.scaleY})`;
@@ -562,7 +648,7 @@ function SymbolGraphic({ el, selected, connHighlight, onSelect, boostPct, boostS
     );
 }
 
-function PrimitiveGraphic({ el, selected, connHighlight, onSelect, nodePosMap, boostPct, boostSymbolOutlines }) {
+function PrimitiveGraphic({ el, selected, connHighlight, onSelect, nodePosMap, boostPct, boostSymbolOutlines, showProfileLabels }) {
     const hitPad = 2.0;
     const hlColor = selected ? (connHighlight || selectionColor(el.elementRole)) : connHighlight || null;
     const prim = el.primitive;
@@ -586,7 +672,7 @@ function PrimitiveGraphic({ el, selected, connHighlight, onSelect, nodePosMap, b
                     ? null
                     : (prim?.kind === "polyline" && el.elementRole === "connector" && !selected)
                         ? <ConnectorPolyline prim={prim} boostPct={boostPct} />
-                        : renderPrimitive(prim, el.key, prim?.kind === "text" ? hlColor : null, (boostSymbolOutlines && el.elementRole === "symbol") ? boostPct / 100 : 1)}
+                        : renderPrimitive(prim, el.key, prim?.kind === "text" ? hlColor : null, (boostSymbolOutlines && el.elementRole === "symbol") ? boostPct / 100 : 1, showProfileLabels)}
             {prim?.kind === "polyline" && el.signalConveyingType && SIGNAL_CONVEYING_MARKS[el.signalConveyingType] && (
                 <SignalConveyingMarks points={prim.points} markKey={SIGNAL_CONVEYING_MARKS[el.signalConveyingType]}
                     color={selected ? (connHighlight || selectionColor(el.elementRole)) : (connHighlight || prim.stroke.color)} />
@@ -626,7 +712,11 @@ function TreeNode({ node, selectedId, onSelect, expanded, setExpanded, level }) 
 export default function App() {
     const [leftCollapsed, setLeftCollapsed] = useState(false);
     const [rightCollapsed, setRightCollapsed] = useState(false);
+    const [leftTab, setLeftTab] = useState("topology");
     const [rightTab, setRightTab] = useState("details");
+    const [xsdStatus, setXsdStatus] = useState("idle"); // idle | running | done | error
+    const [xsdResult, setXsdResult] = useState(null); // { valid, errors, rawOutput }
+    const [xsdError, setXsdError] = useState("");
     const [mainXmlText, setMainXmlText] = useState("");
     const [discXmlText, setDiscXmlText] = useState("");
     const [mainFileLoaded, setMainFileLoaded] = useState(false);
@@ -644,57 +734,209 @@ export default function App() {
     const [panStart, setPanStart] = useState(null);
     const [bgImage, setBgImage] = useState(null);
     const [showBgControls, setShowBgControls] = useState(false);
-    // Part A - Draw-Order Override ("Send to Back"): a Set of represented-
-    // object ids whose graphic(s) have been moved to the front of the paint
-    // order (so they render/click *behind* everything else). View-only,
-    // in-memory, reset on every (re)parse - see rebuild() below.
+    // Draw-order override ("Send to Back"): view-only, session-scoped set of represented-object ids moved to the front of the paint order.
+    // Reset when a file is (re)loaded. Never written to the parsed model or source XML.
     const [zOrderOverrides, setZOrderOverrides] = useState(new Set());
-    // Connectivity checkbox: checking it SHOWS the upstream/downstream/group
-    // highlight for the selected object; unchecked (the default) hides it.
-    // See connectivityHighlight below and the legend near the drawing
-    // canvas, both of which gate on this flag alone - previously this also
-    // OR'd in "rightTab === 'connectivity'" so the highlight would appear
-    // whenever the Connections tab was open regardless of the checkbox,
-    // which made the checkbox appear broken/ignored while browsing
-    // connections there. The checkbox is now the sole control.
+    // Object URL for the currently loaded BG image, tracked in a ref so it can be revoked on replacement or removal.
+    const bgObjectUrlRef = useRef(null);
+    // Connectivity checkbox: when checked, shows the upstream/downstream/group highlight for the selected object.
+    // Gates connectivityHighlight below and the legend near the drawing canvas.
     const [showConnectivity, setShowConnectivity] = useState(false);
-    // Whether selecting an object also highlights (red) all of its
-    // sub-components in the drawing, or just the object itself - see
-    // selectedRepresentedIds below. Default false: selecting a large
-    // container (e.g. a PipingNetworkSegment or System) no longer paints
-    // its entire subtree red by default.
+    // Whether selecting an object also highlights (red) its sub-components in the drawing, or just the object itself. Default false.
     const [selectHighlightSubComponents, setSelectHighlightSubComponents] = useState(false);
-    // Line Boost: percentage multiplier on connector/centerline stroke width.
-    // 100 = unchanged (no-op), so nothing is boosted until the user raises it.
+    // Line Boost: percentage multiplier on connector/centerline stroke width. 100 = unchanged.
     const [lineBoostPct, setLineBoostPct] = useState(100);
     const [boostSymbolOutlines, setBoostSymbolOutlines] = useState(false);
-    // Whether LabelTemplate-synthesized labels (drawn when an object carries
-    // no <Label> XML of its own - see proteusParser.js's buildProteusGraphics()
-    // label fallback) are shown in the drawing. Default false; check the box
-    // to see labels synthesized from the loaded DiscProfile.xml's
-    // LabelTemplate definitions for symbols with no explicit Label XML.
+    // "Profile labels" checkbox. Default off: a DiscProfile-catalogued symbol's label shows the catalog's attribute-resolved LabelTemplate value instead of its literal exported text; other labels are unaffected.
+    // Checked: every catalogued symbol's own <Label> text is hidden, and its LabelTemplate(s) are drawn instead as "lbltpl_"-prefixed overlays.
     const [showProfileLabels, setShowProfileLabels] = useState(false);
     const [showAllAttributes, setShowAllAttributes] = useState(false); // default: hide non-DEXPI attributes
     const [spaceDown, setSpaceDown] = useState(false);
+    const [rdlStatus, setRdlStatus] = useState("idle"); // idle | running | done
+    const [rdlResult, setRdlResult] = useState(null);
+    // Validation codes currently folded (collapsed) in the unified Validation tab. A code not in this set renders expanded.
+    // Reset whenever either engine's result changes.
+    const [collapsedValidationCodes, setCollapsedValidationCodes] = useState(new Set());
+    // Per-validation-code severity overrides (Error/Warning/Info), edited via the Config tab. Object keyed by code; no entry means use the default.
+    const [severityConfig, setSeverityConfig] = useState({});
+    // "All" | "Error" | "Warning" | "Info" - which severities are shown in the Validation tab's issue list.
+    const [validationFilter, setValidationFilter] = useState("All");
+    // Folder validation result: every XML in a picked folder, run through the same two engines. Null until a run has finished.
+    const [folderResults, setFolderResults] = useState(null);
+    const [folderProgress, setFolderProgress] = useState(null); // { done, total, name }
+    const [folderFilter, setFolderFilter] = useState("All");
+    const [folderName, setFolderName] = useState("");
+    const [collapsedFolderFiles, setCollapsedFolderFiles] = useState(new Set());
+    // Drill-down overlay over the folder run: Layer -> Category -> Code -> documents -> lines.
+    const [explorerOpen, setExplorerOpen] = useState(false);
+    // Startup fetch of DEFAULT_PROFILE_URL: "loading" | "loaded" | "error".
+    const [defaultProfileState, setDefaultProfileState] = useState("loading");
+
+    // Read by the startup profile fetch, which resolves after these have moved on.
+    const mainXmlRef = useRef(""); mainXmlRef.current = mainXmlText;
+    const discLoadedRef = useRef(false); discLoadedRef.current = discFileLoaded;
 
     const mainInputRef = useRef(null);
     const discInputRef = useRef(null);
     const bgInputRef = useRef(null);
+    const folderInputRef = useRef(null);
+    // Picked files kept by path, so a file can be reopened from its row in the Folder tab without re-picking the folder.
+    const folderFilesRef = useRef(new Map());
+    const folderCancelRef = useRef(false);
     const svgViewportRef = useRef(null);
     const svgElRef = useRef(null);
     const [exporting, setExporting] = useState(false);
-    // Part B - BG Image Default Placement: the object URL currently backing
-    // bgImage's displayed <image>, so it can be revoked on replace/remove/
-    // unmount without leaking blob URLs.
-    const bgObjectUrlRef = useRef(null);
 
     const connectivityHighlight = useMemo(() => {
         if (!showConnectivity || !selectedId || !parsed?.connectivityMap) return { upstream: new Set(), downstream: new Set(), group: new Set() };
         return parsed.connectivityMap.get(selectedId) || { upstream: new Set(), downstream: new Set(), group: new Set() };
     }, [showConnectivity, selectedId, parsed]);
 
+    // DEXPI validation (rdlValidate.js): cross-references the file against the static DEXPI 1.4 model and the loaded DiscProfile.xml.
+    // Runs itself whenever a file is parsed (see below); the toolbar's "Run Validation" button re-runs it on demand.
+    // Runs via setTimeout(…, 0) so the "running" state renders before the (synchronous) check executes.
+    const runRdlValidation = useCallback(() => {
+        if (!parsed?.mainDoc) { setRdlStatus("idle"); setRdlResult(null); return; }
+        setRdlStatus("running");
+        setTimeout(() => {
+            try {
+                const result = validateAgainstRdl(parsed.mainDoc, parsed.discDoc, parsed.connectivityMap);
+                setRdlResult(result);
+            } catch (e) {
+                console.error("DEXPI validation failed:", e);
+                setRdlResult(null);
+            } finally {
+                setRdlStatus("done");
+            }
+        }, 0);
+    }, [parsed]);
+
+    // Refolds every validation code ("Collapse all") whenever xsdResult or rdlResult changes.
+    useEffect(() => {
+        const codes = new Set();
+        (xsdResult?.errors || []).forEach(e => { if (e.issueCode) codes.add(e.issueCode); });
+        (rdlResult?.findings || []).forEach(f => { if (f.code) codes.add(f.code); });
+        setCollapsedValidationCodes(codes);
+    }, [xsdResult, rdlResult]);
+
+    // Every newly parsed file validates itself, so the Validation tab is populated by the time
+    // the drawing is on screen. Re-parsing on a profile change re-validates against that profile.
+    useEffect(() => {
+        if (!parsed?.mainDoc) { setRdlStatus("idle"); setRdlResult(null); return; }
+        runRdlValidation();
+    }, [parsed, runRdlValidation]);
+
+    // The schema stage depends on the file text alone, so it re-runs only when that changes.
+    useEffect(() => {
+        if (mainXmlText) runXsdValidation(mainXmlText);
+        else { setXsdStatus("idle"); setXsdResult(null); setXsdError(""); }
+    }, [mainXmlText]);
+
+    // Re-runs both engines on the loaded file. Each keeps its own status/result (xsdStatus/rdlStatus), both feeding the unified Validation tab.
+    function runAllValidation() {
+        runXsdValidation(mainXmlText);
+        runRdlValidation();
+    }
+    // Resolves source lines for findings that don't carry one of their own; rebuilt when the loaded file changes.
+    const lineOf = useMemo(() => buildLineResolver(mainXmlText), [mainXmlText]);
+
+    // Unified issue list: merges xsdResult.errors and rdlResult.findings into one shape used by the Validation tab, Config tab, and Details pane.
+    // Each issue's severity is resolved here (default per code, overridable via severityConfig).
+    const allIssues = useMemo(() => {
+        const list = [];
+        // A schema message with no matching issueCode is shown under a null code rather than dropped or reassigned.
+        (xsdResult?.errors || []).forEach((err, i) => {
+            const code = err.issueCode || "SER-VAL-01";
+            list.push({
+                key: `xsd-${i}`, source: "xsd",
+                code, codeLabel: VALIDATION_CODE_LABELS[code] || err.codeLabel,
+                message: err.message, objectId: null,
+                line: err.line ?? lineOf({ message: err.message }),
+            });
+        });
+        // rdlValidate.js findings are already coded; nothing to map here.
+        (rdlResult?.findings || []).forEach((f, i) => {
+            list.push({
+                key: `rdl-${i}`, source: "rdl",
+                code: f.code, codeLabel: VALIDATION_CODE_LABELS[f.code] || f.code,
+                message: f.message, objectId: f.objectId || null, line: lineOf(f),
+            });
+        });
+        return list.map(issue => ({
+            ...issue,
+            severity: resolveValidationSeverity(issue.code, severityConfig),
+        }));
+    }, [xsdResult, rdlResult, severityConfig, lineOf]);
+
+    // Every validation code seen in the current run, alphabetically; drives the Config tab's per-code severity editor.
+    const allValidationCodes = useMemo(() => [...new Set(allIssues.map(i => i.code))].sort(), [allIssues]);
+
+    // Per-severity counts across all issues; powers the All/Error/Warning/Info filter chips.
+    const issueCounts = useMemo(() => {
+        const c = { error: 0, warning: 0, info: 0 };
+        allIssues.forEach(i => { c[i.severity] = (c[i.severity] || 0) + 1; });
+        return c;
+    }, [allIssues]);
+
+    const filteredIssues = useMemo(() => (
+        validationFilter === "All" ? allIssues : allIssues.filter(i => SEV_LABELS[i.severity] === validationFilter)
+    ), [allIssues, validationFilter]);
+
+    // code -> issue[], in first-seen order, built from the filtered list; powers the per-code expand/collapse groups.
+    const issuesByCode = useMemo(() => {
+        const map = new Map();
+        filteredIssues.forEach(issue => {
+            if (!map.has(issue.code)) map.set(issue.code, []);
+            map.get(issue.code).push(issue);
+        });
+        return map;
+    }, [filteredIssues]);
+
+    // objectId -> issue[]; powers the Details pane's Issues tab. Only includes issues whose objectId resolves to a node in the topology.
+    const issuesByObjectId = useMemo(() => {
+        const map = new Map();
+        allIssues.forEach(issue => {
+            if (!issue.objectId || !parsed?.treeMap?.has(issue.objectId)) return;
+            if (!map.has(issue.objectId)) map.set(issue.objectId, []);
+            map.get(issue.objectId).push(issue);
+        });
+        return map;
+    }, [allIssues, parsed]);
+
+    // Folder findings flattened into one list, with the Config tab's severity overrides applied.
+    const folderIssues = useMemo(() => {
+        if (!folderResults) return [];
+        const out = [];
+        folderResults.forEach(r => (r.findings || []).forEach((f, i) => out.push({
+            ...f,
+            key: `${r.path}#${i}`,
+            path: r.path,
+            codeLabel: VALIDATION_CODE_LABELS[f.code] || f.code,
+            severity: resolveValidationSeverity(f.code, severityConfig),
+        })));
+        return out;
+    }, [folderResults, severityConfig]);
+
+    const folderCounts = useMemo(() => {
+        const c = { error: 0, warning: 0, info: 0 };
+        folderIssues.forEach(i => { c[i.severity] = (c[i.severity] || 0) + 1; });
+        return c;
+    }, [folderIssues]);
+
+    // path -> issues, filtered by the Folder tab's type chips. Files with nothing left are dropped.
+    const folderByFile = useMemo(() => {
+        const map = new Map();
+        folderIssues.forEach(i => {
+            if (folderFilter !== "All" && SEV_LABELS[i.severity] !== folderFilter) return;
+            if (!map.has(i.path)) map.set(i.path, []);
+            map.get(i.path).push(i);
+        });
+        return map;
+    }, [folderIssues, folderFilter]);
+
     function rebuild(nextMain, nextDisc) {
-        if (!nextMain || !nextDisc) return;
+        // A DiscProfile.xml is optional; only the main Proteus/DEXPI 1.4 XML is required to draw anything.
+        if (!nextMain) return;
         try {
             const p = parseProteusPackage(nextMain, nextDisc);
             const b = boundsFromElements(p.graphics);
@@ -704,7 +946,7 @@ export default function App() {
             setExpanded(new Set([p.tree.id, ...p.tree.children.slice(0, 5).map(c => c.id)]));
             setViewBox({ x: b.minX, y: b.minY, w: Math.max(100, b.maxX - b.minX), h: Math.max(100, b.maxY - b.minY) });
             setParseError("");
-            // FR-6: loading/reloading a file clears all draw-order overrides.
+            // Loading (or re-parsing) a file resets draw-order overrides.
             setZOrderOverrides(new Set());
         } catch (e) { setParseError(e.message || String(e)); }
     }
@@ -713,8 +955,136 @@ export default function App() {
         const file = e.target.files?.[0]; if (!file) return;
         const txt = await file.text(); setMainXmlText(txt); setMainFileLoaded(true);
         setMainFileName(file.name);
+        setXsdStatus("idle"); setXsdResult(null); setXsdError("");
         rebuild(txt, discXmlText);
     }
+
+    // xmlText is passed explicitly by the callers holding the just-read text; the `mainXmlText` state covers the rest.
+    async function runXsdValidation(xmlText) {
+        const text = xmlText ?? mainXmlText;
+        if (!text) return;
+        setXsdStatus("running"); setXsdError("");
+        try {
+            const result = await validateProteusXsd(text);
+            setXsdResult(result);
+            setXsdStatus("done");
+        } catch (e) {
+            setXsdError(e.message || String(e));
+            setXsdStatus(e.schemaCompileError ? "schema-incompatible" : "error");
+        }
+    }
+    // Directory picker where the browser has one, otherwise the folder input.
+    async function handleFolderButton() {
+        if (!supportsDirectoryPicker()) { folderInputRef.current?.click(); return; }
+        let picked = null;
+        try {
+            picked = await pickDirectory();
+        } catch (err) {
+            console.error("Folder pick failed:", err);
+            folderInputRef.current?.click();
+            return;
+        }
+        if (!picked) return;
+        runFolderValidation(picked.files, picked.name);
+    }
+
+    // Fallback path: <input webkitdirectory>.
+    function handleFolderPick(e) {
+        const picked = pickXmlFiles(e.target.files);
+        const first = picked[0]?.webkitRelativePath || "";
+        if (folderInputRef.current) folderInputRef.current.value = "";
+        runFolderValidation(picked, first.includes("/") ? first.split("/")[0] : "");
+    }
+
+    // Validates every .xml found, against the currently loaded profile.
+    async function runFolderValidation(files, name) {
+        setLeftTab("folder");
+        setFolderName(name || "");
+        if (!files.length) { setFolderResults([]); setFolderProgress(null); return; }
+        // Without a profile the PRF and GEO codes, and every DISC-scoped check,
+        // produce nothing - confirm before running the whole folder that way.
+        if (!discFileLoaded) {
+            const go = window.confirm(
+                `No DiscProfile.xml is loaded.\n\n` +
+                `${files.length} file${files.length === 1 ? "" : "s"} will be checked against the XSD schema and the DEXPI 1.4 model only. ` +
+                `The profile-dependent codes (PRF, GEO and the DISC-scoped checks) will not be evaluated and will report nothing.\n\n` +
+                `Validate anyway?`
+            );
+            if (!go) { setFolderProgress(null); return; }
+        }
+        folderFilesRef.current = new Map(files.map(f => [f.relPath || f.webkitRelativePath || f.name, f]));
+        folderCancelRef.current = false;
+        setFolderResults(null);
+        setFolderProgress({ done: 0, total: files.length, name: files[0].name });
+        const results = await validateFiles(files, discXmlText, {
+            onProgress: setFolderProgress,
+            isCancelled: () => folderCancelRef.current,
+        });
+        setFolderResults(results);
+        setFolderProgress(null);
+        setCollapsedFolderFiles(new Set(results.map(r => r.path)));
+    }
+
+    // Loads one of the folder's files into the viewer itself.
+    async function openFolderFile(path) {
+        const file = folderFilesRef.current.get(path);
+        if (!file) return;
+        const txt = await file.text();
+        setMainXmlText(txt); setMainFileLoaded(true); setMainFileName(file.name);
+        setXsdStatus("idle"); setXsdResult(null); setXsdError("");
+        rebuild(txt, discXmlText);
+        setLeftTab("topology");
+    }
+
+    // Report rows for the loaded file, in the same layout as the folder run.
+    function singleFileReportRows() {
+        const tagById = buildTagIndex(parsed?.mainDoc);
+        const findings = allIssues.map(i => ({
+            code: i.code,
+            message: i.message,
+            objectId: i.objectId || "",
+            line: i.line,
+            location: i.source === "xsd"
+                ? locationFromXsd(i.message)
+                : locationFromModel(tagById.get(i.objectId), i.message),
+        }));
+        return buildReportRows(
+            [{ path: mainFileName || "validation", findings }],
+            code => SEV_LABELS[resolveValidationSeverity(code, severityConfig)]
+        );
+    }
+
+    function folderReportRows() {
+        return buildFolderReport(folderResults || [], code => SEV_LABELS[resolveValidationSeverity(code, severityConfig)]);
+    }
+    function downloadFolderXlsx() {
+        const { columns, rows } = folderReportRows();
+        downloadBlob(buildXlsxBlob([{ name: "Findings", columns, rows }]), "folder-validation.xlsx");
+    }
+    function downloadFolderCsv() {
+        const { columns, rows } = folderReportRows();
+        downloadCSV(rows, columns.map(c => c.header), "folder-validation.csv");
+    }
+
+    // Fetches the shared DiscProfile.xml. Runs once at startup and again from the
+    // "Retry" button; a profile already loaded by hand is left alone.
+    const loadDefaultProfile = useCallback(async () => {
+        setDefaultProfileState("loading");
+        try {
+            const res = await fetch(DEFAULT_PROFILE_URL, { cache: "no-cache" });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const txt = await res.text();
+            if (discLoadedRef.current) { setDefaultProfileState("loaded"); return; }
+            setDiscXmlText(txt); setDiscFileLoaded(true); setDiscFileName(DEFAULT_PROFILE_NAME);
+            setDefaultProfileState("loaded");
+            if (mainXmlRef.current) rebuild(mainXmlRef.current, txt);
+        } catch (e) {
+            console.warn("Default DiscProfile.xml could not be loaded:", e);
+            setDefaultProfileState("error");
+        }
+    }, []);
+
+    useEffect(() => { loadDefaultProfile(); }, [loadDefaultProfile]);
 
     async function handleDiscFile(e) {
         const file = e.target.files?.[0]; if (!file) return;
@@ -722,105 +1092,74 @@ export default function App() {
         setDiscFileName(file.name);
         rebuild(mainXmlText, txt);
     }
-    // Part B - BG Image Default Placement (FR-2, FR-7). Reads the picked
-    // file as raw bytes (not a base64 data URL - the file's own bytes are
-    // what Save/Update/Clear/Download operate on) and checks the PNG magic
-    // signature. If it's a PNG carrying a valid embedded
-    // dexpi:bgPlacement default (readPngEmbeddedPlacement - falls back to
-    // null on a non-PNG, missing, or corrupted/foreign chunk per FR-7), that
-    // placement seeds scale/offsetX/offsetY instead of the auto-fit values.
-    // The image itself is displayed via an object URL over those same raw
-    // bytes, revoked on replace/remove/unmount (bgObjectUrlRef).
+    // Unloads the DiscProfile.xml and redraws the already-loaded Proteus file without one.
+    // Clears the file input's value so picking the same file again still fires onChange.
+    function clearDiscFile() {
+        setDiscXmlText(""); setDiscFileLoaded(false); setDiscFileName("");
+        if (discInputRef.current) discInputRef.current.value = "";
+        rebuild(mainXmlText, "");
+    }
     async function handleBgFile(e) {
         const file = e.target.files?.[0]; if (!file) return;
+        try {
+            const bytes = new Uint8Array(await file.arrayBuffer());
+            const isPng = isPngBytes(bytes);
+            // Looks for a placement embedded in this PNG's metadata and uses it in place of the auto-fit default when present.
+            const embedded = isPng ? readPngEmbeddedPlacement(bytes) : null;
+            const placement = embedded || { scale: 1, offsetX: 0, offsetY: 0 };
+
+            if (bgObjectUrlRef.current) URL.revokeObjectURL(bgObjectUrlRef.current);
+            const src = URL.createObjectURL(new Blob([bytes], { type: file.type || (isPng ? "image/png" : "") }));
+            bgObjectUrlRef.current = src;
+
+            // Loads the image's raw pixel dimensions so the overlay can be fit into the drawing's coordinate space, preserving aspect ratio.
+            const probe = new Image();
+            const base = {
+                // BG Image Default Placement: a newly loaded BG image starts centered (blend 0).
+                src, blend: 0, scale: placement.scale, offsetX: placement.offsetX, offsetY: placement.offsetY, visible: true,
+                // sourceBytes/isPng/fileName/embeddedPlacement support the Clear/Download-default controls; see clearBgDefault()/downloadBgPlacementPng().
+                sourceBytes: bytes, isPng, fileName: file.name, embeddedPlacement: embedded,
+            };
+            probe.onload = () => setBgImage({ ...base, naturalWidth: probe.naturalWidth, naturalHeight: probe.naturalHeight });
+            probe.onerror = () => setBgImage({ ...base, naturalWidth: 0, naturalHeight: 0 });
+            probe.src = src;
+        } catch (err) {
+            alert("Could not read the selected image: " + (err.message || String(err)));
+        }
         e.target.value = "";
-        const buf = await file.arrayBuffer();
-        const bytes = new Uint8Array(buf);
-        const isPng = isPngBytes(bytes);
-        const embeddedPlacement = isPng ? readPngEmbeddedPlacement(bytes) : null;
-        const placement = embeddedPlacement || { scale: 1, offsetX: 0, offsetY: 0 };
-
-        if (bgObjectUrlRef.current) { URL.revokeObjectURL(bgObjectUrlRef.current); bgObjectUrlRef.current = null; }
-        const objectUrl = URL.createObjectURL(new Blob([bytes], { type: file.type || (isPng ? "image/png" : "") }));
-        bgObjectUrlRef.current = objectUrl;
-
-        const base = {
-            objectUrl, sourceBytes: bytes, isPng, fileName: file.name,
-            embeddedPlacement,
-            // Part B - BG Image Default Placement: a newly loaded BG image
-            // starts centered (blend 0), so both the BG image and the DEXPI
-            // drawing are fully visible right away - see the Blend slider's
-            // drawingOpacity/bgOpacity derivation below.
-            blend: 0, scale: placement.scale, offsetX: placement.offsetX, offsetY: placement.offsetY, visible: true,
-        };
-        // Load the raw pixel dimensions so the overlay can be fit into the
-        // drawing's coordinate space (fullBounds) preserving aspect ratio,
-        // instead of guessing a scale in unrelated CSS-pixel units.
-        const probe = new Image();
-        probe.onload = () => { setBgImage({ ...base, naturalWidth: probe.naturalWidth, naturalHeight: probe.naturalHeight }); };
-        probe.onerror = () => { setBgImage({ ...base, naturalWidth: 0, naturalHeight: 0 }); };
-        probe.src = objectUrl;
     }
 
-    // Revoke the current BG image object URL on unmount only - replacement/
-    // removal revoke it inline at the point of change (handleBgFile, Remove).
-    useEffect(() => {
-        return () => { if (bgObjectUrlRef.current) URL.revokeObjectURL(bgObjectUrlRef.current); };
-    }, []);
-
-    // Embeds the current Scale / X / Y directly into a copy of the loaded
-    // PNG's bytes and downloads it in one action - no separate "save" step.
-    // The originally-selected file on disk is never modified; see
-    // downloadBgPlacementPng() just below for the actual download.
-    function clearBgDefault() {
-        setBgImage(b => {
-            if (!b || !b.isPng || !b.embeddedPlacement) return b;
-            try {
-                const newBytes = png_stripPlacementChunk(b.sourceBytes);
-                const blob = new Blob([newBytes], { type: "image/png" });
-                const base = (b.fileName || "image.png").replace(/\.png$/i, "");
-                downloadBlob(blob, `${base}-placement.png`);
-                return { ...b, sourceBytes: newBytes, embeddedPlacement: null };
-            } catch (err) {
-                alert("Could not clear the placement default: " + (err.message || String(err)));
-                return b;
-            }
-        });
-    }
-
-    // Embeds the current Scale / X / Y into a copy of the loaded PNG's bytes
-    // and immediately downloads it - the one action that replaces the old
-    // two-step "Save as Default" then "Download PNG with placement" flow.
-    // The originally-selected file on disk is never modified.
+    // Embeds the current Scale/X/Y into a copy of the loaded PNG's bytes and downloads it. The original file is never modified.
     function downloadBgPlacementPng() {
-        setBgImage(b => {
-            if (!b || !b.isPng) return b;
-            try {
-                const placement = { scale: b.scale, offsetX: b.offsetX, offsetY: b.offsetY };
-                const newBytes = writePngEmbeddedPlacement(b.sourceBytes, placement);
-                const blob = new Blob([newBytes], { type: "image/png" });
-                const base = (b.fileName || "image.png").replace(/\.png$/i, "");
-                downloadBlob(blob, `${base}-placement.png`);
-                return { ...b, sourceBytes: newBytes, embeddedPlacement: placement };
-            } catch (err) {
-                alert("Could not save the placement into the PNG: " + (err.message || String(err)));
-                return b;
-            }
-        });
+        if (!bgImage?.isPng || !bgImage.sourceBytes) return;
+        try {
+            const placement = { scale: bgImage.scale, offsetX: bgImage.offsetX, offsetY: bgImage.offsetY };
+            const updated = writePngEmbeddedPlacement(bgImage.sourceBytes, placement);
+            const blob = new Blob([updated], { type: "image/png" });
+            const base = (bgImage.fileName || "background").replace(/\.png$/i, "");
+            downloadBlob(blob, `${base}-placement.png`);
+            setBgImage(b => b && ({ ...b, sourceBytes: updated, embeddedPlacement: placement }));
+        } catch (err) {
+            alert("Could not save the placement into the PNG: " + (err.message || String(err)));
+        }
     }
 
-    // Export: rasterizes exactly what's currently on screen inside the SVG
-    // viewport - the DEXPI drawing plus the BG image overlay, since (per the
-    // fix above) the overlay now lives inside the same <svg viewBox=...> tree
-    // rather than as a separate HTML element. Cloning that one <svg> node is
-    // therefore enough to capture both layers together.
-    //
-    // viewBox.w/h are in the drawing's own native coordinate units, which have
-    // no fixed relationship to CSS pixels and can be arbitrarily large or small
-    // depending on the source file - multiplying them directly by a "pixel
-    // scale" could ask the browser for a many-thousand-megapixel canvas and
-    // crash the tab. Instead we target a fixed output resolution (long edge in
-    // px) regardless of the viewBox's native magnitude.
+    // Removes the embedded placement from the in-memory PNG bytes and downloads the result. Does not change the currently displayed placement.
+    function clearBgDefault() {
+        if (!bgImage?.isPng || !bgImage.sourceBytes) return;
+        try {
+            const updated = png_stripPlacementChunk(bgImage.sourceBytes);
+            const blob = new Blob([updated], { type: "image/png" });
+            const base = (bgImage.fileName || "background").replace(/\.png$/i, "");
+            downloadBlob(blob, `${base}-placement.png`);
+            setBgImage(b => b && ({ ...b, sourceBytes: updated, embeddedPlacement: null }));
+        } catch (err) {
+            alert("Could not clear the embedded placement: " + (err.message || String(err)));
+        }
+    }
+
+    // Export: rasterizes what's on screen inside the SVG viewport (drawing plus BG image overlay) by cloning the <svg> node.
+    // Targets a fixed output resolution (long edge in px) rather than scaling the viewBox's native units directly, regardless of their magnitude.
     const EXPORT_LONG_EDGE_PX = 3000;
 
     async function renderViewboxToCanvas() {
@@ -868,6 +1207,38 @@ export default function App() {
         URL.revokeObjectURL(url);
     }
 
+    // CSV export for the unified Validation tab.
+    function downloadCSV(rows, headers, filename) {
+        const escape = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
+        const csv = [headers.join(","), ...rows.map(r => r.map(escape).join(","))].join("\r\n");
+        downloadBlob(new Blob([csv], { type: "text/csv;charset=utf-8;" }), filename);
+    }
+
+    // Config tab: per-code severity overrides, held in plain React state (not persisted) unless exported/re-imported as JSON.
+    function updateSeverity(code, level) {
+        setSeverityConfig(prev => {
+            const next = { ...prev };
+            if (level === null) delete next[code];
+            else next[code] = level;
+            return next;
+        });
+    }
+    function exportSeverityConfig() {
+        // Exports the full effective config for every code seen in the current run.
+        const full = {};
+        allValidationCodes.forEach(code => { full[code] = resolveValidationSeverity(code, severityConfig); });
+        downloadBlob(new Blob([JSON.stringify(full, null, 2)], { type: "application/json" }), "validation-severity-config.json");
+    }
+    async function importSeverityConfig(e) {
+        const file = e.target.files?.[0]; if (!file) return;
+        try {
+            setSeverityConfig(JSON.parse(await file.text()));
+        } catch (_) {
+            alert("Invalid config file.");
+        }
+        e.target.value = "";
+    }
+
     async function exportAsPng() {
         setExporting(true);
         try {
@@ -886,10 +1257,7 @@ export default function App() {
         try {
             const canvas = await renderViewboxToCanvas();
             const jpegData = canvas.toDataURL("image/jpeg", 0.95);
-            // Page is sized to match the exported canvas's aspect ratio (long
-            // edge fixed at 420mm/A3) - DEXPI/Proteus drawing coordinates aren't
-            // reliably real-world units here, so this is a print-friendly fit
-            // rather than a dimensionally-accurate scale.
+            // Page size matches the exported canvas's aspect ratio (long edge fixed at 420mm/A3).
             const aspect = canvas.width / canvas.height;
             const longEdgeMm = 420;
             const wMm = aspect >= 1 ? longEdgeMm : longEdgeMm * aspect;
@@ -920,35 +1288,13 @@ export default function App() {
     const selectedNode = useMemo(() => parsed?.treeMap?.get(selectedId) || null, [parsed, selectedId]);
     const selectedRepresentedIds = useMemo(() => {
         if (!selectedNode) return new Set();
-        // Sub-components checkbox (see its state declaration above) is now
-        // the sole gate for any red highlighting beyond the selected object
-        // itself - unchecked (the default) means ONLY selectedNode's own id
-        // is highlighted, full stop. Checked restores the prior behavior:
-        // every tree descendant PLUS every non-connectivity Association/ref
-        // target (e.g. an InformationFlow signal wire whose "has logical
-        // end" Association points at the selected instrument) is included
-        // too - previously that ref-based highlighting ran unconditionally,
-        // which meant selecting e.g. a ProcessInstrumentationFunction lit up
-        // every signal wire logically wired to it even with this box off.
+        // Sub-components checkbox gates highlighting beyond the selected object. Off: only the selected node is highlighted.
+        // On: tree descendants plus non-connectivity Association/ref targets are included too.
         if (!selectHighlightSubComponents) {
             return new Set(selectedNode.objectId ? [selectedNode.objectId] : []);
         }
         const ids = collectDescendantObjectIds(selectedNode);
-        // Connectivity refs (upstream/downstream/group - see
-        // isConnectivityRefProperty()'s doc comment in dexpiParser.js) are
-        // deliberately excluded here: they exist only to drive the separate
-        // blue/green/purple connectivity highlight, and since "selected"
-        // (red) always wins over that color, letting them leak in here would
-        // make e.g. an upstream CenterLine neighbor render as if it were
-        // itself selected - regardless of whether connectivity mode is even on.
-        // Segment/System containment refs (see
-        // SEGMENT_SYSTEM_MEMBERSHIP_REF_PROPERTIES's doc comment in
-        // proteusParser.js) are excluded for the same reason: they're
-        // structural bookkeeping, not a real cross-reference - without this,
-        // selecting any one member of a PipingNetworkSegment/System would
-        // red-highlight the whole segment/system (and, transitively, anything
-        // else - like a LineLabel-* line-number Label - that references it
-        // back), rather than only when the segment/system itself is selected.
+        // Connectivity refs (upstream/downstream/group) and Segment/System containment refs are excluded here; they drive separate highlighting elsewhere, not selection highlighting.
         selectedNode.refs
             .filter(ref => !isConnectivityRefProperty(ref.property)
                 && !SEGMENT_SYSTEM_MEMBERSHIP_REF_PROPERTIES.has(ref.property)
@@ -957,40 +1303,29 @@ export default function App() {
         return ids;
     }, [selectedNode, selectHighlightSubComponents]);
 
-    // Part A - Draw-Order Override ("Send to Back"). Every represented id
-    // that has at least one associated graphic element - gates FR-1's
-    // control so it's only offered where there's actually something to
-    // reorder (see edge case: pure-graphic elements with no full model
-    // object still qualify, since this is keyed off el.representedId, not
-    // the tree).
+    // Every represented-object id with at least one associated graphic element in the current drawing; gates the "Send to Back" control.
     const representedIdsWithGraphics = useMemo(() => {
-        const ids = new Set();
-        parsed?.graphics?.elements?.forEach(el => { if (el.representedId) ids.add(el.representedId); });
-        return ids;
+        const s = new Set();
+        parsed?.graphics?.elements?.forEach(el => { if (el.representedId) s.add(el.representedId); });
+        return s;
     }, [parsed]);
 
-    // The reordered list the SVG render loop actually iterates over:
-    // elements whose represented id is in zOrderOverrides move to the
-    // front, stable within that group; everything else keeps its original
-    // relative order. O(n), and === parsed.graphics.elements (by content,
-    // new array identity only when overrides are non-empty) when there are
-    // no overrides.
+    // Paint-order list handed to the renderer: elements in zOrderOverrides move to the front of the array (drawn first, ends up behind everything else), stable within each group.
     const paintOrderElements = useMemo(() => {
-        const elements = parsed?.graphics?.elements;
-        if (!elements) return [];
-        if (zOrderOverrides.size === 0) return elements;
-        const front = [];
+        const all = parsed?.graphics?.elements;
+        if (!all) return [];
+        if (zOrderOverrides.size === 0) return all;
+        const sentToBack = [];
         const rest = [];
-        for (const el of elements) {
-            if (el.representedId && zOrderOverrides.has(el.representedId)) front.push(el);
+        all.forEach(el => {
+            if (el.representedId && zOrderOverrides.has(el.representedId)) sentToBack.push(el);
             else rest.push(el);
-        }
-        return [...front, ...rest];
+        });
+        return [...sentToBack, ...rest];
     }, [parsed, zOrderOverrides]);
 
-    // Adds/removes the currently selected object from the override set -
-    // FR-2/FR-3's "Send to Back" / "Restore order" toggle.
-    function toggleSendToBack() {
+    // Toggles "Send to Back" for the currently selected object only, without touching selection or highlighting.
+    const toggleSendToBack = useCallback(() => {
         if (!selectedId) return;
         setZOrderOverrides(prev => {
             const next = new Set(prev);
@@ -998,7 +1333,7 @@ export default function App() {
             else next.add(selectedId);
             return next;
         });
-    }
+    }, [selectedId]);
 
     const handleSelect = useCallback((id) => {
         if (!id) return;
@@ -1039,26 +1374,19 @@ export default function App() {
         return () => { window.removeEventListener("keydown", onKeyDown); window.removeEventListener("keyup", onKeyUp); };
     }, []);
 
+    // Revokes the current BG image object URL when the app unmounts.
+    useEffect(() => {
+        return () => { if (bgObjectUrlRef.current) URL.revokeObjectURL(bgObjectUrlRef.current); };
+    }, []);
+
     function expandAll() { if (!parsed) return; const ids = new Set(); flattenTree(parsed.tree).forEach(n => ids.add(n.id)); setExpanded(ids); }
     function collapseAll() { if (!parsed) return; setExpanded(new Set([parsed.tree.id])); }
 
-    // The overlay is placed in the *drawing's* coordinate space (fullBounds),
-    // not raw CSS/screen pixels - previously it was an absolutely-positioned
-    // HTML <img> sized off the viewport div, so it only ever lined up with the
-    // DEXPI drawing at the exact pan/zoom level it was calibrated at: the SVG
-    // content moves and rescales with viewBox, but a plain HTML sibling doesn't,
-    // so panning or zooming immediately dragged the two out of alignment again
-    // (looked like a scaling bug, was really a "wrong coordinate system" bug).
-    // Rendering it as an <image> inside the same <svg viewBox=...> ties it to
-    // the identical transform as the drawing, so it now pans/zooms in lockstep.
+    // The overlay is placed in the drawing's coordinate space (fullBounds) as an <image> inside the same <svg viewBox=...>, so it pans/zooms with the drawing.
     const boundsW = Math.max(1, fullBounds.maxX - fullBounds.minX);
     const boundsH = Math.max(1, fullBounds.maxY - fullBounds.minY);
-    // Blend slider (-1..1, 0 = center): drives the BG image and the DEXPI
-    // drawing's opacity as a single cross-fade instead of two independent
-    // opacity controls. At 0 both layers are fully visible; dragging right
-    // (positive) fades the BG image out while the drawing stays fully
-    // visible; dragging left (negative) fades the drawing out while the BG
-    // image stays fully visible.
+    // Blend slider (-1..1, 0 = center): cross-fades the BG image and the DEXPI drawing's opacity.
+    // Positive fades the BG image out; negative fades the drawing out.
     const bgBlend = bgImage?.blend ?? 0;
     const drawingOpacity = bgBlend < 0 ? 1 + bgBlend : 1;
     const bgOpacity = bgBlend > 0 ? 1 - bgBlend : 1;
@@ -1066,9 +1394,7 @@ export default function App() {
         if (!bgImage) return null;
         let baseW = boundsW, baseH = boundsH, baseX = fullBounds.minX, baseY = fullBounds.minY;
         if (bgImage.naturalWidth && bgImage.naturalHeight) {
-            // "Contain"-fit the image into fullBounds, centered, so scale=1/offset=0
-            // starts out already aligned to the drawing extents instead of an
-            // arbitrary default.
+            // "Contain"-fits the image into fullBounds, centered.
             const imgAspect = bgImage.naturalWidth / bgImage.naturalHeight;
             const boundsAspect = boundsW / boundsH;
             if (imgAspect > boundsAspect) { baseW = boundsW; baseH = boundsW / imgAspect; }
@@ -1083,34 +1409,63 @@ export default function App() {
             height: baseH * bgImage.scale,
         };
     }, [bgImage, fullBounds, boundsW, boundsH]);
-    // Tints the overlay a mid-dark blue while preserving the image's original
-    // luminance/detail (mix-blend-mode "color" replaces hue+saturation only).
+    // Tints the overlay a mid-dark blue while preserving the image's luminance (mix-blend-mode "color").
     const BG_TINT_COLOR = "#1e3a5f";
 
     const d = parsed?._diagnostics;
 
+    // Combined status across both validation engines: one running/not-yet-run state for the unified tab. Each engine's own error state still surfaces separately.
+    const validationRunning = xsdStatus === "running" || rdlStatus === "running";
+    const validationStarted = xsdStatus !== "idle" || rdlStatus !== "idle";
+
     return (
         <div style={S.app(leftCollapsed, rightCollapsed)}>
+            <style>{SPINNER_CSS}</style>
+
             {/* LEFT PANEL */}
             {leftCollapsed ? (
                 <div style={S.collapsed}><button style={S.collapseBtn} onClick={() => setLeftCollapsed(false)} title="Expand">{">"}</button></div>
             ) : (
                 <div style={S.panel}>
                     <div style={S.toolbar}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                            <div style={{ fontWeight: 700, fontSize: 15 }}>DEXPI 1.3.1 / DISC Profile Viewer</div>
-                            <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
-                                <a href="UserGuide.html" target="_blank" rel="noopener noreferrer"
-                                    style={{ width: 24, height: 24, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "50%", border: "1px solid #c7ced6", color: "#57606a", textDecoration: "none", fontSize: 12, fontWeight: 700 }}
-                                    title="Open user guide">?</a>
-                                <button style={S.collapseBtn} onClick={() => setLeftCollapsed(true)}>{"<"}</button>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, gap: 6 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                                <div style={{ fontWeight: 700, fontSize: 15, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>DEXPI 1.4 / DISC Profile Viewer</div>
+                                {/* Opens public/UserGuide.html in a new tab; the app keeps its state. */}
+                                <a
+                                    href={`${import.meta.env.BASE_URL}UserGuide.html`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    title="Open the User Guide"
+                                    aria-label="Open the User Guide"
+                                    style={{
+                                        display: "inline-flex", alignItems: "center", justifyContent: "center",
+                                        width: 22, height: 22, flexShrink: 0, borderRadius: 5,
+                                        border: "1px solid #d0d7de", background: "white",
+                                        color: "#57606a", textDecoration: "none",
+                                    }}
+                                >
+                                    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                        <path d="M8 4.2C7.3 3.1 6.1 2.6 4 2.6H1.8v9.6H4c1.8 0 3.2.4 4 1.2" />
+                                        <path d="M8 4.2c.7-1.1 1.9-1.6 4-1.6h2.2v9.6H12c-1.8 0-3.2.4-4 1.2" />
+                                        <path d="M8 4.2v9.2" />
+                                    </svg>
+                                </a>
                             </div>
+                            <button style={S.collapseBtn} onClick={() => setLeftCollapsed(true)}>{"<"}</button>
                         </div>
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                             <button style={{ ...S.btn, background: mainFileLoaded ? "#eaf2ff" : "white" }} onClick={() => mainInputRef.current?.click()}>{mainFileLoaded ? "✓ " : ""}Load Proteus XML</button>
                             <button style={{ ...S.btn, background: discFileLoaded ? "#eaf2ff" : "white" }} onClick={() => discInputRef.current?.click()}>{discFileLoaded ? "✓ " : ""}Load DiscProfile.xml</button>
                         </div>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+                            <button style={S.btn} onClick={handleFolderButton} title="Validate every .xml in a folder, and its subfolders, against the loaded profile. The browser asks permission to read the folder; the files stay on this machine and nothing is uploaded.">
+                                Validate Folder…
+                            </button>
+                        </div>
                         <input ref={mainInputRef} type="file" accept=".xml" style={{ display: "none" }} onChange={handleMainFile} />
+                        {/* webkitdirectory turns this into a folder picker; files are read in the browser, nothing is uploaded. */}
+                        <input ref={folderInputRef} type="file" webkitdirectory="" directory="" multiple style={{ display: "none" }} onChange={handleFolderPick} />
                         <input ref={discInputRef} type="file" accept=".xml" style={{ display: "none" }} onChange={handleDiscFile} />
                         {(mainFileName || discFileName) && (
                             <div style={{ marginTop: 6, fontSize: 12, color: "#57606a" }}>
@@ -1120,57 +1475,372 @@ export default function App() {
                                     </div>
                                 )}
                                 {discFileName && (
-                                    <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={discFileName}>
-                                        DiscProfile: <span style={{ fontWeight: 600, color: "#24292f" }}>{discFileName}</span>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 4 }} title={discFileName}>
+                                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                            DiscProfile: <span style={{ fontWeight: 600, color: "#24292f" }}>{discFileName}</span>
+                                        </span>
+                                        <button
+                                            onClick={clearDiscFile}
+                                            title="Unload DiscProfile.xml and view the Proteus file without a profile"
+                                            style={{ ...S.btnDanger, padding: "1px 6px", flexShrink: 0 }}
+                                        >x</button>
                                     </div>
                                 )}
                             </div>
                         )}
-                        {(!mainFileLoaded || !discFileLoaded) && (
-                            <div style={{ marginTop: 8, fontSize: 12, color: "#57606a" }}>Load both a Proteus 4.1.1 / DEXPI 1.3 XML file and a DEXPI 2.x DiscProfile.xml to view the drawing.</div>
+                        {!discFileLoaded && defaultProfileState === "loading" && (
+                            <div style={{ marginTop: 6, fontSize: 12, color: "#57606a", display: "flex", alignItems: "center" }}><Spinner />Loading default DiscProfile.xml…</div>
+                        )}
+                        {!discFileLoaded && defaultProfileState === "error" && (
+                            <div style={{ marginTop: 6, fontSize: 11, color: "#9a6700", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                                <span>Default DiscProfile.xml unavailable — load one by hand, or</span>
+                                <button style={S.btnSmall} onClick={loadDefaultProfile}>Retry</button>
+                            </div>
                         )}
                         {d && (
                             <div style={{ marginTop: 8, fontSize: 11, color: "#57606a" }}>
                                 {d.totalObjects} objects · {d.classMatchedViaRule1} class-mapped via TypeURI rule
                             </div>
                         )}
+                        {/* Single trigger for both XSD and DEXPI/RDL validation; results merge into the Validation tab below. */}
+                        <button
+                            style={{ ...S.btnPrimary, marginTop: 8, width: "100%" }}
+                            onClick={runAllValidation}
+                            disabled={!mainFileLoaded || xsdStatus === "running" || rdlStatus === "running"}
+                            title="Both engines run automatically when a file is opened; this re-runs them on the file already loaded."
+                        >
+                            Run Validation
+                        </button>
+                        {(xsdStatus === "running" || rdlStatus === "running") && (
+                            <div style={{ marginTop: 6, fontSize: 12, color: "#57606a", display: "flex", alignItems: "center" }}><Spinner />Validating…</div>
+                        )}
                     </div>
 
-                    <div style={S.scroll}>
-                        <div style={{ padding: "6px 10px", borderBottom: "1px solid #eef2f6" }}>
-                            <input style={S.input} placeholder="Search tag, type, ID, persistent ID..." value={search} onChange={e => setSearch(e.target.value)} />
+                    <div style={S.tabBar}>
+                        <button style={S.tab(leftTab === "topology")} onClick={() => setLeftTab("topology")}>Topology</button>
+                        <button style={S.tab(leftTab === "validation")} onClick={() => setLeftTab("validation")} title="XSD schema violations and DEXPI 1.4 model/Profile findings in one list, each with a validation code and type (Error/Warning/Info). Runs automatically when a file is opened.">
+                            Validation{validationRunning ? "…" : allIssues.length ? ` (${allIssues.length})` : ""}
+                        </button>
+                        <button style={S.tab(leftTab === "folder")} onClick={() => setLeftTab("folder")} title="Findings for every file in the last validated folder, grouped by file.">
+                            Folder{folderProgress ? "…" : folderIssues.length ? ` (${folderIssues.length})` : ""}
+                        </button>
+                        {/* Config tab hidden: its panel below still works, but nothing switches to it. Restore by putting the tab button back. */}
+                    </div>
+
+                    {leftTab === "topology" && (
+                        <div style={S.scroll}>
+                            <div style={{ padding: "6px 10px", borderBottom: "1px solid #eef2f6" }}>
+                                <input style={S.input} placeholder="Search tag, type, ID, persistent ID..." value={search} onChange={e => setSearch(e.target.value)} />
+                            </div>
+                            <div style={{ padding: "4px 8px", borderBottom: "1px solid #eef2f6", display: "flex", gap: 6 }}>
+                                <button style={S.btnSmall} onClick={expandAll}>Expand all</button>
+                                <button style={S.btnSmall} onClick={collapseAll}>Collapse all</button>
+                                {parsed && <span style={{ fontSize: 12, color: "#888", marginLeft: "auto" }}>{parsed.flatTree.length} objects</span>}
+                            </div>
+                            <div style={{ padding: 6 }}>
+                                {parseError && <div style={{ color: "#cf222e", padding: 8, fontSize: 13 }}>{parseError}</div>}
+                                {filteredTree ? (
+                                    <TreeNode node={filteredTree} selectedId={selectedId} onSelect={handleSelect} expanded={expanded} setExpanded={setExpanded} level={0} />
+                                ) : (
+                                    !parseError && <div style={{ color: "#888", fontSize: 13, padding: 8 }}>Load both files to view the topology.</div>
+                                )}
+                            </div>
                         </div>
-                        <div style={{ padding: "4px 8px", borderBottom: "1px solid #eef2f6", display: "flex", gap: 6 }}>
-                            <button style={S.btnSmall} onClick={expandAll}>Expand all</button>
-                            <button style={S.btnSmall} onClick={collapseAll}>Collapse all</button>
-                            {parsed && <span style={{ fontSize: 12, color: "#888", marginLeft: "auto" }}>{parsed.flatTree.length} objects</span>}
-                        </div>
-                        <div style={{ padding: 6 }}>
-                            {parseError && <div style={{ color: "#cf222e", padding: 8, fontSize: 13 }}>{parseError}</div>}
-                            {filteredTree ? (
-                                <TreeNode node={filteredTree} selectedId={selectedId} onSelect={handleSelect} expanded={expanded} setExpanded={setExpanded} level={0} />
-                            ) : (
-                                !parseError && <div style={{ color: "#888", fontSize: 13, padding: 8 }}>Load both files to view the topology.</div>
+                    )}
+
+                    {leftTab === "validation" && (
+                        <div style={S.scroll}>
+                            {!validationStarted && (
+                                <div style={{ padding: 16, color: "#888", fontSize: 13 }}>
+                                    {mainFileLoaded ? 'Click "Run Validation" in the toolbar to check this file against the XSD schema and the DEXPI 1.4 model/Profile.' : "Load a Proteus XML file first."}
+                                </div>
+                            )}
+                            {validationRunning && (
+                                <div style={{ padding: 16, color: "#888", fontSize: 13, display: "flex", alignItems: "center" }}><Spinner />Validating…</div>
+                            )}
+                            {xsdStatus === "error" && (
+                                <div style={{ padding: "12px 16px", color: "#cf222e", fontSize: 13 }}>XSD schema validation failed to run: {xsdError}</div>
+                            )}
+                            {xsdStatus === "schema-incompatible" && (
+                                <div style={{ padding: 12 }}>
+                                    <div style={{ padding: "8px 10px", borderBottom: "1px solid #eef2f6", display: "flex", alignItems: "center", gap: 8 }}>
+                                        <span style={S.badge("#9a6700")}>XSD schema validation unavailable</span>
+                                        <span style={{ fontSize: 11, color: "#888" }}>ProteusPIDSchema 4.1.1 disc.xsd</span>
+                                    </div>
+                                    <div style={{ marginTop: 10, padding: 10, background: "#fff8e6", border: "1px solid #f0d78c", borderRadius: 6, fontSize: 13, color: "#4d3800", lineHeight: 1.5 }}>
+                                        {xsdError}
+                                    </div>
+                                </div>
+                            )}
+                            {rdlStatus === "done" && !rdlResult && (
+                                <div style={{ padding: "12px 16px", color: "#cf222e", fontSize: 13 }}>DEXPI RDL/Profile validation failed to run - see the browser console for details.</div>
+                            )}
+                            {!validationRunning && validationStarted && (xsdResult || rdlResult) && (
+                                <>
+                                    <div style={{ padding: "8px 10px", borderBottom: "1px solid #eef2f6", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                                        {allIssues.length === 0
+                                            ? <span style={S.badge("#1a7f37")}>No issues found</span>
+                                            : <span style={S.badge("#cf222e")}>{allIssues.length} issue{allIssues.length === 1 ? "" : "s"}</span>}
+                                        <span style={{ fontSize: 11, color: "#888" }}>
+                                            {xsdResult ? "ProteusPIDSchema 4.1.1 disc.xsd" : ""}
+                                            {xsdResult && rdlResult ? " + " : ""}
+                                            {rdlResult ? `DEXPI 1.4 model/Profile (${rdlResult.summary.totalObjects} objects)` : ""}
+                                        </span>
+                                        {allIssues.length > 0 && (
+                                            <button
+                                                style={{ ...S.btnSmall, marginLeft: "auto" }}
+                                                onClick={() => {
+                                                    const { columns, rows } = singleFileReportRows();
+                                                    downloadCSV(rows, columns.map(c => c.header), `${mainFileName || "validation"}.csv`);
+                                                }}
+                                            >CSV</button>
+                                        )}
+                                    </div>
+                                    {xsdResult?.filteredOut?.count > 0 && (
+                                        <div style={{ padding: "6px 10px", fontSize: 11, color: "#57606a", background: "#f6f8fa", borderBottom: "1px solid #eef2f6" }} title={xsdResult.filteredOut.sets.join(", ")}>
+                                            {xsdResult.filteredOut.count} non-DEXPI attribute group{xsdResult.filteredOut.count === 1 ? "" : "s"} ({xsdResult.filteredOut.sets.length} vendor Set{xsdResult.filteredOut.sets.length === 1 ? "" : "s"}) excluded from XSD validation — only Set="DexpiAttributes"/"DexpiCustomAttributes" are checked.
+                                        </div>
+                                    )}
+                                    {/* Severity filter/count chips: click to show only issues of that type. */}
+                                    <div style={{ padding: "6px 10px", borderBottom: "1px solid #eef2f6", display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
+                                        {["All", "Error", "Warning", "Info"].map(f => {
+                                            const count = f === "All" ? allIssues.length : (issueCounts[f.toLowerCase()] || 0);
+                                            const active = validationFilter === f;
+                                            return (
+                                                <button
+                                                    key={f}
+                                                    style={{ ...S.btnSmall, background: active ? "#0969da" : "white", color: active ? "white" : "#111", borderColor: active ? "#0969da" : "#c7ced6" }}
+                                                    onClick={() => setValidationFilter(f)}
+                                                >{f} ({count})</button>
+                                            );
+                                        })}
+                                    </div>
+                                    {issuesByCode.size > 1 && (
+                                        <div style={{ padding: "4px 10px", borderBottom: "1px solid #eef2f6", display: "flex", gap: 6 }}>
+                                            <button style={S.btnSmall} onClick={() => setCollapsedValidationCodes(new Set())}>Expand all</button>
+                                            <button style={S.btnSmall} onClick={() => setCollapsedValidationCodes(new Set(issuesByCode.keys()))}>Collapse all</button>
+                                        </div>
+                                    )}
+                                    {issuesByCode.size === 0 ? (
+                                        <div style={{ padding: 16, color: "#888", fontSize: 13 }}>No issues{validationFilter !== "All" ? ` of type "${validationFilter}"` : ""}.</div>
+                                    ) : [...issuesByCode.entries()].map(([code, items]) => {
+                                        const isFolded = collapsedValidationCodes.has(code);
+                                        const codeLabel = items[0]?.codeLabel || VALIDATION_CODE_LABELS[code] || code;
+                                        const codeSeverity = resolveValidationSeverity(code, severityConfig);
+                                        return (
+                                            <div key={code}>
+                                                <div
+                                                    onClick={() => setCollapsedValidationCodes(prev => { const n = new Set(prev); n.has(code) ? n.delete(code) : n.add(code); return n; })}
+                                                    style={{ padding: "6px 10px", fontWeight: 600, fontSize: 12, background: "#f6f8fa", borderBottom: "1px solid #eef2f6", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}
+                                                >
+                                                    <span style={{ width: 12, display: "inline-block", textAlign: "center", flexShrink: 0, color: "#888", fontWeight: 400 }}>{isFolded ? "▸" : "▾"}</span>
+                                                    <span style={S.badge(SEV_COLORS[codeSeverity])}>{SEV_LABELS[codeSeverity]}</span>
+                                                    <span style={{ fontFamily: "monospace", fontSize: 11, fontWeight: 700, color: "#24292f" }}>{code}</span>
+                                                    <span>{codeLabel} ({items.length})</span>
+                                                </div>
+                                                {!isFolded && items.map((issue, i) => {
+                                                    const isNavable = !!(issue.objectId && parsed?.treeMap?.has(issue.objectId));
+                                                    const isActive = isNavable && issue.objectId === selectedId;
+                                                    return (
+                                                        <div key={issue.key ?? i}
+                                                            onClick={() => { if (isNavable) { handleSelect(issue.objectId); setRightTab("issues"); } }}
+                                                            style={{ padding: "8px 10px", borderBottom: "1px solid #eef2f6", cursor: isNavable ? "pointer" : "default", borderLeft: isActive ? "3px solid #0969da" : "3px solid transparent", background: isActive ? "#f0f7ff" : "transparent", transition: "background 0.1s" }}
+                                                        >
+                                                            {/* Top line: rule code, type, and line/nav icon. Second line: the validation error's descriptive label, separate from the free-text message below it. */}
+                                                            <div style={{ display: "flex", gap: 5, alignItems: "center", marginBottom: 2 }}>
+                                                                <span style={S.badge(SEV_COLORS[issue.severity])}>{SEV_LABELS[issue.severity]}</span>
+                                                                <span style={{ fontFamily: "monospace", fontSize: 11, fontWeight: 700, color: "#24292f" }}>{issue.code}</span>
+                                                                {issue.line != null && <span style={{ fontSize: 11, fontFamily: "monospace", color: "#555" }}>line {issue.line}</span>}
+                                                                {isNavable && <span title="Click to highlight element" style={{ fontSize: 10, color: "#0969da", marginLeft: 2 }}>⊕</span>}
+                                                            </div>
+                                                            <div style={{ fontSize: 12, fontWeight: 600, color: "#57606a", marginBottom: 2 }}>{issue.codeLabel}</div>
+                                                            <div style={{ fontSize: 12, color: "#333", marginBottom: 2 }}>{issue.message}</div>
+                                                            {issue.objectId && (
+                                                                <div style={{ fontSize: 11, color: isNavable ? "#0969da" : "#57606a", fontFamily: "monospace" }}>
+                                                                    {isNavable ? "↳ " : ""}{issue.objectId}
+                                                                    {!isNavable && <span style={{ color: "#cf222e", marginLeft: 4 }} title="No graphical representation found">⚠ no symbol</span>}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        );
+                                    })}
+                                </>
                             )}
                         </div>
-                    </div>
+                    )}
+
+                    {leftTab === "folder" && (
+                        <div style={S.scroll}>
+                            {folderProgress && (
+                                <div style={{ padding: 16, fontSize: 13, color: "#57606a" }}>
+                                    <div style={{ display: "flex", alignItems: "center" }}>
+                                        <Spinner />Validating {Math.min(folderProgress.done + 1, folderProgress.total)} of {folderProgress.total}…
+                                    </div>
+                                    {folderProgress.name && (
+                                        <div style={{ marginTop: 4, fontSize: 11, fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{folderProgress.name}</div>
+                                    )}
+                                    <button style={{ ...S.btnSmall, marginTop: 8 }} onClick={() => { folderCancelRef.current = true; }}>Stop</button>
+                                </div>
+                            )}
+                            {!folderProgress && !folderResults && (
+                                <div style={{ padding: 16, color: "#888", fontSize: 13, lineHeight: 1.5 }}>
+                                    Use <b>Validate Folder…</b> above to check every .xml file in a folder and its subfolders against the same two engines.
+                                    <div style={{ marginTop: 8, padding: "8px 10px", background: "#f6f8fa", border: "1px solid #eef2f6", borderRadius: 6 }}>
+                                        <b>Nothing is uploaded.</b> The files are read and validated inside this browser, on this machine, and are never sent to a server.
+                                        The browser asks permission first; its wording ("view and copy", or "upload") is the browser asking whether this page may <i>read</i> those files into itself.
+                                    </div>
+                                    <div style={{ marginTop: 8 }}>
+                                        {discFileLoaded
+                                            ? <>Profile in use: <b>{discFileName}</b>.</>
+                                            : "No DiscProfile.xml is loaded, so profile-dependent codes will not be evaluated."}
+                                    </div>
+                                </div>
+                            )}
+                            {!folderProgress && folderResults?.length === 0 && (
+                                <div style={{ padding: 16, color: "#888", fontSize: 13 }}>No .xml files found in that folder.</div>
+                            )}
+                            {!folderProgress && folderResults?.length > 0 && (
+                                <>
+                                    <div style={{ padding: "8px 10px", borderBottom: "1px solid #eef2f6", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                                        {folderIssues.length === 0
+                                            ? <span style={S.badge("#1a7f37")}>No issues found</span>
+                                            : <span style={S.badge("#cf222e")}>{folderIssues.length} issue{folderIssues.length === 1 ? "" : "s"}</span>}
+                                        <span style={{ fontSize: 11, color: "#888" }} title="Validated in this browser - no file was uploaded">
+                                            {folderName ? `${folderName} · ` : ""}
+                                            {folderResults.length} file{folderResults.length === 1 ? "" : "s"}
+                                            {discFileLoaded ? ` · ${discFileName}` : " · no profile"}
+                                            {" · checked in this browser, nothing uploaded"}
+                                        </span>
+                                    </div>
+                                    <div style={{ padding: "6px 10px", borderBottom: "1px solid #eef2f6", display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
+                                        {["All", "Error", "Warning", "Info"].map(f => {
+                                            const count = f === "All" ? folderIssues.length : (folderCounts[f.toLowerCase()] || 0);
+                                            const active = folderFilter === f;
+                                            return (
+                                                <button
+                                                    key={f}
+                                                    style={{ ...S.btnSmall, background: active ? "#0969da" : "white", color: active ? "white" : "#111", borderColor: active ? "#0969da" : "#c7ced6" }}
+                                                    onClick={() => setFolderFilter(f)}
+                                                >{f} ({count})</button>
+                                            );
+                                        })}
+                                        <button style={{ ...S.btnSmall, marginLeft: "auto" }} onClick={() => setExplorerOpen(true)} disabled={!folderIssues.length} title="Drill down Layer -> Category -> Code, then into the documents and lines each code was raised on.">Explorer</button>
+                                        <button style={S.btnSmall} onClick={downloadFolderCsv} disabled={!folderResults.length}>CSV</button>
+                                        <button style={S.btnSmall} onClick={downloadFolderXlsx} disabled={!folderResults.length}>Excel</button>
+                                    </div>
+                                    <div style={{ padding: "4px 10px", borderBottom: "1px solid #eef2f6", display: "flex", gap: 6 }}>
+                                        <button style={S.btnSmall} onClick={() => setCollapsedFolderFiles(new Set())}>Expand all</button>
+                                        <button style={S.btnSmall} onClick={() => setCollapsedFolderFiles(new Set(folderResults.map(r => r.path)))}>Collapse all</button>
+                                    </div>
+                                    {folderResults.map(r => {
+                                        const items = folderByFile.get(r.path) || [];
+                                        if (!items.length && folderFilter !== "All" && !r.error) return null;
+                                        const isFolded = collapsedFolderFiles.has(r.path);
+                                        return (
+                                            <div key={r.path}>
+                                                <div
+                                                    onClick={() => setCollapsedFolderFiles(prev => { const n = new Set(prev); n.has(r.path) ? n.delete(r.path) : n.add(r.path); return n; })}
+                                                    style={{ padding: "6px 10px", background: "#f6f8fa", borderBottom: "1px solid #eef2f6", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}
+                                                >
+                                                    <span style={{ width: 12, textAlign: "center", flexShrink: 0, color: "#888", fontSize: 12 }}>{isFolded ? "▸" : "▾"}</span>
+                                                    <span style={{ fontWeight: 600, fontSize: 12, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.path}>{r.path}</span>
+                                                    {r.error
+                                                        ? <span style={S.badge("#cf222e")}>failed</span>
+                                                        : items.length === 0
+                                                            ? <span style={S.badge("#1a7f37")}>clean</span>
+                                                            : <span style={{ fontSize: 11, color: "#57606a" }}>{items.length}</span>}
+                                                    <button
+                                                        style={{ ...S.btnSmall, flexShrink: 0 }}
+                                                        onClick={ev => { ev.stopPropagation(); openFolderFile(r.path); }}
+                                                        title="Load this file into the viewer"
+                                                    >Open</button>
+                                                </div>
+                                                {!isFolded && r.error && (
+                                                    <div style={{ padding: "8px 10px", fontSize: 12, color: "#cf222e", borderBottom: "1px solid #eef2f6" }}>{r.error}</div>
+                                                )}
+                                                {!isFolded && r.note && (
+                                                    <div style={{ padding: "4px 10px", fontSize: 11, color: "#9a6700", background: "#fff8e6", borderBottom: "1px solid #eef2f6" }}>{r.note}</div>
+                                                )}
+                                                {!isFolded && items.map(issue => (
+                                                    <div key={issue.key} style={{ padding: "8px 10px", borderBottom: "1px solid #eef2f6" }}>
+                                                        <div style={{ display: "flex", gap: 5, alignItems: "center", marginBottom: 2 }}>
+                                                            <span style={S.badge(SEV_COLORS[issue.severity])}>{SEV_LABELS[issue.severity]}</span>
+                                                            <span style={{ fontFamily: "monospace", fontSize: 11, fontWeight: 700, color: "#24292f" }}>{issue.code}</span>
+                                                            {issue.line != null && <span style={{ fontSize: 11, fontFamily: "monospace", color: "#555" }}>line {issue.line}</span>}
+                                                        </div>
+                                                        <div style={{ fontSize: 12, fontWeight: 600, color: "#57606a", marginBottom: 2 }}>{issue.codeLabel}</div>
+                                                        <div style={{ fontSize: 12, color: "#333" }}>{issue.message}</div>
+                                                        {issue.objectId && (
+                                                            <div style={{ fontSize: 11, color: "#57606a", fontFamily: "monospace" }}>{issue.objectId}</div>
+                                                        )}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        );
+                                    })}
+                                </>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Not reachable while the Config tab button is hidden. */}
+                    {leftTab === "config" && (
+                        <div style={S.scroll}>
+                            <div style={S.section}>
+                                <div style={{ fontWeight: 700, marginBottom: 8, fontSize: 13 }}>Validation Type Configuration</div>
+                                <div style={{ fontSize: 11, color: "#57606a", marginBottom: 10, lineHeight: 1.5 }}>
+                                    Each code defaults to its classification severity - Major shows as Error, Minor as Warning. Change any code's type here; the Validation tab's list, counts and filter chips update immediately, without re-running validation.
+                                </div>
+                                <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+                                    <button style={S.btnSmall} onClick={exportSeverityConfig} disabled={allValidationCodes.length === 0}>Export JSON</button>
+                                    <label style={{ ...S.btnSmall, cursor: "pointer" }}>Import JSON<input type="file" accept=".json" style={{ display: "none" }} onChange={importSeverityConfig} /></label>
+                                    {Object.keys(severityConfig).length > 0 && (
+                                        <button style={{ ...S.btnSmall, marginLeft: "auto" }} onClick={() => setSeverityConfig({})}>Reset all</button>
+                                    )}
+                                </div>
+                                {allValidationCodes.length === 0 ? (
+                                    <div style={{ color: "#888", fontSize: 13 }}>Run validation first to see codes.</div>
+                                ) : allValidationCodes.map(code => {
+                                    const effective = resolveValidationSeverity(code, severityConfig);
+                                    const overridden = !!severityConfig[code];
+                                    const label = VALIDATION_CODE_LABELS[code] || code;
+                                    return (
+                                        <div key={code} style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 6, padding: "4px 6px", borderRadius: 4, background: overridden ? "#f0f7ff" : "transparent" }}>
+                                            <span style={{ width: 8, height: 8, borderRadius: "50%", background: SEV_COLORS[effective], flexShrink: 0, display: "inline-block" }} />
+                                            <span style={{ fontSize: 11, fontFamily: "monospace", fontWeight: 700, color: "#24292f", flexShrink: 0, width: 82 }}>{code}</span>
+                                            <span style={{ fontSize: 12, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={label}>{label}</span>
+                                            <select value={effective} onChange={e => updateSeverity(code, e.target.value)} style={{ fontSize: 12, padding: "2px 4px", border: "1px solid #c7ced6", borderRadius: 4 }}>
+                                                <option value="error">Error</option>
+                                                <option value="warning">Warning</option>
+                                                <option value="info">Info</option>
+                                            </select>
+                                            {overridden && <button title="Reset to default" style={{ fontSize: 10, padding: "1px 5px", border: "1px solid #c7ced6", borderRadius: 4, cursor: "pointer", background: "white", color: "#57606a" }} onClick={() => updateSeverity(code, null)}>↺</button>}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
                 </div>
             )}
 
             {/* CENTER PANEL */}
             <div style={{ position: "relative", overflow: "hidden", background: "#f8fafc", display: "flex", flexDirection: "column" }}>
                 <div style={{ ...S.toolbar, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                    {mainFileName && (
-                        <div style={{ fontSize: 12, color: "#57606a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 240, flexShrink: 0 }} title={mainFileName}>
-                            Proteus XML: <span style={{ fontWeight: 600, color: "#24292f" }}>{mainFileName}</span>
-                        </div>
-                    )}
                     <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{parsed?.meta?.drawingNumber || ""}</div>
                         <div style={{ fontSize: 12, color: "#57606a" }}>{parsed?.meta?.drawingName || ""}{parsed?.meta?.subtitle ? ` - ${parsed.meta.subtitle}` : ""}</div>
                     </div>
                     <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
                         <button style={S.btn} onClick={() => { if (!parsed) return; const b = boundsFromElements(parsed.graphics); setFullBounds(b); setViewBox({ x: b.minX, y: b.minY, w: b.maxX - b.minX, h: b.maxY - b.minY }); }} title="Fit drawing to window">Fit</button>
+                        {zOrderOverrides.size > 0 && (
+                            <button style={S.btn} onClick={() => setZOrderOverrides(new Set())} title="Clear every 'Send to Back' draw-order override and restore the file's original paint order">
+                                Reset Z-Order ({zOrderOverrides.size})
+                            </button>
+                        )}
                         <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#57606a" }} title="Connector/centerline stroke width as a percentage of its original width. 100% = unchanged; raise it to bulk up thin lines to match a BG reference image's line weight.">
                             Line Boost
                             <input type="number" min={1} step={1} value={lineBoostPct} onChange={e => { const v = parseFloat(e.target.value); if (!Number.isNaN(v) && v > 0) setLineBoostPct(v); }} style={S.numBox} title="Line width, as a percentage of its original width" />
@@ -1190,14 +1860,11 @@ export default function App() {
                             <input type="checkbox" checked={selectHighlightSubComponents} onChange={e => setSelectHighlightSubComponents(e.target.checked)} />
                             Sub-components
                         </label>
-                        <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#57606a", cursor: "pointer" }} title="Labels synthesized from the loaded DiscProfile.xml's LabelTemplate definitions, shown for symbols whose object carries no Label XML element of its own.">
-                            <input type="checkbox" checked={showProfileLabels} onChange={e => setShowProfileLabels(e.target.checked)} />
-                            Profile labels
-                        </label>
-                        {zOrderOverrides.size > 0 && (
-                            <button style={S.btn} onClick={() => setZOrderOverrides(new Set())} title="Clear every 'Send to Back' draw-order override in one action">
-                                Reset Z-Order ({zOrderOverrides.size})
-                            </button>
+                        {discFileLoaded && (
+                            <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#57606a", cursor: "pointer" }} title="Toggle between a DiscProfile-catalogued symbol's own exported label text and the loaded DiscProfile.xml's attribute-resolved LabelTemplate value for it - checked shows the catalog's LabelTemplate(s) as an overlay (even for symbols with no Label XML of their own); unchecked shows the profile's resolved value in place of the original literal text.">
+                                <input type="checkbox" checked={showProfileLabels} onChange={e => setShowProfileLabels(e.target.checked)} />
+                                Profile labels
+                            </label>
                         )}
                         <button style={S.btn} onClick={() => bgInputRef.current?.click()} title="Overlay an image behind the drawing">BG Image</button>
                         {bgImage && <button style={{ ...S.btn, background: showBgControls ? "#eaf2ff" : "white" }} onClick={() => setShowBgControls(p => !p)}>BG Controls</button>}
@@ -1208,9 +1875,6 @@ export default function App() {
 
                 {bgImage && showBgControls && (
                     <div style={{ padding: "6px 12px", borderBottom: "1px solid #d0d7de", background: "#f6f8fa", display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", fontSize: 12 }}>
-                        <label style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                            <input type="checkbox" checked={bgImage.visible} onChange={e => setBgImage(b => ({ ...b, visible: e.target.checked }))} /> Visible
-                        </label>
                         <label style={{ display: "flex", alignItems: "center", gap: 4 }} title="Blend between the BG image and the DEXPI drawing. Center (0): both fully visible. Drag right: the BG image fades out, the drawing stays fully visible. Drag left: the drawing fades out, the BG image stays fully visible.">
                             Blend
                             <input type="range" min={-1} max={1} step={0.05} value={bgImage.blend} onChange={e => setBgImage(b => ({ ...b, blend: parseFloat(e.target.value) }))} style={{ width: 70 }} />
@@ -1231,18 +1895,21 @@ export default function App() {
                             <input type="number" step={Math.max(0.01, boundsH / 500)} value={bgImage.offsetY} onChange={e => { const v = parseFloat(e.target.value); if (!Number.isNaN(v)) setBgImage(b => ({ ...b, offsetY: v })); }} style={S.numBoxWide} title="Y offset, in drawing units, from the auto-fit position" />
                         </label>
                         <button style={S.btnSmall} onClick={() => setBgImage(b => ({ ...b, scale: 1, offsetX: 0, offsetY: 0 }))} title="Reset to the auto-fit (centered, aspect-correct) placement">Reset fit</button>
+                        {/* Embeds this PNG's current placement into a downloaded copy so a future load starts pre-aligned. Only PNG files support an embedded default. */}
                         <button
-                            style={{ ...S.btnSmall, opacity: bgImage.isPng ? 1 : 0.5, cursor: bgImage.isPng ? "pointer" : "not-allowed" }}
+                            style={{ ...S.btnSmall, borderColor: "#0969da", color: "#0969da" }}
                             disabled={!bgImage.isPng}
                             onClick={downloadBgPlacementPng}
                             title={bgImage.isPng
                                 ? "Embed the current Scale / X / Y into a copy of this PNG and download it, so the next time this image is loaded it starts at this placement instead of the auto-fit - the original file you selected is left untouched"
-                                : "Only PNG supports an embedded placement default"}
+                                : "Only PNG images support an embedded placement default - this file isn't a PNG"}
                         >
                             ⬇ Download PNG with placement
                         </button>
                         {bgImage.isPng && bgImage.embeddedPlacement && (
-                            <button style={S.btnSmall} onClick={clearBgDefault} title="Download a copy of this PNG with the saved placement default removed">Clear Default</button>
+                            <button style={S.btnSmall} onClick={clearBgDefault} title="Download a copy of this PNG with the saved placement default removed">
+                                Clear Default
+                            </button>
                         )}
                         <button style={{ ...S.btnSmall, color: "#cf222e" }} onClick={() => { if (bgObjectUrlRef.current) { URL.revokeObjectURL(bgObjectUrlRef.current); bgObjectUrlRef.current = null; } setBgImage(null); setShowBgControls(false); }}>Remove</button>
                     </div>
@@ -1265,44 +1932,28 @@ export default function App() {
                     <svg ref={svgElRef} viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`} width="100%" height="100%" style={{ display: "block" }} onAuxClick={e => e.preventDefault()}>
                         {bgImage && bgPlacement && (
                             <g style={{ display: bgImage.visible ? "inline" : "none", opacity: bgOpacity, pointerEvents: "none" }}>
-                                <image href={bgImage.objectUrl} x={bgPlacement.x} y={bgPlacement.y} width={bgPlacement.width} height={bgPlacement.height} preserveAspectRatio="none" />
+                                <image href={bgImage.src} x={bgPlacement.x} y={bgPlacement.y} width={bgPlacement.width} height={bgPlacement.height} preserveAspectRatio="none" />
                                 <rect x={bgPlacement.x} y={bgPlacement.y} width={bgPlacement.width} height={bgPlacement.height} fill={BG_TINT_COLOR} style={{ mixBlendMode: "color" }} />
                             </g>
                         )}
                         <g opacity={drawingOpacity}>
                         {paintOrderElements
-                            // "lbltpl_"-prefixed keys are the LabelTemplate-synthesized
-                            // labels (see buildProteusGraphics()'s label fallback in
-                            // proteusParser.js) - hidden here when the Profile labels
-                            // checkbox is off, leaving real <Label> XML-derived text
-                            // (key prefix "lbl_") untouched either way.
-                            //
-                            // Part A - Draw-Order Override: paintOrderElements (not
-                            // parsed.graphics.elements directly) is what determines
-                            // paint/click order here, so a "Send to Back" override
-                            // takes effect immediately with no other change to this loop.
+                            // "lbltpl_"-prefixed keys are catalog-LabelTemplate overlay texts for DiscProfile-catalogued symbols; hidden when the Profile labels checkbox is off.
+                            // Iterates paintOrderElements (not the raw parsed list) so "Send to Back" overrides affect both paint and click order.
                             .filter(el => showProfileLabels || !el.key.startsWith("lbltpl_"))
                             .map(el => {
                             const isSelected = !!el.representedId && selectedRepresentedIds.has(el.representedId);
                             const ch = connectivityHighlight;
                             const connColor = el.representedId ? (ch.upstream.has(el.representedId) ? "#0969da" : ch.downstream.has(el.representedId) ? "#1a7f37" : ch.group.has(el.representedId) ? "#8250df" : null) : null;
                             if (el.kind === "symbolUsage") return <SymbolGraphic key={el.key} el={el} selected={isSelected} connHighlight={connColor} onSelect={handleSelect} boostPct={lineBoostPct} boostSymbolOutlines={boostSymbolOutlines} />;
-                            return <PrimitiveGraphic key={el.key} el={el} selected={isSelected} connHighlight={connColor} onSelect={handleSelect} nodePosMap={parsed.graphics.nodePosMap} boostPct={lineBoostPct} boostSymbolOutlines={boostSymbolOutlines} />;
+                            return <PrimitiveGraphic key={el.key} el={el} selected={isSelected} connHighlight={connColor} onSelect={handleSelect} nodePosMap={parsed.graphics.nodePosMap} boostPct={lineBoostPct} boostSymbolOutlines={boostSymbolOutlines} showProfileLabels={showProfileLabels} />;
                         })}
                         </g>
-                        {/* Heat-trace overlays - rendered on top, only when a DiscProfile.xml
-                            is loaded and at least one object resolves to an active
-                            HeatTracingType (see dexpiParser.js's buildHeatTraceSet()). */}
+                        {/* Heat-trace overlays: rendered on top, only when a DiscProfile.xml is loaded and at least one object has an active HeatTracingType. */}
                         {parsed?.heatTraceSet?.size > 0 && parsed.graphics.elements.map(el => {
                             // Never draw heat-trace overlays on label or annotation elements
                             if (el.elementRole === "label") return null;
-                            // Proteus CenterLine polylines bridge through htSegmentId (see
-                            // proteusParser.js's buildProteusGraphics()) since the synthetic
-                            // CenterLine tree node itself is never RDL-eligible for
-                            // HeatTracingType inheritance - only its owning
-                            // PipingNetworkSegment is, so the lookup below uses the
-                            // segment's id rather than el.representedId (the CenterLine's
-                            // own id) for this one case.
+                            // Proteus CenterLine polylines bridge through htSegmentId: HeatTracingType inheritance applies to the owning PipingNetworkSegment, not the synthetic CenterLine node, so the lookup uses the segment's id.
                             if (el.htSegmentId && el.primitive?.kind === "polyline" && parsed.heatTraceSet.has(el.htSegmentId)) {
                                 return <HeatTracePolyline key={`ht_${el.key}`} points={el.primitive.points} />;
                             }
@@ -1338,7 +1989,11 @@ export default function App() {
                         </div>
                     </div>
                     <div style={S.tabBar}>
-                        {[["details", "Object"], ["connectivity", "Connections"]].map(([t, label]) => (
+                        {[
+                            ["details", "Object"],
+                            ["connectivity", "Connections"],
+                            ["issues", `Issues${selectedId && issuesByObjectId.has(selectedId) ? ` (${issuesByObjectId.get(selectedId).length})` : ""}`],
+                        ].map(([t, label]) => (
                             <button key={t} style={S.tab(rightTab === t)} onClick={() => setRightTab(t)}>{label}</button>
                         ))}
                     </div>
@@ -1348,23 +2003,37 @@ export default function App() {
                                 <div style={S.section}>
                                     <div style={{ fontWeight: 600, marginBottom: 4 }}>{selectedNode?.label || "No selection"}</div>
                                     <div style={{ fontSize: 12, color: "#57606a" }}>{selectedNode?.type || ""}</div>
+                                    {selectedNode?.componentClass && (
+                                        // Proteus/DEXPI 1.4 only: the raw ComponentClass attribute as written in the source XML, shown alongside the resolved DEXPI 2.0 `type` above it.
+                                        // Not set for native DEXPI 2.0 files.
+                                        <div style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 5 }}>
+                                            <span style={{ fontSize: 10, color: "#888", textTransform: "uppercase", letterSpacing: 0.3 }}>ComponentClass</span>
+                                            <span style={{ fontSize: 12, fontFamily: "monospace", fontWeight: 600, padding: "1px 6px", background: "#f0f7ff", color: "#0969da", borderRadius: 4 }}>
+                                                {selectedNode.componentClass}
+                                            </span>
+                                        </div>
+                                    )}
                                     {selectedNode?.objectId && (
                                         <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                                             <div style={{ fontSize: 12, fontFamily: "monospace", wordBreak: "break-all" }}>{selectedNode.objectId}</div>
+                                            {/* Only offered when the selected object has at least one associated graphic. */}
                                             {representedIdsWithGraphics.has(selectedNode.objectId) && (
-                                                <>
-                                                    <button
-                                                        style={S.btnSmall}
-                                                        onClick={toggleSendToBack}
-                                                        title="Move this object's symbol behind everything else in the drawing, so overlapping or nested items underneath it become clickable/selectable"
-                                                    >
-                                                        {zOrderOverrides.has(selectedNode.objectId) ? "↺ Restore order" : "⇩ Send to Back"}
-                                                    </button>
-                                                    {zOrderOverrides.has(selectedNode.objectId) && (
-                                                        <span style={S.badge("#57606a")} title="This object's draw order has been overridden">Sent to back</span>
-                                                    )}
-                                                </>
+                                                <button
+                                                    style={{ ...S.btnSmall, background: zOrderOverrides.has(selectedNode.objectId) ? "#eaf2ff" : "white", color: zOrderOverrides.has(selectedNode.objectId) ? "#0969da" : "#111", flexShrink: 0 }}
+                                                    onClick={toggleSendToBack}
+                                                    title={zOrderOverrides.has(selectedNode.objectId)
+                                                        ? "Restore this object's symbol(s) to their original position in the paint order"
+                                                        : "Move this object's symbol behind everything else in the drawing, so overlapping or nested items underneath it become clickable/selectable"}
+                                                >
+                                                    {zOrderOverrides.has(selectedNode.objectId) ? "↺ Restore order" : "⇩ Send to Back"}
+                                                </button>
                                             )}
+                                        </div>
+                                    )}
+                                    {selectedNode?.objectId && zOrderOverrides.has(selectedNode.objectId) && (
+                                        // Indicator that this object's draw order is currently overridden.
+                                        <div style={{ marginTop: 6, fontSize: 11, color: "#0969da", background: "#eaf2ff", display: "inline-block", padding: "2px 7px", borderRadius: 999, fontWeight: 600 }}>
+                                            Sent to back
                                         </div>
                                     )}
                                     {selectedNode?.persistentIdentifiers?.length > 0 && (
@@ -1426,17 +2095,8 @@ export default function App() {
                                     })()}
                                 </div>
                                 {(() => {
-                                    // Proteus/DEXPI-1.3 only (see buildProteusGraphics()'s
-                                    // symbolReferences in proteusParser.js - always empty for
-                                    // native DEXPI 2.0 files, so this section just never shows
-                                    // for those). Keyed by the same representedId a symbolUsage
-                                    // graphics element carries - i.e. whichever element actually
-                                    // owns the ComponentName+Position that placed the symbol
-                                    // (a standalone Label itself, for symbols like a
-                                    // SpecialItemLabel's lock/special-item marker - not the
-                                    // object that Label happens to annotate), so selecting the
-                                    // symbol on the drawing (or its tree node) shows exactly what
-                                    // placed it, matching the source XML's own Position block.
+                                    // Proteus/DEXPI 1.4 only; always empty for native DEXPI 2.0 files. Keyed by the id of whichever element owns the ComponentName+Position that placed the symbol, so selecting it shows what placed it.
+                                    // Populated for any ComponentName+Position element, even one that didn't resolve to a drawable symbol.
                                     const ref = parsed?.graphics?.symbolReferences?.get(selectedId);
                                     if (!ref) return null;
                                     const vec = v => v ? `X="${v.x}" Y="${v.y}" Z="${v.z}"` : null;
@@ -1457,16 +2117,8 @@ export default function App() {
                                     );
                                 })()}
                                 {(() => {
-                                    // Label Symbol Reference: an OWNER object (e.g. GateValve-1)
-                                    // can carry its own nested <Label ComponentName="..."> placing
-                                    // a SEPARATE symbol of its own (e.g. an actuator/instrument
-                                    // marker such as GateValve-1-Label-1's ComponentName=
-                                    // "IM005B_SHAPE") - distinct from the owner's own "Symbol
-                                    // Reference" above (GateValve-1's own ComponentName=
-                                    // "PV005B_SHAPE"). labelSymbolReferencesByOwner (see
-                                    // proteusParser.js's buildProteusGraphics()) is keyed by the
-                                    // OWNER's id so this shows up here directly, without having to
-                                    // separately select the nested Label's own tree node.
+                                    // Label Symbol Reference: an owner object can carry its own nested <Label ComponentName="..."> placing a separate symbol, distinct from the owner's own Symbol Reference.
+                                    // labelSymbolReferencesByOwner is keyed by the owner's id.
                                     const labelRefs = parsed?.graphics?.labelSymbolReferencesByOwner?.get(selectedId);
                                     if (!labelRefs?.length) return null;
                                     const vec = v => v ? `X="${v.x}" Y="${v.y}" Z="${v.z}"` : null;
@@ -1497,10 +2149,7 @@ export default function App() {
                                     );
                                 })()}
                                 {(() => {
-                                    // Notes: Note ItemIDs referenced by any DependantAttribute on any of
-                                    // this element's (or its nested Labels') Text templates. Populated
-                                    // unconditionally, regardless of whether the reference resolves to
-                                    // anything else meaningful.
+                                    // Notes: Note ItemIDs referenced by any DependantAttribute on this element's (or its nested Labels') Text templates.
                                     const noteIds = parsed?.graphics?.noteReferencesByOwner?.get(selectedId);
                                     if (!noteIds?.length) return null;
                                     return (
@@ -1589,10 +2238,7 @@ export default function App() {
                                             <div style={{ fontWeight: 600, fontSize: 12, color, marginBottom: 4 }}>{label} ({ids.size})</div>
                                             {ids.size === 0 ? <div style={{ fontSize: 12, color: "#888" }}>None</div> : [...ids].map(id => {
                                                 const n = parsed?.treeMap?.get(id);
-                                                // suffix comes from the node's own `type` (e.g. "Plant/Segment.CenterLine"
-                                                // -> "CenterLine"), not a ComponentClass lookup - CenterLine entries have
-                                                // no ComponentClass of their own in the source XML, so this is the only
-                                                // place that label comes from.
+                                                // Suffix comes from the node's own `type` (e.g. "Plant/Segment.CenterLine" -> "CenterLine"), not a ComponentClass lookup.
                                                 const suffix = (n?.type || "").split(".").pop();
                                                 return (
                                                     <div key={id}
@@ -1607,15 +2253,8 @@ export default function App() {
                                             })}
                                         </div>
                                     );
-                                    // Everything NOT classified into upstream/downstream/group by
-                                    // buildConnectivityMap() (i.e. every ref for which
-                                    // isConnectivityRefProperty() is false) is a structural/Association
-                                    // relationship rather than physical (x/y-position-derived)
-                                    // connectivity - e.g. Segment/System containment or a signal wire's
-                                    // "has logical start"/"has logical end". These are grouped by their
-                                    // raw ref.property and rendered as their own separate, labeled
-                                    // sections below Group, using the same list styling, so they're
-                                    // visible without being conflated with genuine geometric connections.
+                                    // Refs not classified into upstream/downstream/group are structural/Association relationships (e.g. Segment/System containment, signal "has logical start/end").
+                                    // Grouped by their raw ref.property and rendered as separate labeled sections below Group.
                                     const otherGroups = new Map(); // property -> Set<id>
                                     (selectedNode.refs || []).forEach(r => {
                                         if (isConnectivityRefProperty(r.property)) return;
@@ -1637,8 +2276,41 @@ export default function App() {
                                 })()}
                             </div>
                         )}
+                        {rightTab === "issues" && (
+                            <div style={S.section}>
+                                {!selectedNode ? (
+                                    <div style={{ color: "#888", fontSize: 12 }}>Select an object.</div>
+                                ) : !validationStarted ? (
+                                    <div style={{ color: "#888", fontSize: 12 }}>Run validation first (toolbar "Run Validation" button) to see issues for this object.</div>
+                                ) : (() => {
+                                    const nodeIssues = issuesByObjectId.get(selectedId) || [];
+                                    if (nodeIssues.length === 0) return <div style={{ color: "#888", fontSize: 12 }}>No validation issues for this object.</div>;
+                                    return nodeIssues.map((issue, i) => (
+                                        <div key={issue.key ?? i} style={{ padding: "8px 0", borderBottom: i < nodeIssues.length - 1 ? "1px solid #eef2f6" : "none" }}>
+                                            <div style={{ display: "flex", gap: 5, alignItems: "center", marginBottom: 2 }}>
+                                                <span style={S.badge(SEV_COLORS[issue.severity])}>{SEV_LABELS[issue.severity]}</span>
+                                                <span style={{ fontFamily: "monospace", fontSize: 11, fontWeight: 700, color: "#24292f" }}>{issue.code}</span>
+                                            </div>
+                                            <div style={{ fontSize: 12, fontWeight: 600, color: "#57606a", marginBottom: 2 }}>{issue.codeLabel}</div>
+                                            <div style={{ fontSize: 12, color: "#333" }}>{issue.message}</div>
+                                        </div>
+                                    ));
+                                })()}
+                            </div>
+                        )}
                     </div>
                 </div>
+            )}
+
+            {explorerOpen && folderResults?.length > 0 && (
+                <ErrorExplorer
+                    issues={folderIssues}
+                    files={folderFilesRef.current}
+                    folderName={folderName}
+                    fileCount={folderResults.length}
+                    onOpenFile={path => { setExplorerOpen(false); openFolderFile(path); }}
+                    onClose={() => setExplorerOpen(false)}
+                />
             )}
         </div>
     );
