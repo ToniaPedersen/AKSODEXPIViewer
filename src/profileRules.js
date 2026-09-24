@@ -135,7 +135,23 @@ export function expectedCustomFamily(componentClass, facts, versionRenames) {
  * PRF-SCP-01 / PRF-SCP-02 - checks whether the class, and each DEXPI-modeled
  * attribute, is in the set the DISC profile sanctions.
  */
-export function checkDiscScope(els, facts, dexpiAttributeSets) {
+// DEXPI 1.x PropertyBreak properties accepted by PRF-SCP-02. DiscProfile.xml
+// models property breaks the DEXPI 2.0 way (LogicalBreak classes and
+// PropertyBreakExtension), which the Proteus schema cannot carry, so a 1.x
+// file keeps the 1.4 PropertyBreak attributes (all 0..1, typed by the
+// matching *BreakClassification enum).
+const DEXPI1X_ALLOWED_PROPERTIES = new Map([
+    ["PropertyBreak", new Set(["CompositionBreak", "InsulationBreak", "NominalDiameterBreak", "PipingClassBreak"])],
+]);
+
+/** True for a DEXPI 1.x (Proteus) file: ApplicationVersion 1.x, or none declared. */
+export function isDexpi1x(mainDoc) {
+    const info = mainDoc ? qsa(mainDoc, "PlantInformation")[0] : null;
+    const declared = (info?.getAttribute("ApplicationVersion") || "").trim();
+    return !declared || declared.startsWith("1.");
+}
+
+export function checkDiscScope(els, facts, dexpiAttributeSets, opts = {}) {
     const findings = [];
     if (!facts.hasProfile || !facts.allowedClasses.size) return findings;
     els.forEach(({ el, objectId, componentClass }) => {
@@ -156,8 +172,19 @@ export function checkDiscScope(els, facts, dexpiAttributeSets) {
             // attribute groups are excluded from this check.
             if (dexpiAttributeSets && !dexpiAttributeSets.has(group.getAttribute("Set") || "")) return;
             directChildrenByTag(group, "GenericAttribute").forEach(ga => {
-                const bare = normalizeAttributeName(ga.getAttribute("Name") || "");
+                const rawName = (ga.getAttribute("Name") || "").trim();
+                // Type-assignment attributes belong to CustomObject subtypes only.
+                if (rawName === "TypeNameAssignmentClass" || rawName === "TypeURIAssignmentClass") {
+                    if (opts.isCustomObject?.(componentClass)) return;
+                    findings.push({
+                        code: "PRF-SCP-02", severity: "warning", objectId, componentClass,
+                        message: `Property "${rawName}" is only allowed on CustomObject subtypes (Custom<X> classes), not on "${componentClass}".`,
+                    });
+                    return;
+                }
+                const bare = normalizeAttributeName(rawName);
                 if (!bare || facts.allowedProperties.has(bare)) return;
+                if (opts.dexpi1x && DEXPI1X_ALLOWED_PROPERTIES.get(componentClass)?.has(bare)) return;
                 findings.push({
                     code: "PRF-SCP-02", severity: "warning", objectId, componentClass,
                     message: `Property "${bare}" is not in the DISC profile's AllowedProperties list.`,

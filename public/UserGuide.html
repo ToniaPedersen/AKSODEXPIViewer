@@ -71,7 +71,7 @@ footer{margin-top:60px;padding-top:14px;border-top:1px solid var(--line);color:v
 <main>
 <h1 id="dexpi-14-disc-profile-viewer-user-guide">DEXPI 1.4 / DISC Profile Viewer — User Guide</h1>
 <p>A browser-based viewer and validation tool for legacy <strong>DEXPI 1.4 / Proteus 4.1.1</strong> XML files, rendered and checked using <strong>DEXPI 2.x profile</strong> symbols, classes and attributes by way of a loaded <code>DiscProfile.xml</code>.</p>
-<p>Developed by <strong>Tonia Pedersen</strong>.</p>
+<p>Developed by <strong>Tonia Pedersen</strong>. Version <strong>2.0</strong>. See <code>ChangeLog_0.0_to_2.0.md</code> for what changed.</p>
 <hr />
 <hr />
 <h2 id="1-introduction">1. Introduction</h2>
@@ -103,7 +103,7 @@ npm run dev
 <h3 id="23-running-validation">2.3 Running validation</h3>
 <p>Both engines run <strong>automatically</strong> when a file is opened, so the Validation tab is filled in by the time the drawing is on screen; its label carries the total issue count. Re-parsing after a profile is loaded or unloaded re-runs the model/profile engine against that profile — the schema engine depends on the file text alone and re-runs only when the file changes.</p>
 <p><strong>Run Validation</strong> (the blue, full-width button) re-runs both engines on the file already loaded. It is there for a deliberate re-check; nothing has to be clicked to get results.</p>
-<p>To check a whole folder rather than one file, use <strong>Validate Folder…</strong> (see <a href="#43-folder-tab-validating-a-whole-folder">4.3</a>).</p>
+<p>To check a whole folder rather than one file, use <strong>Validate…</strong> on the Folder tab (see <a href="#43-folder-tab-validating-a-whole-folder">4.3</a>).</p>
 <hr />
 <h2 id="3-interface-overview">3. Interface Overview</h2>
 <div class="tablewrap"><table>
@@ -151,11 +151,17 @@ npm run dev
 <li><strong>non-DEXPI attribute groups excluded</strong> — how many vendor <code>GenericAttributes</code> Sets were left out of the XSD check. Only <code>Set="DexpiAttributes"</code> and <code>Set="DexpiCustomAttributes"</code> are schema-checked.</li>
 </ul>
 <h3 id="43-folder-tab-validating-a-whole-folder">4.3 Folder tab — validating a whole folder</h3>
-<p><strong>Validate Folder…</strong>, under the two load buttons, checks every <code>.xml</code> file in a folder — and its subfolders — against the same two engines.</p>
+<p><strong>Validate…</strong>, at the top of the Folder tab, checks every <code>.xml</code> file in a folder — and its subfolders — against the same two engines.</p>
 <blockquote>
-<p><strong>Nothing is uploaded.</strong> The files are read and validated inside your browser, on your own machine, and are never sent to a server. The browser asks permission first, worded as <em>"view and copy files"</em>, <em>"let this site view files"</em> or <em>"upload N files to this site"</em> depending on the browser and version. Every one of those is the browser asking whether the page may <strong>read</strong> those files into itself — read access is the only folder permission the app requests, and there is no weaker one. Nothing is sent anywhere, which you can confirm in DevTools → Network: no requests are made while a folder is validated.</p>
+<p><strong>Nothing is uploaded.</strong> The files are read and validated inside your browser, on your own machine, and are never sent to a server. The browser asks permission first, worded as <em>"view and copy files"</em>, <em>"let this site view files"</em> or <em>"upload N files to this site"</em> depending on the browser and version. Every one of those is the browser asking whether the page may <strong>read</strong> those files into itself — read access is the only folder permission validation requests, and there is no weaker one. Nothing is sent anywhere, which you can confirm in DevTools → Network: no requests are made while a folder is validated.</p>
 </blockquote>
 <p>The currently loaded <code>DiscProfile.xml</code> is used for every file in the run — by default the one fetched at startup (2.2), so there is normally nothing to load first. If no profile is loaded, the app asks for confirmation before starting and names what will be skipped — the run then covers the schema and the DEXPI 1.4 model only, and the header says "no profile". A progress line reports each file as it goes, with <strong>Stop</strong> to end the run early and keep what has been done so far.</p>
+<p><strong>Save PNG…</strong>, next to it, renders every <code>.xml</code> in a folder and its subfolders and saves each drawing as a <code>.png</code> with the same name, next to its source file. The browser asks for permission to write to the folder. Browsers without folder write access download each PNG instead. The PNG uses the same rendering as the drawing toolbar's <strong>Save PNG</strong>, fitted to the whole drawing, and honours the drawing toolbar's current <strong>Profile labels</strong>, <strong>Line Boost</strong> and <strong>Include symbol outlines</strong> settings. Line weights are scaled so they match what you see on screen. A BG image is not included. The file you had open is restored afterwards.</p>
+<p><strong>Export Element…</strong> reads every <code>.xml</code> in a folder and its subfolders and downloads <code>&lt;folder&gt;-elements.xlsx</code> with two sheets:</p>
+<ul>
+<li><strong>Classes</strong> — File, Class, SuperType, Count, IsValid. A CustomObject subtype (<code>Custom&lt;X&gt;</code>) with a <code>TypeURIAssignmentClass</code> is counted under the DiscProfile.xml class it maps to, with that class's superType. Other elements are counted under their <code>ComponentClass</code>, with the DEXPI 1.4 superTypes. IsValid is <strong>No</strong> when the type URI matches no profile class (MDL-CLS-01), when the profile superType doesn't match the ComponentClass, or when the class is abstract, unknown or an unmapped <code>Custom&lt;X&gt;</code>.</li>
+<li><strong>Attributes</strong> — File, Class, SuperType, Attribute, Count, IsValid, for every attribute in the <code>DexpiAttributes</code> and <code>DexpiCustomAttributes</code> sets. Attributes in other sets are ignored. An attribute is valid only when its name is declared for the class it is used with, directly or through a supertype. That means the DEXPI 1.4 model properties of the ComponentClass and its ancestors, the DataProperties of its TypeURIAssignmentClass profile class and that class's profile superTypes, and the DataProperties of any ClassExtension on those classes. A vendor AttributeURI does not make an attribute valid. <code>TypeNameAssignmentClass</code> and <code>TypeURIAssignmentClass</code> are valid only on CustomObject subtypes (the <code>Custom&lt;X&gt;</code> classes). Values (enums, cardinality) are not checked here.</li>
+</ul>
 <p>Results arrive as one list grouped by file:</p>
 <ul>
 <li>The header shows the folder name, the total issue count, how many files were checked, and which profile was used.</li>
@@ -698,7 +704,7 @@ npm run dev
 <tbody>
 <tr>
 <td><code>MDL-CLS-01</code></td>
-<td>Class not defined in the model</td>
+<td>Class not defined in the model (incl. a <code>Custom&lt;X&gt;</code> <code>TypeURIAssignmentClass</code> not matching a profile class)</td>
 <td>Class usage</td>
 <td>Error</td>
 <td>Model (+ profile if DISC)</td>
@@ -730,15 +736,6 @@ npm run dev
 <td>Warning</td>
 <td>Model + profile</td>
 <td>DISC files</td>
-<td style="text-align: center;">✓</td>
-</tr>
-<tr>
-<td><code>MDL-CLS-05</code></td>
-<td>Vendor marker class emitted</td>
-<td>Class usage</td>
-<td>Warning</td>
-<td>Model (+ profile if DISC)</td>
-<td>All files</td>
 <td style="text-align: center;">✓</td>
 </tr>
 <tr>
@@ -928,7 +925,7 @@ npm run dev
 <td>Error</td>
 <td>Model + profile</td>
 <td>DISC files</td>
-<td style="text-align: center;">—</td>
+<td style="text-align: center;">✓</td>
 </tr>
 <tr>
 <td><code>PRF-EXT-02</code></td>
@@ -964,7 +961,7 @@ npm run dev
 <td>Warning</td>
 <td>Model + profile</td>
 <td>DISC files</td>
-<td style="text-align: center;">✓</td>
+<td style="text-align: center;">—</td>
 </tr>
 <tr>
 <td><code>PRF-MAP-03</code></td>
@@ -1067,7 +1064,7 @@ npm run dev
 <td><code>PRF-SCP-02</code></td>
 <td>Property outside the DISC AllowedProperties list</td>
 <td>DISC scope</td>
-<td>Warning</td>
+<td>Error</td>
 <td>Profile</td>
 <td>DISC files</td>
 <td style="text-align: center;">✓</td>
@@ -1146,6 +1143,8 @@ npm run dev
 </tr>
 </tbody>
 </table></div>
+<p>In DEXPI 1.x files (ApplicationVersion 1.x, or none declared), PRF-SCP-02 accepts the DEXPI 1.4 <code>PropertyBreak</code> properties <code>CompositionBreak</code>, <code>InsulationBreak</code>, <code>NominalDiameterBreak</code> and <code>PipingClassBreak</code> (each 0..1, typed by its <code>*BreakClassification</code> enum). DiscProfile.xml models property breaks the DEXPI 2.0 way (LogicalBreak classes and PropertyBreakExtension), which the Proteus schema cannot carry. They are accepted only on <code>PropertyBreak</code>.</p>
+<p>The type URI is matched against the profile class extensions (MDL-CLS-01 if unmatched, MDL-CLS-03 if the superType is wrong) only for CustomObject subtypes. PRF-SCP-02 reports <code>TypeNameAssignmentClass</code> and <code>TypeURIAssignmentClass</code> on any class that is not a CustomObject subtype (the <code>Custom&lt;X&gt;</code> classes, e.g. <code>CustomEquipment</code>, <code>CustomOperatedValve</code>).</p>
 <h3 id="geo-node-placement-geometry">GEO — Node placement &amp; geometry</h3>
 <div class="tablewrap"><table>
 <thead>
@@ -1374,7 +1373,7 @@ npm run dev
 <p><strong>Default DiscProfile.xml unavailable</strong>
 The startup fetch could not reach GitHub — no network, a proxy in the way, or the repository moved. Use <strong>Retry</strong> in the amber note, or load a <code>DiscProfile.xml</code> by hand; everything except the profile-dependent codes works meanwhile.</p>
 <p><strong>Explorer: "source line unavailable"</strong>
-The picked folder is no longer readable — the permission lapsed, or the file changed since the run. Re-run <strong>Validate Folder…</strong> on the folder.</p>
+The picked folder is no longer readable — the permission lapsed, or the file changed since the run. Re-run <strong>Validate…</strong> on the folder.</p>
 <p><strong>No PRF or GEO findings at all</strong>
 Those codes need a profile. Check that one is listed under the load buttons — if the default could not be fetched, load a <code>DiscProfile.xml</code> by hand. Without one the codes report not-evaluated rather than passing.</p>
 <p><strong>Everything reports not-evaluated for a DISC file</strong>

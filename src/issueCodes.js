@@ -247,17 +247,6 @@ export const ISSUE_CODES = {
         "drivenBy": "DEXPI 1.4 XMI classes / Plant.xml + Core.xml classes",
         "implemented": true
     },
-    "MDL-CLS-05": {
-        "code": "MDL-CLS-05",
-        "layer": "MDL",
-        "category": "Class usage",
-        "title": "Vendor marker class emitted",
-        "severity": "minor",
-        "needs": "model+profileForDisc",
-        "scope": "all",
-        "drivenBy": null,
-        "implemented": true
-    },
     "MDL-CMP-01": {
         "code": "MDL-CMP-01",
         "layer": "MDL",
@@ -487,7 +476,7 @@ export const ISSUE_CODES = {
         "needs": "model+profile",
         "scope": "disc",
         "drivenBy": "ClassExtension nodes, SymbolExtension.AllowedTypeCodes, MetaData/rdl_uri",
-        "implemented": false
+        "implemented": true
     },
     "PRF-EXT-02": {
         "code": "PRF-EXT-02",
@@ -575,7 +564,7 @@ export const ISSUE_CODES = {
         "needs": "model+profile",
         "scope": "disc",
         "drivenBy": "MetaData/rdl_uri on profile classes, plus the version map table",
-        "implemented": true
+        "implemented": false
     },
     "PRF-MAP-03": {
         "code": "PRF-MAP-03",
@@ -637,7 +626,7 @@ export const ISSUE_CODES = {
         "layer": "PRF",
         "category": "DISC scope",
         "title": "Property outside the DISC AllowedProperties list",
-        "severity": "minor",
+        "severity": "major",
         "needs": "profile",
         "scope": "disc",
         "drivenBy": "Profile/UsageConstraint — AllowedClasses and AllowedProperties",

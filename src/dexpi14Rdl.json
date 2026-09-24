@@ -4083,28 +4083,28 @@
   "CustomAreaAttribute.Value": {
    "kind": "Data",
    "valueType": "NullableArea",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomAreaAttribute"
   },
   "CustomAttribute.AttributeName": {
    "kind": "Data",
    "valueType": "String",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomAttribute"
   },
   "CustomAttribute.AttributeURI": {
    "kind": "Data",
    "valueType": "NullableAnyURI",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomAttribute"
   },
   "CustomAttribute.Value": {
    "kind": "Data",
    "valueType": null,
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomAttribute"
   },
@@ -4118,147 +4118,147 @@
   "CustomElectricalFrequencyAttribute.Value": {
    "kind": "Data",
    "valueType": "NullableElectricalFrequency",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomElectricalFrequencyAttribute"
   },
   "CustomForceAttribute.Value": {
    "kind": "Data",
    "valueType": "NullableForce",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomForceAttribute"
   },
   "CustomHeatTransferCoefficientAttribute.Value": {
    "kind": "Data",
    "valueType": "NullableHeatTransferCoefficient",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomHeatTransferCoefficientAttribute"
   },
   "CustomIntegerAttribute.Value": {
    "kind": "Data",
    "valueType": "NullableInteger",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomIntegerAttribute"
   },
   "CustomLengthAttribute.Value": {
    "kind": "Data",
    "valueType": "NullableLength",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomLengthAttribute"
   },
   "CustomMassAttribute.Value": {
    "kind": "Data",
    "valueType": "NullableMass",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomMassAttribute"
   },
   "CustomMassFlowRateAttribute.Value": {
    "kind": "Data",
    "valueType": "NullableMassFlowRate",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomMassFlowRateAttribute"
   },
   "CustomMultiLanguageStringAttribute.Value": {
    "kind": "Data",
    "valueType": "MultiLanguageString",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomMultiLanguageStringAttribute"
   },
   "CustomNumberPerTimeIntervalAttribute.Value": {
    "kind": "Data",
    "valueType": "NullableNumberPerTimeInterval",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomNumberPerTimeIntervalAttribute"
   },
   "CustomObject.TypeName": {
    "kind": "Data",
    "valueType": "String",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomObject"
   },
   "CustomObject.TypeURI": {
    "kind": "Data",
    "valueType": "NullableAnyURI",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomObject"
   },
   "CustomPercentageAttribute.Value": {
    "kind": "Data",
    "valueType": "NullablePercentage",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomPercentageAttribute"
   },
   "CustomPowerAttribute.Value": {
    "kind": "Data",
    "valueType": "NullablePower",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomPowerAttribute"
   },
   "CustomPressureAbsoluteAttribute.Value": {
    "kind": "Data",
    "valueType": "NullablePressureAbsolute",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomPressureAbsoluteAttribute"
   },
   "CustomPressureGaugeAttribute.Value": {
    "kind": "Data",
    "valueType": "NullablePressureGauge",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomPressureGaugeAttribute"
   },
   "CustomRotationalFrequencyAttribute.Value": {
    "kind": "Data",
    "valueType": "NullableRotationalFrequency",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomRotationalFrequencyAttribute"
   },
   "CustomStringAttribute.Value": {
    "kind": "Data",
    "valueType": "NullableString",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomStringAttribute"
   },
   "CustomTemperatureAttribute.Value": {
    "kind": "Data",
    "valueType": "NullableTemperature",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomTemperatureAttribute"
   },
   "CustomVoltageAttribute.Value": {
    "kind": "Data",
    "valueType": "NullableVoltage",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomVoltageAttribute"
   },
   "CustomVolumeAttribute.Value": {
    "kind": "Data",
    "valueType": "NullableVolume",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomVolumeAttribute"
   },
   "CustomVolumeFlowRateAttribute.Value": {
    "kind": "Data",
    "valueType": "NullableVolumeFlowRate",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "CustomVolumeFlowRateAttribute"
   },
@@ -4349,28 +4349,28 @@
   "DexpiModel.ExportDateTime": {
    "kind": "Data",
    "valueType": "NullableDateTime",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "DexpiModel"
   },
   "DexpiModel.OriginatingSystemName": {
    "kind": "Data",
    "valueType": "NullableString",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "DexpiModel"
   },
   "DexpiModel.OriginatingSystemVendorName": {
    "kind": "Data",
    "valueType": "NullableString",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "DexpiModel"
   },
   "DexpiModel.OriginatingSystemVersion": {
    "kind": "Data",
    "valueType": "NullableString",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "DexpiModel"
   },
@@ -4426,14 +4426,14 @@
   "PersistentIdentifier.Context": {
    "kind": "Data",
    "valueType": "NullableString",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "PersistentIdentifier"
   },
   "PersistentIdentifier.Value": {
    "kind": "Data",
    "valueType": "String",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "PersistentIdentifier"
   },
@@ -7331,21 +7331,21 @@
   "AttributeRepresentation.AttributeName": {
    "kind": "Data",
    "valueType": "String",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "AttributeRepresentation"
   },
   "AttributeRepresentation.Type": {
    "kind": "Data",
    "valueType": "AttributeRepresentationType",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "AttributeRepresentation"
   },
   "AttributeRepresentation.Object": {
    "kind": "Object",
    "valueType": "ConceptualObject",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "AttributeRepresentation"
   },
@@ -7359,7 +7359,7 @@
   "ConnectorLine.Stroke": {
    "kind": "Data",
    "valueType": "Stroke",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "ConnectorLine"
   },
@@ -7380,147 +7380,147 @@
   "Diagram.BackgroundColor": {
    "kind": "Data",
    "valueType": "Color",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "Diagram"
   },
   "Diagram.MaxX": {
    "kind": "Data",
    "valueType": "Double",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "Diagram"
   },
   "Diagram.MaxY": {
    "kind": "Data",
    "valueType": "Double",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "Diagram"
   },
   "Diagram.MinX": {
    "kind": "Data",
    "valueType": "Double",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "Diagram"
   },
   "Diagram.MinY": {
    "kind": "Data",
    "valueType": "Double",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "Diagram"
   },
   "Diagram.Name": {
    "kind": "Data",
    "valueType": "String",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "Diagram"
   },
   "Ellipse.Center": {
    "kind": "Data",
    "valueType": "Point",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "Ellipse"
   },
   "Ellipse.FillStyle": {
    "kind": "Data",
    "valueType": "FillStyle",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "Ellipse"
   },
   "Ellipse.HorizontalSemiAxis": {
    "kind": "Data",
    "valueType": "Double",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "Ellipse"
   },
   "Ellipse.VerticalSemiAxis": {
    "kind": "Data",
    "valueType": "Double",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "Ellipse"
   },
   "Ellipse.Rotation": {
    "kind": "Data",
    "valueType": "Double",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "Ellipse"
   },
   "Ellipse.Stroke": {
    "kind": "Data",
    "valueType": "Stroke",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "Ellipse"
   },
   "EllipseArc.Center": {
    "kind": "Data",
    "valueType": "Point",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "EllipseArc"
   },
   "EllipseArc.HorizontalSemiAxis": {
    "kind": "Data",
    "valueType": "Double",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "EllipseArc"
   },
   "EllipseArc.VerticalSemiAxis": {
    "kind": "Data",
    "valueType": "Double",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "EllipseArc"
   },
   "EllipseArc.StartAngle": {
    "kind": "Data",
    "valueType": "Double",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "EllipseArc"
   },
   "EllipseArc.EndAngle": {
    "kind": "Data",
    "valueType": "Double",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "EllipseArc"
   },
   "EllipseArc.Rotation": {
    "kind": "Data",
    "valueType": "Double",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "EllipseArc"
   },
   "EllipseArc.Stroke": {
    "kind": "Data",
    "valueType": "Stroke",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "EllipseArc"
   },
   "LiteralText.Text": {
    "kind": "Data",
    "valueType": "String",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "LiteralText"
   },
   "NodePosition.Position": {
    "kind": "Data",
    "valueType": "Point",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "NodePosition"
   },
@@ -7541,7 +7541,7 @@
   "PolyLine.Stroke": {
    "kind": "Data",
    "valueType": "Stroke",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "PolyLine"
   },
@@ -7555,21 +7555,21 @@
   "Polygon.FillStyle": {
    "kind": "Data",
    "valueType": "FillStyle",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "Polygon"
   },
   "Polygon.Stroke": {
    "kind": "Data",
    "valueType": "Stroke",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "Polygon"
   },
   "RepresentationGroup.Represents": {
    "kind": "Object",
    "valueType": "ConceptualObject",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "RepresentationGroup"
   },
@@ -7597,7 +7597,7 @@
   "Shape.Name": {
    "kind": "Data",
    "valueType": "String",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "Shape"
   },
@@ -7618,7 +7618,7 @@
   "ShapeCatalogue.Name": {
    "kind": "Data",
    "valueType": "String",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "ShapeCatalogue"
   },
@@ -7632,91 +7632,91 @@
   "ShapeUsage.IsMirrored": {
    "kind": "Data",
    "valueType": "Boolean",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "ShapeUsage"
   },
   "ShapeUsage.Position": {
    "kind": "Data",
    "valueType": "Point",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "ShapeUsage"
   },
   "ShapeUsage.Rotation": {
    "kind": "Data",
    "valueType": "Double",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "ShapeUsage"
   },
   "ShapeUsage.ScaleX": {
    "kind": "Data",
    "valueType": "Double",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "ShapeUsage"
   },
   "ShapeUsage.ScaleY": {
    "kind": "Data",
    "valueType": "Double",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "ShapeUsage"
   },
   "ShapeUsage.Shape": {
    "kind": "Object",
    "valueType": "Shape",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "ShapeUsage"
   },
   "Text.Alignment": {
    "kind": "Data",
    "valueType": "TextAlignment",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "Text"
   },
   "Text.Color": {
    "kind": "Data",
    "valueType": "Color",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "Text"
   },
   "Text.Font": {
    "kind": "Data",
    "valueType": "String",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "Text"
   },
   "Text.Position": {
    "kind": "Data",
    "valueType": "Point",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "Text"
   },
   "Text.Rotation": {
    "kind": "Data",
    "valueType": "Double",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "Text"
   },
   "Text.Size": {
    "kind": "Data",
    "valueType": "Double",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "Text"
   },
   "Text.Text": {
    "kind": "Data",
    "valueType": "String",
-   "lower": 0,
+   "lower": 1,
    "upper": 1,
    "owner": "Text"
   },

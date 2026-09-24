@@ -15,11 +15,11 @@ import {
     buildProfileFacts, expectedCustomFamily, normalizeSymbolName,
     checkDiscScope, checkSymbolCatalogue,
     checkGridAlignment, checkDeclaredVersion, checkZeroLengthConnectors, checkSegmentContinuity,
-    detectDiscClaim,
+    detectDiscClaim, isDexpi1x,
 } from "./profileRules.js";
 import { qsa, directChildrenByTag, parseEnumLiteralSymbols, parseSymbolCatalogue } from "./dexpiParser.js";
 import {
-    buildProfileClassSuperTypeIndex, buildSymbolUsageIndex, buildDataPropertyRdlUriIndex, SIGNAL_FLOW_COMPONENT_CLASSES,
+    buildProfileClassSuperTypeIndex, buildSymbolUsageIndex, SIGNAL_FLOW_COMPONENT_CLASSES,
     symbolLabelAttributeNames, readTextTemplateDependantAttributes, isValidTextTemplateAttribute,
 } from "./proteusParser.js";
 
@@ -48,59 +48,70 @@ const VERSION_RENAMES = new Map([
 
 // ---- ComponentClass-vs-TypeURIAssignmentClass mismatch (unified) ----------
 //
-// Backs the "componentclass-mismatch" check below: whether ComponentClass
-// agrees with what TypeURIAssignmentClass resolves to.
-//  - Custom<X>: TypeURIAssignmentClass must resolve to a profile class whose
-//    superType family (from expectedCustomFamily()) matches the "<X>"
-//    suffix. Not applicable when the profile declares no such family.
-//  - non-Custom<X>: if TypeURIAssignmentClass resolves to a Concrete profile
-//    class, ComponentClass is expected to be that class's Custom<X> wrapper
-//    (expectedCustomComponentClassFor()).
-//
-// Returns `{ applicable, reason }`. `applicable` is true whenever
-// TypeURIAssignmentClass resolved to something evaluable; `reason` is the
-// mismatch description, or null when it agrees. An unresolvable
-// TypeURIAssignmentClass on a Custom<X> object is reported separately as
-// "custom-class-unresolved". Abstract profile classes, ClassExtension
-// entries, and Custom<X> names the information model does not define are
-// out of scope here.
+// A DEXPI 1.4 type (TypeNameAssignmentClass / TypeURIAssignmentClass) is the
+// equivalent of a DEXPI 2.0 profile class extension: TypeURIAssignmentClass
+// must resolve to a DiscProfile.xml class, and that class's superType must
+// match the element's ComponentClass: its superType family (from
+// expectedCustomFamily()) must match the "<X>" of Custom<X>.
+// Checked only for CustomObject subtypes (customTypeUri()); an unresolvable
+// TypeURIAssignmentClass is reported as MDL-CLS-01.
+function lastSegment(name) {
+    return name.split(/[./]/).pop();
+}
+
+// All superTypes of a profile class, following superTypes that name another
+// profile class (e.g. AreaBreak -> /InformationModel.LogicalBreak ->
+// Core/ConceptualObject).
+function profileSuperTypeChain(resolved, profileClassIndex) {
+    const byName = new Map();
+    profileClassIndex.forEach(info => byName.set(info.name, info));
+    const out = [], seen = new Set();
+    const walk = info => (info.superTypes || []).forEach(st => {
+        if (seen.has(st)) return;
+        seen.add(st);
+        out.push(st);
+        const next = byName.get(lastSegment(st));
+        if (next && next !== info) walk(next);
+    });
+    walk(resolved);
+    return out;
+}
+
 function describeComponentClassTypeUriMismatch(el, componentClass, profileClassIndex, profileFacts) {
-    const typeUri = findTypeUriAssignmentValue(el);
-    if (!typeUri) return { applicable: false, reason: null };
+    const typeUri = customTypeUri(el);
+    if (!typeUri || !componentClass) return { applicable: false, reason: null };
     const resolved = profileClassIndex.get(typeUri);
     if (!resolved) return { applicable: false, reason: null };
+    const chain = profileSuperTypeChain(resolved, profileClassIndex);
 
-    if (componentClass.startsWith(CUSTOM_CLASS_PREFIX) && componentClass.length > CUSTOM_CLASS_PREFIX.length) {
-        // superType family this wrapper belongs to, from the loaded profile.
-        const expectedSuffix = expectedCustomFamily(componentClass, profileFacts, VERSION_RENAMES);
-        if (!expectedSuffix) return { applicable: false, reason: null };
-        const matches = resolved.superTypes.some(st => st.split(".").pop() === expectedSuffix);
-        if (matches) return { applicable: true, reason: null };
-        const actualDesc = resolved.superTypes.length ? resolved.superTypes.join(", ") : "(no superTypes declared)";
-        const expectedDesc = `a superType ending in "${expectedSuffix}"`;
-        return {
-            applicable: true,
-            reason: `TypeURIAssignmentClass "${typeUri}" resolves to profile class "${resolved.name}", whose superType${resolved.superTypes.length === 1 ? " is" : "s are"} ${actualDesc} - expected ${expectedDesc}`,
-        };
-    }
+    const actualDesc = resolved.superTypes.length ? resolved.superTypes.join(", ") : "(no superTypes declared)";
+    const superTypeWord = `superType${resolved.superTypes.length === 1 ? " is" : "s are"}`;
 
-    if (resolved.kind !== "Concrete") return { applicable: false, reason: null };
-    const expected = expectedCustomComponentClassFor(resolved);
-    if (!expected) return { applicable: false, reason: null };
-    if (componentClass === expected) return { applicable: true, reason: null };
+    const expectedSuffix = expectedCustomFamily(componentClass, profileFacts, VERSION_RENAMES);
+    if (!expectedSuffix) return { applicable: false, reason: null };
+    if (chain.some(st => lastSegment(st) === expectedSuffix)) return { applicable: true, reason: null };
     return {
         applicable: true,
-        reason: `TypeURIAssignmentClass "${typeUri}" resolves to profile class "${resolved.name}" - ComponentClass should be "${expected}"`,
+        reason: `TypeURIAssignmentClass "${typeUri}" resolves to profile class "${resolved.name}", whose ${superTypeWord} ${actualDesc} - expected a superType ending in "${expectedSuffix}"`,
     };
 }
 
+// Type-assignment GenericAttributes: the DEXPI 1.4 form of a profile class
+// extension (CustomObject.TypeName / .TypeURI). Allowed only on CustomObject
+// subtypes; on any other class PRF-SCP-02 reports them, so the model
+// attribute check skips them.
+const TYPE_ASSIGNMENT_ATTRS = new Set(["TypeNameAssignmentClass", "TypeURIAssignmentClass"]);
+const CUSTOM_OBJECT_CLASS = "CustomObject";
 
-function expectedCustomComponentClassFor(resolved) {
-    for (const superType of resolved.superTypes) {
-        const candidate = CUSTOM_CLASS_PREFIX + superType.split(".").pop();
-        if (rdl.classes[candidate]) return candidate;
-    }
-    return null;
+function isCustomObjectSubtype(className) {
+    return !!className && classDescendsFrom(className, CUSTOM_OBJECT_CLASS);
+}
+
+// TypeURIAssignmentClass, only when the element is a CustomObject subtype -
+// the type URI is matched against the profile class extensions for those
+// alone.
+function customTypeUri(el) {
+    return isCustomObjectSubtype(el.getAttribute("ComponentClass") || "") ? findTypeUriAssignmentValue(el) : null;
 }
 
 // Required GenericAttribute names for a Custom<X> element:
@@ -142,7 +153,7 @@ function findTypeUriAssignmentValue(el) {
 //     `kind` field.
 // Both can independently fire on the same object.
 function findResolvedRdlUriForAbstractCheck(el) {
-    const typeUri = findTypeUriAssignmentValue(el);
+    const typeUri = customTypeUri(el);
     if (typeUri) return typeUri;
     return el.getAttribute("ComponentClassURI") || null;
 }
@@ -343,8 +354,8 @@ function elementHasPipingNode(el) {
 // nested <Equipment ComponentClass="TransmissionSystem"> sub-element of the
 // driven equipment, rather than as its own top-level object.
 //
-// "TransmissionSystem" has no entry in the static DEXPI 1.4 model; it is
-// exempted from the unknown-class check and instead checked structurally:
+// Besides the model checks every class gets, TransmissionSystem is checked
+// structurally:
 //  1. it must be nested directly inside a parent <Equipment> element, and
 //     that parent must carry an Association Type="is driven by" pointing
 //     back at this sub-element;
@@ -403,6 +414,163 @@ function classSatisfiesConstraint(el, componentClass, expectedClass, profileClas
     return resolved.name === expectedClass || resolved.superTypes.some(st => st.split(".").pop() === expectedClass);
 }
 
+// ---- Attribute scope (class-aware name check) ------------------------------
+//
+// An attribute in DexpiAttributes / DexpiCustomAttributes is valid only when
+// its name (or AttributeURI) is declared for the class it is used with,
+// directly or via a supertype:
+//  - DEXPI 1.4 model properties of the ComponentClass and its ancestors;
+//  - DataProperties of the TypeURIAssignmentClass profile class and its
+//    profile superType chain, plus the model properties of the Plant class
+//    that chain ends in;
+//  - DataProperties of every ClassExtension whose baseType is one of those
+//    classes.
+// A vendor AttributeURI does not make an attribute valid.
+
+function readProfileDataProperties(classEl) {
+    const names = new Set(), uris = new Set();
+    directChildrenByTag(classEl, "DataProperty").forEach(dp => {
+        const name = dp.getAttribute("name");
+        if (name) names.add(name);
+        directChildrenByTag(dp, "Data")
+            .filter(d => d.getAttribute("property") === "MetaData/rdl_uri")
+            .forEach(d => { const t = directChildrenByTag(d, "String")[0]?.textContent?.trim(); if (t) uris.add(t); });
+    });
+    return { names, uris };
+}
+
+// { classProps: Map(profileClassName -> {names, uris}), extProps: Map(baseType last segment -> {names, uris}),
+//   allNames: Set, allUris: Set }
+export function buildProfileAttributeIndex(discDoc) {
+    const index = { classProps: new Map(), extProps: new Map(), allNames: new Set(), allUris: new Set() };
+    if (!discDoc) return index;
+    const add = (map, key, props) => {
+        const hit = map.get(key) || { names: new Set(), uris: new Set() };
+        props.names.forEach(n => { hit.names.add(n); index.allNames.add(n); });
+        props.uris.forEach(u => { hit.uris.add(u); index.allUris.add(u); });
+        map.set(key, hit);
+    };
+    const walk = node => Array.from(node.children || []).forEach(child => {
+        const tag = child.tagName;
+        if (tag === "ConcreteClass" || tag === "AbstractClass") add(index.classProps, child.getAttribute("name") || "", readProfileDataProperties(child));
+        else if (tag === "ClassExtension") add(index.extProps, lastSegment(child.getAttribute("baseType") || ""), readProfileDataProperties(child));
+        walk(child);
+    });
+    walk(discDoc.documentElement);
+    return index;
+}
+
+const REVERSE_RENAMES = new Map([...VERSION_RENAMES].map(([a, b]) => [b, a]));
+
+// DEXPI 1.4 class plus its model ancestors, with 2.0 renames alongside.
+function modelAncestors(className, out) {
+    const cls = REVERSE_RENAMES.get(className) || className;
+    if (!cls || out.has(cls)) return;
+    out.add(cls);
+    if (VERSION_RENAMES.has(cls)) out.add(VERSION_RENAMES.get(cls));
+    (rdl.classes[cls]?.superTypes || []).forEach(st => modelAncestors(st, out));
+}
+
+// Everything that makes an attribute name valid on this element.
+function attributeScope(el, componentClass, profileClassIndex, attrIndex) {
+    const modelClasses = new Set();
+    modelAncestors(componentClass, modelClasses);
+    const names = new Set(), uris = new Set();
+    const addProps = p => { if (p) { p.names.forEach(n => names.add(n)); p.uris.forEach(u => uris.add(u)); } };
+
+    const typeUri = customTypeUri(el);
+    const resolved = typeUri ? profileClassIndex.get(typeUri) : null;
+    if (resolved) {
+        addProps(attrIndex.classProps.get(resolved.name));
+        profileSuperTypeChain(resolved, profileClassIndex).forEach(st => {
+            const seg = lastSegment(st);
+            if (attrIndex.classProps.has(seg) && !rdl.classes[seg]) addProps(attrIndex.classProps.get(seg));
+            else modelAncestors(seg, modelClasses);
+        });
+    }
+    modelClasses.forEach(cls => {
+        if (rdl.classes[cls]) resolveInheritedProperties(cls).forEach((_, short) => names.add(short));
+        addProps(attrIndex.extProps.get(cls));
+    });
+    return { names, uris };
+}
+
+function attributeInScope(scope, name, attrUri) {
+    return scope.names.has(name) || scope.names.has(stripNameSuffix(name)) || (!!attrUri && scope.uris.has(attrUri));
+}
+
+// ---- Element usage (Export Element…) ---------------------------------------
+//
+// Per document: every class used and every DexpiAttributes /
+// DexpiCustomAttributes attribute, with the same validity rules as
+// validateAgainstRdl(). An element with TypeURIAssignmentClass is counted
+// under the profile class it maps to (superType from DiscProfile.xml);
+// otherwise under its ComponentClass (superType from the DEXPI 1.4 model).
+//
+// Returns { classes: [{className, superType, count, valid}],
+//           attributes: [{className, superType, attribute, count, valid}] }.
+export function collectElementUsage(mainDoc, discDoc) {
+    const profileClassIndex = buildProfileClassSuperTypeIndex(discDoc);
+    const attrIndex = buildProfileAttributeIndex(discDoc);
+    const profileFacts = buildProfileFacts(discDoc);
+    const classes = new Map();
+    const attributes = new Map();
+    const bump = (map, key, row) => {
+        const hit = map.get(key);
+        if (hit) hit.count++;
+        else map.set(key, { ...row, count: 1 });
+    };
+
+    collectValidatableElements(mainDoc).forEach(el => {
+        const componentClass = el.getAttribute("ComponentClass") || "";
+        const classInfo = rdl.classes[componentClass];
+        const typeUri = customTypeUri(el);
+        let className, superType, valid;
+
+        if (typeUri) {
+            const resolved = discDoc ? profileClassIndex.get(typeUri) : null;
+            if (resolved) {
+                className = resolved.name;
+                superType = resolved.superTypes.join(" ");
+                valid = resolved.kind !== "Abstract"
+                    && !describeComponentClassTypeUriMismatch(el, componentClass, profileClassIndex, profileFacts).reason;
+            } else {
+                className = findAttributeInSet(el, CUSTOM_CLASS_ATTR_SET, "TypeNameAssignmentClass")?.getAttribute("Value") || typeUri;
+                superType = "";
+                valid = false;
+            }
+        } else {
+            className = componentClass;
+            superType = (classInfo?.superTypes || []).join(" ");
+            const isCustom = componentClass.startsWith(CUSTOM_CLASS_PREFIX) && componentClass.length > CUSTOM_CLASS_PREFIX.length;
+            valid = !!classInfo && classInfo.kind !== "Abstract" && !isCustom;
+        }
+        bump(classes, `${className}\u0000${superType}\u0000${valid}`, { className, superType, valid });
+
+        const scope = attributeScope(el, componentClass, profileClassIndex, attrIndex);
+        directChildrenByTag(el, "GenericAttributes").forEach(group => {
+            if (!DEXPI_ATTRIBUTE_SETS.has(group.getAttribute("Set") || "")) return;
+            directChildrenByTag(group, "GenericAttribute").forEach(ga => {
+                const rawName = ga.getAttribute("Name") || "";
+                const name = rawName.trim();
+                const attrUri = ga.getAttribute("AttributeURI") || "";
+                let attrValid;
+                if (nameLooksMalformed(rawName)) attrValid = false;
+                else if (TYPE_ASSIGNMENT_ATTRS.has(name)) {
+                    // An unresolvable type URI is the MDL-CLS-01 case.
+                    attrValid = isCustomObjectSubtype(componentClass)
+                        && (name !== "TypeURIAssignmentClass" || !discDoc || !!profileClassIndex.get(ga.getAttribute("Value") || ""));
+                }
+                else attrValid = attributeInScope(scope, name, attrUri);
+                bump(attributes, `${className}\u0000${superType}\u0000${name}\u0000${attrValid}`,
+                    { className, superType, attribute: name, valid: attrValid });
+            });
+        });
+    });
+
+    return { classes: [...classes.values()], attributes: [...attributes.values()] };
+}
+
 // connectivityMap is the Map parseProteusPackage() returns (objectId ->
 // { upstream, downstream, group } Sets of connected objectIds), passed in
 // by the caller. Optional: if omitted, the PipingNodeOwner connectivity
@@ -416,11 +584,8 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
     const signalEndpointReferencedIds = collectSignalEndpointReferencedIds(mainDoc);
     const symbolRegistrationIndex = buildSymbolRegistrationIndex(mainDoc);
     const symbolUsageIndex = buildSymbolUsageIndex(discDoc);
-    // DiscProfile.xml's own DataProperty index (rdl_uri -> "DiscProfile/<name>"),
-    // reused here so the attribute-name check below also recognizes
-    // profile-declared attributes, including ones declared via a
-    // ClassExtension.
-    const profileDataPropertyIndex = buildDataPropertyRdlUriIndex(discDoc);
+    // Class-scoped DiscProfile.xml DataProperties, for the attribute-name check below.
+    const profileAttrIndex = buildProfileAttributeIndex(discDoc);
     // DiscProfile.xml's own Profile/Symbol catalogue (keyed "DiscProfile/<name>"),
     // used by checkLabelTextTemplates() below. Empty when no DiscProfile.xml
     // is loaded.
@@ -432,7 +597,7 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
     let unknownClassCount = 0, unknownAttrCount = 0, malformedNameCount = 0,
         invalidEnumCount = 0, cardinalityCount = 0, extensionAttrCount = 0, profileExtensionAttrCount = 0,
         customClassCheckedCount = 0, customClassUnresolvedCount = 0,
-        customClassAttrMissingCount = 0,
+        customClassAttrMissingCount = 0, typeUriUnresolvedCount = 0,
         componentClassMismatchCheckedCount = 0, componentClassMismatchCount = 0,
         signalFlowClassMissingCount = 0, signalFlowClassInvalidCount = 0,
         signalEndpointUnresolvedCount = 0, signalEndpointInvalidCount = 0,
@@ -654,15 +819,9 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
                     severity: "warning", code: "MDL-CLS-04", category: "custom-class-unresolved", objectId, componentClass,
                     message: `ComponentClass "${componentClass}" has no TypeURIAssignmentClass attribute, so its real semantic type can't be verified against the loaded DiscProfile.xml.`,
                 });
-            } else if (!profileClassIndex.get(typeUri)) {
-                customClassUnresolvedCount++;
-                findings.push({
-                    severity: "warning", code: "PRF-MAP-02", category: "custom-class-unresolved", objectId, componentClass,
-                    message: `TypeURIAssignmentClass "${typeUri}" does not resolve to any class in the loaded DiscProfile.xml.`,
-                });
             }
-            // A resolved-but-wrong-family TypeURIAssignmentClass is covered
-            // by the unified "componentclass-mismatch" check below.
+            // Unresolved / wrong-superType TypeURIAssignmentClass is covered
+            // by the type-assignment checks below.
 
             // Required-attribute check - see CUSTOM_CLASS_REQUIRED_ATTRS above.
             const missingCustomAttrs = CUSTOM_CLASS_REQUIRED_ATTRS.filter(name => !findAttributeInSet(el, CUSTOM_CLASS_ATTR_SET, name));
@@ -671,6 +830,20 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
                 findings.push({
                     severity: "warning", code: "MDL-PRP-03", category: "custom-class-required-attribute", objectId, componentClass,
                     message: `Custom class "${componentClass}" is missing ${missingCustomAttrs.map(m => `"${m}"`).join(" and ")} in GenericAttributes Set="${CUSTOM_CLASS_ATTR_SET}".`,
+                });
+            }
+        }
+
+        // Type-assignment check (CustomObject subtypes only):
+        // TypeURIAssignmentClass must resolve to a DiscProfile.xml class
+        // (profile class extension).
+        if (discDoc) {
+            const typeUri = customTypeUri(el);
+            if (typeUri && !profileClassIndex.get(typeUri)) {
+                typeUriUnresolvedCount++;
+                findings.push({
+                    severity: "warning", code: "MDL-CLS-01", category: "type-uri-unresolved", objectId, componentClass,
+                    message: `TypeURIAssignmentClass "${typeUri}" does not match any class extension in the loaded DiscProfile.xml.`,
                 });
             }
         }
@@ -818,20 +991,17 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
         }
 
         if (!classInfo) {
-            // TransmissionSystem is exempted from the unknown-class finding
-            // here - see TRANSMISSION_SYSTEM_CLASS above.
-            if (componentClass !== TRANSMISSION_SYSTEM_CLASS) {
-                unknownClassCount++;
-                findings.push({
-                    code: /^Orphan/.test(componentClass) ? "MDL-CLS-05" : "MDL-CLS-01",
-                    severity: "warning", category: "unknown-class", objectId, componentClass,
-                    message: `ComponentClass "${componentClass}" was not found in the DEXPI 1.4 model. This may be a vendor/CFIHOS extension, a drafting-only marker class, or a genuine mismatch.`,
-                });
-            }
+            unknownClassCount++;
+            findings.push({
+                code: "MDL-CLS-01",
+                severity: "warning", category: "unknown-class", objectId, componentClass,
+                message: `ComponentClass "${componentClass}" was not found in the DEXPI 1.4 model. Vendor and marker classes are not valid.`,
+            });
             return; // can't meaningfully check attributes against an unresolved class
         }
 
         const inherited = resolveInheritedProperties(componentClass);
+        const scope = attributeScope(el, componentClass, profileClassIndex, profileAttrIndex);
         const occurrenceCounts = new Map(); // shortPropName -> count, for cardinality check
 
         directChildrenByTag(el, "GenericAttributes").forEach(group => {
@@ -839,7 +1009,7 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
             if (!DEXPI_ATTRIBUTE_SETS.has(set)) return; // only real DEXPI-modeled attributes are RDL-checked
             directChildrenByTag(group, "GenericAttribute").forEach(ga => {
                 const rawName = ga.getAttribute("Name") || "";
-                if (rawName === "TypeURIAssignmentClass") return;
+                if (TYPE_ASSIGNMENT_ATTRS.has(rawName.trim())) return;
                 const attrUri = ga.getAttribute("AttributeURI") || "";
                 const rawValue = ga.getAttribute("Value");
 
@@ -855,37 +1025,25 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
                 const propInfo = inherited.get(shortName);
 
                 if (!propInfo) {
-                    // Recognized-via-profile check - see
-                    // profileDataPropertyIndex above. An attribute
-                    // DiscProfile.xml declares via a
-                    // ConcreteClass/AbstractClass/ClassExtension DataProperty
-                    // with a matching rdl_uri is treated the same as one that
-                    // resolves against the static RDL: no finding.
-                    const profileProp = attrUri ? profileDataPropertyIndex.get(attrUri) : null;
-                    if (profileProp) {
+                    // Declared for this class in the profile (directly, via
+                    // its profile superType chain, or a ClassExtension on
+                    // one of its classes): no finding.
+                    if (attributeInScope(scope, rawName.trim(), attrUri)) {
                         profileExtensionAttrCount++;
                         return;
                     }
-
+                    unknownAttrCount++;
+                    const shortTrim = rawName.trim();
+                    const isProfileProp = profileAttrIndex.allNames.has(shortTrim) || profileAttrIndex.allNames.has(stripNameSuffix(shortTrim))
+                        || (!!attrUri && profileAttrIndex.allUris.has(attrUri));
                     const isDexpiNamespace = DEXPI_ATTRIBUTE_URI_NAMESPACES.some(ns => attrUri.startsWith(ns));
-                    const hasNoUri = !attrUri;
-                    if (isDexpiNamespace || hasNoUri) {
-                        unknownAttrCount++;
-                        findings.push({
-                            code: isDexpiNamespace ? "MDL-PRP-05" : "MDL-PRP-01",
-                            severity: "warning", category: "unknown-attribute", objectId, componentClass,
-                            message: `Attribute "${rawName}" does not match any DEXPI 1.4 model property on ${componentClass} or its ancestors${attrUri ? ` (AttributeURI: ${attrUri})` : " (no AttributeURI)"}.`,
-                        });
-                    } else {
-                        extensionAttrCount++;
-                        // Correctly vendor-namespaced: reported as info only,
-                        // not an error.
-                        findings.push({
-                            code: null,
-                            severity: "info", category: "extension-attribute", objectId, componentClass,
-                            message: `Attribute "${rawName}" is outside the DEXPI 1.4 model namespace (AttributeURI: ${attrUri}) - likely a vendor/customer extension, not flagged as an error.`,
-                        });
-                    }
+                    findings.push({
+                        code: isProfileProp ? "PRF-EXT-01" : isDexpiNamespace ? "MDL-PRP-05" : "MDL-PRP-01",
+                        severity: "warning", category: "unknown-attribute", objectId, componentClass,
+                        message: isProfileProp
+                            ? `Attribute "${rawName}" is a DiscProfile.xml property, but not one declared for ${componentClass}, its TypeURIAssignmentClass profile class, or their supertypes/ClassExtensions.`
+                            : `Attribute "${rawName}" is not declared for ${componentClass} or its supertypes in the DEXPI 1.4 model or the loaded DiscProfile.xml${attrUri ? ` (AttributeURI: ${attrUri})` : " (no AttributeURI)"}.`,
+                    });
                     return;
                 }
 
@@ -942,7 +1100,7 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
     findings.push(...checkDeclaredVersion(mainDoc));
     findings.push(...checkZeroLengthConnectors(mainDoc, lookup));
     findings.push(...checkSegmentContinuity(mainDoc, lookup));
-    findings.push(...checkDiscScope(elList, profileFacts, DEXPI_ATTRIBUTE_SETS));
+    findings.push(...checkDiscScope(elList, profileFacts, DEXPI_ATTRIBUTE_SETS, { dexpi1x: isDexpi1x(mainDoc), isCustomObject: isCustomObjectSubtype }));
     findings.push(...checkSymbolCatalogue(elList, profileFacts, symbolRegistrationIndex));
     findings.push(...checkGridAlignment(mainDoc, discDoc, lookup));
 
@@ -1008,6 +1166,7 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
             persistentIdContextDuplicates: persistentIdContextDuplicateCount,
             customClassesChecked: customClassCheckedCount,
             customClassUnresolved: customClassUnresolvedCount,
+            typeUriUnresolved: typeUriUnresolvedCount,
             componentClassMismatchChecked: componentClassMismatchCheckedCount,
             componentClassMismatches: componentClassMismatchCount,
             signalFlowClassMissing: signalFlowClassMissingCount,

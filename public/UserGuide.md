@@ -2,7 +2,7 @@
 
 A browser-based viewer and validation tool for legacy **DEXPI 1.4 / Proteus 4.1.1** XML files, rendered and checked using **DEXPI 2.x profile** symbols, classes and attributes by way of a loaded `DiscProfile.xml`.
 
-Developed by **Tonia Pedersen**.
+Developed by **Tonia Pedersen**. Version **2.0**. See `ChangeLog_0.0_to_2.0.md` for what changed.
 
 ---
 
@@ -67,7 +67,7 @@ Both engines run **automatically** when a file is opened, so the Validation tab 
 
 **Run Validation** (the blue, full-width button) re-runs both engines on the file already loaded. It is there for a deliberate re-check; nothing has to be clicked to get results.
 
-To check a whole folder rather than one file, use **Validate Folder…** (see [4.3](#43-folder-tab--validating-a-whole-folder)).
+To check a whole folder rather than one file, use **Validate…** on the Folder tab (see [4.3](#43-folder-tab--validating-a-whole-folder)).
 
 ---
 
@@ -109,11 +109,18 @@ Two notices can appear above the list:
 
 ### 4.3 Folder tab — validating a whole folder
 
-**Validate Folder…**, under the two load buttons, checks every `.xml` file in a folder — and its subfolders — against the same two engines.
+**Validate…**, at the top of the Folder tab, checks every `.xml` file in a folder — and its subfolders — against the same two engines.
 
-> **Nothing is uploaded.** The files are read and validated inside your browser, on your own machine, and are never sent to a server. The browser asks permission first, worded as *"view and copy files"*, *"let this site view files"* or *"upload N files to this site"* depending on the browser and version. Every one of those is the browser asking whether the page may **read** those files into itself — read access is the only folder permission the app requests, and there is no weaker one. Nothing is sent anywhere, which you can confirm in DevTools → Network: no requests are made while a folder is validated.
+> **Nothing is uploaded.** The files are read and validated inside your browser, on your own machine, and are never sent to a server. The browser asks permission first, worded as *"view and copy files"*, *"let this site view files"* or *"upload N files to this site"* depending on the browser and version. Every one of those is the browser asking whether the page may **read** those files into itself — read access is the only folder permission validation requests, and there is no weaker one. Nothing is sent anywhere, which you can confirm in DevTools → Network: no requests are made while a folder is validated.
 
 The currently loaded `DiscProfile.xml` is used for every file in the run — by default the one fetched at startup (2.2), so there is normally nothing to load first. If no profile is loaded, the app asks for confirmation before starting and names what will be skipped — the run then covers the schema and the DEXPI 1.4 model only, and the header says "no profile". A progress line reports each file as it goes, with **Stop** to end the run early and keep what has been done so far.
+
+**Save PNG…**, next to it, renders every `.xml` in a folder and its subfolders and saves each drawing as a `.png` with the same name, next to its source file. The browser asks for permission to write to the folder. Browsers without folder write access download each PNG instead. The PNG uses the same rendering as the drawing toolbar's **Save PNG**, fitted to the whole drawing, and honours the drawing toolbar's current **Profile labels**, **Line Boost** and **Include symbol outlines** settings. Line weights are scaled so they match what you see on screen. A BG image is not included. The file you had open is restored afterwards.
+
+**Export Element…** reads every `.xml` in a folder and its subfolders and downloads `<folder>-elements.xlsx` with two sheets:
+
+- **Classes** — File, Class, SuperType, Count, IsValid. A CustomObject subtype (`Custom<X>`) with a `TypeURIAssignmentClass` is counted under the DiscProfile.xml class it maps to, with that class's superType. Other elements are counted under their `ComponentClass`, with the DEXPI 1.4 superTypes. IsValid is **No** when the type URI matches no profile class (MDL-CLS-01), when the profile superType doesn't match the ComponentClass, or when the class is abstract, unknown or an unmapped `Custom<X>`.
+- **Attributes** — File, Class, SuperType, Attribute, Count, IsValid, for every attribute in the `DexpiAttributes` and `DexpiCustomAttributes` sets. Attributes in other sets are ignored. An attribute is valid only when its name is declared for the class it is used with, directly or through a supertype. That means the DEXPI 1.4 model properties of the ComponentClass and its ancestors, the DataProperties of its TypeURIAssignmentClass profile class and that class's profile superTypes, and the DataProperties of any ClassExtension on those classes. A vendor AttributeURI does not make an attribute valid. `TypeNameAssignmentClass` and `TypeURIAssignmentClass` are valid only on CustomObject subtypes (the `Custom<X>` classes). Values (enums, cardinality) are not checked here.
 
 Results arrive as one list grouped by file:
 
@@ -334,11 +341,10 @@ The five DEXPI 2.0-only codes (`SER-FMT-03`, `SER-FMT-05`, `MDL-REF-06`, `PRF-LB
 
 | Code | Issue | Category | Type | Needs | Scope | Implemented |
 |---|---|---|---|---|---|:--:|
-| `MDL-CLS-01` | Class not defined in the model | Class usage | Error | Model (+ profile if DISC) | All files | ✓ |
+| `MDL-CLS-01` | Class not defined in the model (incl. a `Custom<X>` `TypeURIAssignmentClass` not matching a profile class) | Class usage | Error | Model (+ profile if DISC) | All files | ✓ |
 | `MDL-CLS-02` | Abstract class used as an object class | Class usage | Error | Model (+ profile if DISC) | All files | ✓ |
 | `MDL-CLS-03` | Class contradicts other evidence in the file | Class usage | Error | Model + profile | DISC files | ✓ |
 | `MDL-CLS-04` | Type URI unresolvable or echoes the class name | Class usage | Warning | Model + profile | DISC files | ✓ |
-| `MDL-CLS-05` | Vendor marker class emitted | Class usage | Warning | Model (+ profile if DISC) | All files | ✓ |
 | `MDL-CMP-01` | Components property not defined for the parent class | Composition | Error | Model (+ profile if DISC) | All files | — |
 | `MDL-CMP-02` | Child class not permitted by the composition property | Composition | Error | Model (+ profile if DISC) | All files | ✓ |
 | `MDL-CMP-03` | Required sub-component missing | Composition | Error | Model (+ profile if DISC) | All files | ✓ |
@@ -359,11 +365,11 @@ The five DEXPI 2.0-only codes (`SER-FMT-03`, `SER-FMT-05`, `MDL-REF-06`, `PRF-LB
 | `MDL-REF-04` | Endpoint class cannot be determined | References & endpoints | Warning | Model (+ profile if DISC) | All files | ✓ |
 | `MDL-REF-05` | Object never participates where the model expects it to | References & endpoints | Warning | Model (+ profile if DISC) | All files | ✓ |
 | `MDL-TAG-01` | Taggable object carries no identifier | Identification | Warning | Model | All files | — |
-| `PRF-EXT-01` | Extension property used off its baseType | Properties | Error | Model + profile | DISC files | — |
+| `PRF-EXT-01` | Extension property used off its baseType | Properties | Error | Model + profile | DISC files | ✓ |
 | `PRF-EXT-02` | Extension attribute emitted without the vendor namespace | Properties | Warning | Model + profile | DISC files | — |
 | `PRF-EXT-04` | Object rdl_uri disagrees with the profile class it claims | Class usage | Warning | Model + profile | DISC files | — |
 | `PRF-MAP-01` | 1.4 class has no counterpart by name | Class usage | Warning | Model + profile | DISC files | — |
-| `PRF-MAP-02` | RDL URI does not resolve against the profile | Class usage | Warning | Model + profile | DISC files | ✓ |
+| `PRF-MAP-02` | RDL URI does not resolve against the profile | Class usage | Warning | Model + profile | DISC files | — |
 | `PRF-MAP-03` | Custom wrapper does not match the family its URI resolves to | Class usage | Error | Model + profile | DISC files | — |
 | `PRF-MAP-04` | Class mapped by name across a version rename | Class usage | Error | Model + profile | DISC files | — |
 
@@ -378,7 +384,7 @@ The five DEXPI 2.0-only codes (`SER-FMT-03`, `SER-FMT-05`, `MDL-REF-06`, `PRF-LB
 | `PRF-MAP-05` | 1.4 Shape class used where 2.0 expects SymbolUsage | 1.4 → DISC mapping | Warning | Profile | DISC files | — |
 | `PRF-MAP-06` | Serialized symbol name does not reduce to a profile symbol | 1.4 → DISC mapping | Warning | Profile | DISC files | — |
 | `PRF-SCP-01` | Class outside the DISC AllowedClasses list | DISC scope | Error | Profile | DISC files | ✓ |
-| `PRF-SCP-02` | Property outside the DISC AllowedProperties list | DISC scope | Warning | Profile | DISC files | ✓ |
+| `PRF-SCP-02` | Property outside the DISC AllowedProperties list | DISC scope | Error | Profile | DISC files | ✓ |
 | `PRF-SYM-01` | Symbol not in the SymbolCatalogue | Symbol usage | Error | Profile | DISC files | ✓ |
 | `PRF-SYM-02` | Symbol used for a class its usage does not cover | Symbol usage | Error | Profile | DISC files | ✓ |
 | `PRF-SYM-03` | Drawn object places no symbol | Symbol usage | Warning | Profile | DISC files | — |
@@ -387,6 +393,10 @@ The five DEXPI 2.0-only codes (`SER-FMT-03`, `SER-FMT-05`, `MDL-REF-06`, `PRF-LB
 | `PRF-TRN-05` | Zero or negative scale | Symbol transforms | Error | Profile | DISC files | ✓ |
 | `PRF-VAR-01` | Variant condition not satisfied | Variant selection | Warning | Profile | DISC files | — |
 | `PRF-VAR-02` | No variant selected or VariantNumber out of range | Variant selection | Warning | Profile | DISC files | — |
+
+In DEXPI 1.x files (ApplicationVersion 1.x, or none declared), PRF-SCP-02 accepts the DEXPI 1.4 `PropertyBreak` properties `CompositionBreak`, `InsulationBreak`, `NominalDiameterBreak` and `PipingClassBreak` (each 0..1, typed by its `*BreakClassification` enum). DiscProfile.xml models property breaks the DEXPI 2.0 way (LogicalBreak classes and PropertyBreakExtension), which the Proteus schema cannot carry. They are accepted only on `PropertyBreak`.
+
+The type URI is matched against the profile class extensions (MDL-CLS-01 if unmatched, MDL-CLS-03 if the superType is wrong) only for CustomObject subtypes. PRF-SCP-02 reports `TypeNameAssignmentClass` and `TypeURIAssignmentClass` on any class that is not a CustomObject subtype (the `Custom<X>` classes, e.g. `CustomEquipment`, `CustomOperatedValve`).
 
 ### GEO — Node placement & geometry
 
@@ -447,7 +457,7 @@ CSV files are UTF-8 with CRLF line endings and quoted fields.
 The startup fetch could not reach GitHub — no network, a proxy in the way, or the repository moved. Use **Retry** in the amber note, or load a `DiscProfile.xml` by hand; everything except the profile-dependent codes works meanwhile.
 
 **Explorer: "source line unavailable"**
-The picked folder is no longer readable — the permission lapsed, or the file changed since the run. Re-run **Validate Folder…** on the folder.
+The picked folder is no longer readable — the permission lapsed, or the file changed since the run. Re-run **Validate…** on the folder.
 
 **No PRF or GEO findings at all**
 Those codes need a profile. Check that one is listed under the load buttons — if the default could not be fetched, load a `DiscProfile.xml` by hand. Without one the codes report not-evaluated rather than passing.

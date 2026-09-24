@@ -8,11 +8,12 @@ import { parseProteusPackage, SEGMENT_SYSTEM_MEMBERSHIP_REF_PROPERTIES, TREE_CON
 import { validateProteusXsd } from "./xsdValidate.js";
 import { validateAgainstRdl } from "./rdlValidate.js";
 import { ISSUE_CODES, ALL_CODES } from "./issueCodes.js";
-import { pickXmlFiles, pickDirectory, supportsDirectoryPicker, validateFiles, buildFolderReport } from "./folderValidate.js";
+import { pickXmlFiles, pickDirectory, pickDirectoryForWrite, pngPathFor, writeFileAt, collectFolderElements, supportsDirectoryPicker, validateFiles, buildFolderReport } from "./folderValidate.js";
 import { buildReportRows, buildTagIndex, locationFromModel, locationFromXsd } from "./reportColumns.js";
 import { buildXlsxBlob } from "./xlsxBlob.js";
 import { buildLineResolver } from "./lineResolve.js";
 import ErrorExplorer from "./errorExplorer.jsx";
+import { version as APP_VERSION } from "../package.json";
 import { jsPDF } from "jspdf";
 
 // Issue classification codes reported here come from issueCodes.js, shared by xsdValidate.js and rdlValidate.js.
@@ -783,9 +784,19 @@ export default function App() {
     // Picked files kept by path, so a file can be reopened from its row in the Folder tab without re-picking the folder.
     const folderFilesRef = useRef(new Map());
     const folderCancelRef = useRef(false);
+    const folderPngInputRef = useRef(null);
+    const folderElemInputRef = useRef(null);
+    const elemCancelRef = useRef(false);
+    const pngCancelRef = useRef(false);
+    // True while Save PNG… renders each file through the viewer; skips auto-validation and the BG overlay.
+    const batchPngRef = useRef(false);
     const svgViewportRef = useRef(null);
     const svgElRef = useRef(null);
     const [exporting, setExporting] = useState(false);
+    const [batchPng, setBatchPng] = useState(false);
+    const [pngProgress, setPngProgress] = useState(null);
+    const [pngResult, setPngResult] = useState(null);
+    const [elemProgress, setElemProgress] = useState(null);
 
     const connectivityHighlight = useMemo(() => {
         if (!showConnectivity || !selectedId || !parsed?.connectivityMap) return { upstream: new Set(), downstream: new Set(), group: new Set() };
@@ -822,6 +833,7 @@ export default function App() {
     // Every newly parsed file validates itself, so the Validation tab is populated by the time
     // the drawing is on screen. Re-parsing on a profile change re-validates against that profile.
     useEffect(() => {
+        if (batchPngRef.current) return;
         if (!parsed?.mainDoc) { setRdlStatus("idle"); setRdlResult(null); return; }
         runRdlValidation();
     }, [parsed, runRdlValidation]);
@@ -996,6 +1008,122 @@ export default function App() {
         runFolderValidation(picked, first.includes("/") ? first.split("/")[0] : "");
     }
 
+    // Save PNG…: writes <name>.png next to each .xml when the browser can write to the folder, otherwise downloads each PNG.
+    async function handleSavePngButton() {
+        if (!supportsDirectoryPicker()) { folderPngInputRef.current?.click(); return; }
+        let picked = null;
+        try {
+            picked = await pickDirectoryForWrite();
+        } catch (err) {
+            console.error("Folder pick failed:", err);
+            folderPngInputRef.current?.click();
+            return;
+        }
+        if (!picked) return;
+        runFolderPng(picked.files, picked.name, picked.dirHandle);
+    }
+
+    function handleFolderPngPick(e) {
+        const picked = pickXmlFiles(e.target.files);
+        const first = picked[0]?.webkitRelativePath || "";
+        if (folderPngInputRef.current) folderPngInputRef.current.value = "";
+        runFolderPng(picked, first.includes("/") ? first.split("/")[0] : "", null);
+    }
+
+    const nextPaint = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+    // Renders each file through the drawing view, then restores the file that was open before.
+    async function runFolderPng(files, name, dirHandle) {
+        setLeftTab("folder");
+        setPngResult(null);
+        if (!files.length) { setPngResult({ folder: name, total: 0, saved: 0, failed: [], downloaded: !dirHandle }); return; }
+        const prevText = mainXmlRef.current;
+        pngCancelRef.current = false;
+        batchPngRef.current = true;
+        setBatchPng(true);
+        const failed = [];
+        let saved = 0;
+        try {
+            for (let i = 0; i < files.length; i++) {
+                if (pngCancelRef.current) break;
+                const file = files[i];
+                const rel = file.relPath || file.webkitRelativePath || file.name;
+                setPngProgress({ done: i, total: files.length, name: rel });
+                try {
+                    const p = parseProteusPackage(await file.text(), discXmlText);
+                    const b = boundsFromElements(p.graphics);
+                    setFullBounds(b);
+                    setParsed(p);
+                    setSelectedId(null);
+                    setZOrderOverrides(new Set());
+                    const vb = { x: b.minX, y: b.minY, w: Math.max(100, b.maxX - b.minX), h: Math.max(100, b.maxY - b.minY) };
+                    setViewBox(vb);
+                    const want = `${vb.x} ${vb.y} ${vb.w} ${vb.h}`;
+                    for (let f = 0; f < 60; f++) {
+                        await nextPaint();
+                        if (svgElRef.current?.getAttribute("viewBox") === want) break;
+                    }
+                    const canvas = await renderViewboxToCanvas({ matchScreenStrokes: true });
+                    const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+                    if (!blob) throw new Error("PNG encoding failed.");
+                    if (dirHandle) await writeFileAt(dirHandle, pngPathFor(rel), blob);
+                    else downloadBlob(blob, pngPathFor(file.name));
+                    saved++;
+                } catch (err) {
+                    failed.push({ path: rel, error: err.message || String(err) });
+                }
+            }
+        } finally {
+            batchPngRef.current = false;
+            setBatchPng(false);
+            setPngProgress(null);
+            if (prevText) rebuild(prevText, discXmlText);
+            else setParsed(null);
+        }
+        setPngResult({ folder: name, total: files.length, saved, failed, downloaded: !dirHandle, cancelled: pngCancelRef.current });
+    }
+
+    // Export Element…: classes and DEXPI attributes used per file, as an .xlsx download.
+    async function handleExportElementButton() {
+        if (!supportsDirectoryPicker()) { folderElemInputRef.current?.click(); return; }
+        let picked = null;
+        try {
+            picked = await pickDirectory();
+        } catch (err) {
+            console.error("Folder pick failed:", err);
+            folderElemInputRef.current?.click();
+            return;
+        }
+        if (!picked) return;
+        runExportElements(picked.files, picked.name);
+    }
+
+    function handleFolderElemPick(e) {
+        const picked = pickXmlFiles(e.target.files);
+        const first = picked[0]?.webkitRelativePath || "";
+        if (folderElemInputRef.current) folderElemInputRef.current.value = "";
+        runExportElements(picked, first.includes("/") ? first.split("/")[0] : "");
+    }
+
+    async function runExportElements(files, name) {
+        setLeftTab("folder");
+        if (!files.length) { alert("No .xml files found in that folder."); return; }
+        elemCancelRef.current = false;
+        setElemProgress({ done: 0, total: files.length, name: "" });
+        try {
+            const sheets = await collectFolderElements(files, discXmlText, {
+                onProgress: setElemProgress,
+                isCancelled: () => elemCancelRef.current,
+            });
+            const base = (name || "folder").replace(/[\\/:*?"<>|]+/g, "_");
+            downloadBlob(buildXlsxBlob(sheets), `${base}-elements.xlsx`);
+        } catch (err) {
+            alert("Export Element failed: " + (err.message || String(err)));
+        } finally {
+            setElemProgress(null);
+        }
+    }
+
     // Validates every .xml found, against the currently loaded profile.
     async function runFolderValidation(files, name) {
         setLeftTab("folder");
@@ -1162,16 +1290,28 @@ export default function App() {
     // Targets a fixed output resolution (long edge in px) rather than scaling the viewBox's native units directly, regardless of their magnitude.
     const EXPORT_LONG_EDGE_PX = 3000;
 
-    async function renderViewboxToCanvas() {
+    async function renderViewboxToCanvas(opts = {}) {
         const svgEl = svgElRef.current;
         if (!svgEl) throw new Error("Drawing is not ready yet.");
         const clone = svgEl.cloneNode(true);
         clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-        const aspect = viewBox.w / viewBox.h;
+        const vb = svgEl.viewBox?.baseVal;
+        const aspect = vb && vb.width > 0 && vb.height > 0 ? vb.width / vb.height : viewBox.w / viewBox.h;
         const pxW = Math.max(1, Math.round(aspect >= 1 ? EXPORT_LONG_EDGE_PX : EXPORT_LONG_EDGE_PX * aspect));
         const pxH = Math.max(1, Math.round(aspect >= 1 ? EXPORT_LONG_EDGE_PX / aspect : EXPORT_LONG_EDGE_PX));
         clone.setAttribute("width", String(pxW));
         clone.setAttribute("height", String(pxH));
+        // Line widths are non-scaling (screen pixels); scale them so the PNG keeps the on-screen line weight, Line Boost included.
+        if (opts.matchScreenStrokes && vb && vb.width > 0 && svgEl.clientWidth > 0 && svgEl.clientHeight > 0) {
+            const screenScale = Math.min(svgEl.clientWidth / vb.width, svgEl.clientHeight / vb.height);
+            const ratio = (pxW / vb.width) / screenScale;
+            if (Number.isFinite(ratio) && ratio > 0) {
+                clone.querySelectorAll('[vector-effect="non-scaling-stroke"]').forEach(n => {
+                    const w = parseFloat(n.getAttribute("stroke-width"));
+                    n.setAttribute("stroke-width", String((Number.isFinite(w) ? w : 1) * ratio));
+                });
+            }
+        }
 
         const svgStr = new XMLSerializer().serializeToString(clone);
         const url = URL.createObjectURL(new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" }));
@@ -1388,7 +1528,7 @@ export default function App() {
     // Blend slider (-1..1, 0 = center): cross-fades the BG image and the DEXPI drawing's opacity.
     // Positive fades the BG image out; negative fades the drawing out.
     const bgBlend = bgImage?.blend ?? 0;
-    const drawingOpacity = bgBlend < 0 ? 1 + bgBlend : 1;
+    const drawingOpacity = bgBlend < 0 && !batchPng ? 1 + bgBlend : 1;
     const bgOpacity = bgBlend > 0 ? 1 - bgBlend : 1;
     const bgPlacement = useMemo(() => {
         if (!bgImage) return null;
@@ -1430,7 +1570,7 @@ export default function App() {
                     <div style={S.toolbar}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, gap: 6 }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-                                <div style={{ fontWeight: 700, fontSize: 15, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>DEXPI 1.4 / DISC Profile Viewer</div>
+                                <div style={{ fontWeight: 700, fontSize: 15, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>DEXPI 1.4 / DISC Profile Viewer <span style={{ fontWeight: 400, fontSize: 12, color: "#57606a" }} title={`Version ${APP_VERSION}`}>v{APP_VERSION.split(".").slice(0, 2).join(".")}</span></div>
                                 {/* Opens public/UserGuide.html in a new tab; the app keeps its state. */}
                                 <a
                                     href={`${import.meta.env.BASE_URL}UserGuide.html`}
@@ -1458,14 +1598,11 @@ export default function App() {
                             <button style={{ ...S.btn, background: mainFileLoaded ? "#eaf2ff" : "white" }} onClick={() => mainInputRef.current?.click()}>{mainFileLoaded ? "✓ " : ""}Load Proteus XML</button>
                             <button style={{ ...S.btn, background: discFileLoaded ? "#eaf2ff" : "white" }} onClick={() => discInputRef.current?.click()}>{discFileLoaded ? "✓ " : ""}Load DiscProfile.xml</button>
                         </div>
-                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
-                            <button style={S.btn} onClick={handleFolderButton} title="Validate every .xml in a folder, and its subfolders, against the loaded profile. The browser asks permission to read the folder; the files stay on this machine and nothing is uploaded.">
-                                Validate Folder…
-                            </button>
-                        </div>
                         <input ref={mainInputRef} type="file" accept=".xml" style={{ display: "none" }} onChange={handleMainFile} />
                         {/* webkitdirectory turns this into a folder picker; files are read in the browser, nothing is uploaded. */}
                         <input ref={folderInputRef} type="file" webkitdirectory="" directory="" multiple style={{ display: "none" }} onChange={handleFolderPick} />
+                        <input ref={folderPngInputRef} type="file" webkitdirectory="" directory="" multiple style={{ display: "none" }} onChange={handleFolderPngPick} />
+                        <input ref={folderElemInputRef} type="file" webkitdirectory="" directory="" multiple style={{ display: "none" }} onChange={handleFolderElemPick} />
                         <input ref={discInputRef} type="file" accept=".xml" style={{ display: "none" }} onChange={handleDiscFile} />
                         {(mainFileName || discFileName) && (
                             <div style={{ marginTop: 6, fontSize: 12, color: "#57606a" }}>
@@ -1674,6 +1811,50 @@ export default function App() {
 
                     {leftTab === "folder" && (
                         <div style={S.scroll}>
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "8px 12px", borderBottom: "1px solid #eef2f6" }}>
+                                <button style={S.btn} disabled={!!folderProgress || !!pngProgress || !!elemProgress} onClick={handleFolderButton} title="Validate every .xml in a folder, and its subfolders, against the loaded profile. The browser asks permission to read the folder; the files stay on this machine and nothing is uploaded.">
+                                    Validate…
+                                </button>
+                                <button style={S.btn} disabled={!!folderProgress || !!pngProgress || !!elemProgress} onClick={handleSavePngButton} title="Render every .xml in a folder, and its subfolders, and save each as a .png next to it. The browser asks permission to write to the folder.">
+                                    Save PNG…
+                                </button>
+                                <button style={S.btn} disabled={!!folderProgress || !!pngProgress || !!elemProgress} onClick={handleExportElementButton} title="Export every class (including TypeURIAssignmentClass-mapped profile classes) and every DexpiAttributes / DexpiCustomAttributes attribute used in a folder's .xml files, with counts and validity, as an Excel file.">
+                                    Export Element…
+                                </button>
+                            </div>
+                            {elemProgress && (
+                                <div style={{ padding: 16, fontSize: 13, color: "#57606a" }}>
+                                    <div style={{ display: "flex", alignItems: "center" }}>
+                                        <Spinner />Reading {Math.min(elemProgress.done + 1, elemProgress.total)} of {elemProgress.total}…
+                                    </div>
+                                    <div style={{ marginTop: 4, fontSize: 11, fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{elemProgress.name}</div>
+                                    <button style={{ ...S.btnSmall, marginTop: 8 }} onClick={() => { elemCancelRef.current = true; }}>Stop</button>
+                                </div>
+                            )}
+                            {pngProgress && (
+                                <div style={{ padding: 16, fontSize: 13, color: "#57606a" }}>
+                                    <div style={{ display: "flex", alignItems: "center" }}>
+                                        <Spinner />Saving PNG {Math.min(pngProgress.done + 1, pngProgress.total)} of {pngProgress.total}…
+                                    </div>
+                                    <div style={{ marginTop: 4, fontSize: 11, fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pngProgress.name}</div>
+                                    <button style={{ ...S.btnSmall, marginTop: 8 }} onClick={() => { pngCancelRef.current = true; }}>Stop</button>
+                                </div>
+                            )}
+                            {!pngProgress && pngResult && (
+                                <div style={{ margin: "8px 12px", padding: "8px 10px", fontSize: 12, background: pngResult.failed.length ? "#fff8c5" : "#dafbe1", border: "1px solid #eef2f6", borderRadius: 6 }}>
+                                    <div style={{ display: "flex", alignItems: "center" }}>
+                                        <span>
+                                            {pngResult.total === 0
+                                                ? "No .xml files found in that folder."
+                                                : `${pngResult.saved} of ${pngResult.total} PNG${pngResult.total === 1 ? "" : "s"} ${pngResult.downloaded ? "downloaded" : `saved to ${pngResult.folder || "the folder"}`}${pngResult.cancelled ? " (stopped)" : ""}.`}
+                                        </span>
+                                        <button style={{ ...S.btnSmall, marginLeft: "auto" }} onClick={() => setPngResult(null)}>×</button>
+                                    </div>
+                                    {pngResult.failed.map(f => (
+                                        <div key={f.path} style={{ marginTop: 4, fontFamily: "monospace", fontSize: 11 }} title={f.error}>{f.path}: {f.error}</div>
+                                    ))}
+                                </div>
+                            )}
                             {folderProgress && (
                                 <div style={{ padding: 16, fontSize: 13, color: "#57606a" }}>
                                     <div style={{ display: "flex", alignItems: "center" }}>
@@ -1685,12 +1866,18 @@ export default function App() {
                                     <button style={{ ...S.btnSmall, marginTop: 8 }} onClick={() => { folderCancelRef.current = true; }}>Stop</button>
                                 </div>
                             )}
-                            {!folderProgress && !folderResults && (
+                            {!folderProgress && !pngProgress && !elemProgress && !folderResults && (
                                 <div style={{ padding: 16, color: "#888", fontSize: 13, lineHeight: 1.5 }}>
-                                    Use <b>Validate Folder…</b> above to check every .xml file in a folder and its subfolders against the same two engines.
+                                    Each button works on every .xml file in a folder and its subfolders:
+                                    <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                                        <li><b>Validate…</b> checks each file against the same two engines.</li>
+                                        <li><b>Save PNG…</b> saves each drawing as a .png next to its file, using the drawing toolbar's Profile labels, Line Boost and Include symbol outlines settings.</li>
+                                        <li><b>Export Element…</b> downloads an Excel file listing the classes and DEXPI attributes used in each file, with counts and whether each is valid.</li>
+                                    </ul>
                                     <div style={{ marginTop: 8, padding: "8px 10px", background: "#f6f8fa", border: "1px solid #eef2f6", borderRadius: 6 }}>
-                                        <b>Nothing is uploaded.</b> The files are read and validated inside this browser, on this machine, and are never sent to a server.
+                                        <b>Nothing is uploaded.</b> The files are read and processed inside this browser, on this machine, and are never sent to a server.
                                         The browser asks permission first; its wording ("view and copy", or "upload") is the browser asking whether this page may <i>read</i> those files into itself.
+                                        <b>Save PNG…</b> also asks to <i>edit</i> files in the folder, so it can write the PNGs there. Browsers that can't write to a folder download them instead.
                                     </div>
                                     <div style={{ marginTop: 8 }}>
                                         {discFileLoaded
@@ -1930,7 +2117,7 @@ export default function App() {
                     onMouseLeave={() => { setIsPanning(false); setPanStart(null); }}
                 >
                     <svg ref={svgElRef} viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`} width="100%" height="100%" style={{ display: "block" }} onAuxClick={e => e.preventDefault()}>
-                        {bgImage && bgPlacement && (
+                        {bgImage && bgPlacement && !batchPng && (
                             <g style={{ display: bgImage.visible ? "inline" : "none", opacity: bgOpacity, pointerEvents: "none" }}>
                                 <image href={bgImage.src} x={bgPlacement.x} y={bgPlacement.y} width={bgPlacement.width} height={bgPlacement.height} preserveAspectRatio="none" />
                                 <rect x={bgPlacement.x} y={bgPlacement.y} width={bgPlacement.width} height={bgPlacement.height} fill={BG_TINT_COLOR} style={{ mixBlendMode: "color" }} />

@@ -4,7 +4,7 @@
 // finding here is the finding the viewer and the CLI report.
 
 import { parseProteusPackage } from "./proteusParser.js";
-import { validateAgainstRdl } from "./rdlValidate.js";
+import { validateAgainstRdl, collectElementUsage } from "./rdlValidate.js";
 import { validateProteusXsd } from "./xsdValidate.js";
 import { buildLineResolver } from "./lineResolve.js";
 import { buildReportRows, buildTagIndex, locationFromModel, locationFromXsd } from "./reportColumns.js";
@@ -54,6 +54,43 @@ export async function pickDirectory() {
     await collectXmlFiles(dirHandle, "", files);
     files.sort((a, b) => (a.relPath || a.name).localeCompare(b.relPath || b.name));
     return { name: dirHandle.name, files };
+}
+
+/**
+ * Opens the directory picker with write access, for saving output next to
+ * each .xml in the chosen folder and its subfolders.
+ *
+ * @returns {Promise<{name:string, files:File[], dirHandle:FileSystemDirectoryHandle}|null>} null if cancelled
+ */
+export async function pickDirectoryForWrite() {
+    let dirHandle;
+    try {
+        dirHandle = await window.showDirectoryPicker({ mode: "readwrite", id: "dexpi-folder-png" });
+    } catch (e) {
+        if (e?.name === "AbortError") return null;
+        throw e;
+    }
+    const files = [];
+    await collectXmlFiles(dirHandle, "", files);
+    files.sort((a, b) => (a.relPath || a.name).localeCompare(b.relPath || b.name));
+    return { name: dirHandle.name, files, dirHandle };
+}
+
+/** "sub/drawing.xml" -> "sub/drawing.png" */
+export function pngPathFor(relPath) {
+    return relPath.replace(/\.[^./]+$/, "") + ".png";
+}
+
+/** Writes blob to relPath (subfolders must already exist) under dirHandle. */
+export async function writeFileAt(dirHandle, relPath, blob) {
+    const parts = relPath.split("/");
+    const fileName = parts.pop();
+    let dir = dirHandle;
+    for (const part of parts) dir = await dir.getDirectoryHandle(part);
+    const fh = await dir.getFileHandle(fileName, { create: true });
+    const w = await fh.createWritable();
+    await w.write(blob);
+    await w.close();
 }
 
 /**
@@ -138,4 +175,54 @@ export async function validateFiles(files, profileText, opts = {}) {
  */
 export function buildFolderReport(results, typeOf) {
     return buildReportRows(results, typeOf);
+}
+
+/**
+ * Export Element…: classes and DEXPI attributes used per file, as two
+ * xlsx sheets (see collectElementUsage() in rdlValidate.js).
+ *
+ * @returns {Promise<{name:string, columns:object[], rows:any[][]}[]>}
+ */
+export async function collectFolderElements(files, profileText, opts = {}) {
+    const { onProgress, isCancelled } = opts;
+    const parser = new DOMParser();
+    const discDoc = profileText ? parser.parseFromString(profileText, "application/xml") : null;
+    const classRows = [], attrRows = [];
+    const yn = v => (v ? "Yes" : "No");
+
+    for (let i = 0; i < files.length; i++) {
+        if (isCancelled?.()) break;
+        const file = files[i];
+        const path = file.relPath || file.webkitRelativePath || file.name;
+        onProgress?.({ done: i, total: files.length, name: path });
+        try {
+            const mainDoc = parser.parseFromString(await file.text(), "application/xml");
+            if (mainDoc.getElementsByTagName("parsererror").length) throw new Error("not well-formed XML");
+            const usage = collectElementUsage(mainDoc, discDoc);
+            usage.classes
+                .sort((a, b) => a.className.localeCompare(b.className))
+                .forEach(c => classRows.push([path, c.className, c.superType, c.count, yn(c.valid)]));
+            usage.attributes
+                .sort((a, b) => a.className.localeCompare(b.className) || a.attribute.localeCompare(b.attribute))
+                .forEach(a => attrRows.push([path, a.className, a.superType, a.attribute, a.count, yn(a.valid)]));
+        } catch (e) {
+            classRows.push([path, `(error: ${e.message || e})`, "", 0, "No"]);
+        }
+        await new Promise(done => setTimeout(done, 0));
+    }
+
+    return [
+        {
+            name: "Classes",
+            columns: [{ header: "File", width: 40 }, { header: "Class", width: 32 }, { header: "SuperType", width: 40 },
+                { header: "Count", width: 8 }, { header: "IsValid", width: 9 }],
+            rows: classRows,
+        },
+        {
+            name: "Attributes",
+            columns: [{ header: "File", width: 40 }, { header: "Class", width: 32 }, { header: "SuperType", width: 40 },
+                { header: "Attribute", width: 36 }, { header: "Count", width: 8 }, { header: "IsValid", width: 9 }],
+            rows: attrRows,
+        },
+    ];
 }
