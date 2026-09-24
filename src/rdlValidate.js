@@ -15,7 +15,7 @@ import {
     buildProfileFacts, expectedCustomFamily, normalizeSymbolName,
     checkDiscScope, checkSymbolCatalogue,
     checkGridAlignment, checkDeclaredVersion, checkZeroLengthConnectors, checkSegmentContinuity,
-    detectDiscClaim, isDexpi1x,
+    detectDiscClaim, isDexpi1x, isDexpi1xPropertyBreakAttribute,
 } from "./profileRules.js";
 import { qsa, directChildrenByTag, parseEnumLiteralSymbols, parseSymbolCatalogue } from "./dexpiParser.js";
 import {
@@ -306,6 +306,16 @@ function buildSymbolRegistrationIndex(mainDoc) {
     return map;
 }
 
+// The profile symbol an element refers to, identified by its
+// SymbolRegistrationNumber only (never the ComponentName itself).
+// `usageKey` is what the profile's symbol usage is looked up by.
+function resolveSymbolReference(el, registrationIndex, profileFacts) {
+    const raw = el.getAttribute("ComponentName") || "";
+    const registered = registrationIndex.get(raw) || null;
+    const profileSymbol = registered && profileFacts.symbolNames.has(normalizeSymbolName(registered)) ? normalizeSymbolName(registered) : null;
+    return { raw, registered, profileSymbol, usageKey: registered };
+}
+
 // ---- ProcessInstrumentationFunction Source/Target coverage check ---------
 //
 // Every ProcessInstrumentationFunction (or subtype) is expected to
@@ -406,9 +416,10 @@ function classIsResolvable(className, profileClassIndex) {
 // expectedClass or one of its declared superTypes.
 function classSatisfiesConstraint(el, componentClass, expectedClass, profileClassIndex) {
     if (!componentClass) return false;
-    if (componentClass === expectedClass || classDescendsFrom(componentClass, expectedClass)) return true;
-    if (!componentClass.startsWith(CUSTOM_CLASS_PREFIX)) return false;
-    const typeUri = findTypeUriAssignmentValue(el);
+    // A direct match counts only for a DEXPI 1.4 class; a profile-only class
+    // (e.g. ThreadedPipeCap) is reached through a Custom<X> type URI.
+    if (rdl.classes[componentClass] && (componentClass === expectedClass || classDescendsFrom(componentClass, expectedClass))) return true;
+    const typeUri = customTypeUri(el);
     const resolved = typeUri ? profileClassIndex.get(typeUri) : null;
     if (!resolved) return false;
     return resolved.name === expectedClass || resolved.superTypes.some(st => st.split(".").pop() === expectedClass);
@@ -427,8 +438,15 @@ function classSatisfiesConstraint(el, componentClass, expectedClass, profileClas
 //    classes.
 // A vendor AttributeURI does not make an attribute valid.
 
-function readProfileDataProperties(classEl) {
-    const names = new Set(), uris = new Set();
+function readProfileDataProperties(classEl, enumListClasses) {
+    const names = new Set(), uris = new Set(), enumRefs = new Map(); // ref name -> list class
+    // A ReferenceProperty to an enumerated list (a class whose values are
+    // Objects in the profile, e.g. ProcessInstrumentationFunctionTypeCode).
+    directChildrenByTag(classEl, "ReferenceProperty").forEach(rp => {
+        const target = directChildrenByTag(rp, "ClassReference")[0]?.getAttribute("type") || "";
+        const name = rp.getAttribute("name");
+        if (name && enumListClasses.has(lastSegment(target))) enumRefs.set(name, lastSegment(target));
+    });
     directChildrenByTag(classEl, "DataProperty").forEach(dp => {
         const name = dp.getAttribute("name");
         if (name) names.add(name);
@@ -436,24 +454,37 @@ function readProfileDataProperties(classEl) {
             .filter(d => d.getAttribute("property") === "MetaData/rdl_uri")
             .forEach(d => { const t = directChildrenByTag(d, "String")[0]?.textContent?.trim(); if (t) uris.add(t); });
     });
-    return { names, uris };
+    return { names, uris, enumRefs };
 }
 
 // { classProps: Map(profileClassName -> {names, uris}), extProps: Map(baseType last segment -> {names, uris}),
 //   allNames: Set, allUris: Set }
 export function buildProfileAttributeIndex(discDoc) {
-    const index = { classProps: new Map(), extProps: new Map(), allNames: new Set(), allUris: new Set() };
+    // enumValues: list class -> accepted values (each Object's name and its Abbreviation).
+    const index = { classProps: new Map(), extProps: new Map(), allNames: new Set(), allUris: new Set(), enumValues: new Map() };
     if (!discDoc) return index;
+    qsa(discDoc, "Object[type]").forEach(o => {
+        const cls = lastSegment(o.getAttribute("type"));
+        const values = index.enumValues.get(cls) || new Set();
+        const name = o.getAttribute("name");
+        if (name) values.add(name);
+        directChildrenByTag(o, "Data")
+            .filter(d => d.getAttribute("property") === "Abbreviation")
+            .forEach(d => { const t = directChildrenByTag(d, "String")[0]?.textContent?.trim(); if (t) values.add(t); });
+        index.enumValues.set(cls, values);
+    });
+    const enumListClasses = new Set(index.enumValues.keys());
     const add = (map, key, props) => {
-        const hit = map.get(key) || { names: new Set(), uris: new Set() };
+        const hit = map.get(key) || { names: new Set(), uris: new Set(), enumRefs: new Map() };
         props.names.forEach(n => { hit.names.add(n); index.allNames.add(n); });
         props.uris.forEach(u => { hit.uris.add(u); index.allUris.add(u); });
+        props.enumRefs.forEach((cls, n) => { hit.enumRefs.set(n, cls); index.allNames.add(n); });
         map.set(key, hit);
     };
     const walk = node => Array.from(node.children || []).forEach(child => {
         const tag = child.tagName;
-        if (tag === "ConcreteClass" || tag === "AbstractClass") add(index.classProps, child.getAttribute("name") || "", readProfileDataProperties(child));
-        else if (tag === "ClassExtension") add(index.extProps, lastSegment(child.getAttribute("baseType") || ""), readProfileDataProperties(child));
+        if (tag === "ConcreteClass" || tag === "AbstractClass") add(index.classProps, child.getAttribute("name") || "", readProfileDataProperties(child, enumListClasses));
+        else if (tag === "ClassExtension") add(index.extProps, lastSegment(child.getAttribute("baseType") || ""), readProfileDataProperties(child, enumListClasses));
         walk(child);
     });
     walk(discDoc.documentElement);
@@ -475,8 +506,8 @@ function modelAncestors(className, out) {
 function attributeScope(el, componentClass, profileClassIndex, attrIndex) {
     const modelClasses = new Set();
     modelAncestors(componentClass, modelClasses);
-    const names = new Set(), uris = new Set();
-    const addProps = p => { if (p) { p.names.forEach(n => names.add(n)); p.uris.forEach(u => uris.add(u)); } };
+    const names = new Set(), uris = new Set(), enumRefs = new Map();
+    const addProps = p => { if (p) { p.names.forEach(n => names.add(n)); p.uris.forEach(u => uris.add(u)); p.enumRefs.forEach((cls, n) => enumRefs.set(n, cls)); } };
 
     const typeUri = customTypeUri(el);
     const resolved = typeUri ? profileClassIndex.get(typeUri) : null;
@@ -492,11 +523,29 @@ function attributeScope(el, componentClass, profileClassIndex, attrIndex) {
         if (rdl.classes[cls]) resolveInheritedProperties(cls).forEach((_, short) => names.add(short));
         addProps(attrIndex.extProps.get(cls));
     });
-    return { names, uris };
+    return { names, uris, enumRefs };
 }
 
-function attributeInScope(scope, name, attrUri) {
-    return scope.names.has(name) || scope.names.has(stripNameSuffix(name)) || (!!attrUri && scope.uris.has(attrUri));
+// An enumerated-list reference is carried in a DEXPI 1.x file as a
+// "<Name>AssignmentClass" attribute (e.g. TypeCodeAssignmentClass on
+// ProcessInstrumentationFunction); that form only.
+const ASSIGNMENT_CLASS_SUFFIX = "AssignmentClass";
+
+function attributeInScope(scope, name, attrUri, dexpi1x = false) {
+    if (scope.names.has(name) || scope.names.has(stripNameSuffix(name)) || (!!attrUri && scope.uris.has(attrUri))) return true;
+    return !!enumListFor(scope, name, dexpi1x);
+}
+
+// The profile list class a "<Name>AssignmentClass" attribute refers to, or null.
+function enumListFor(scope, name, dexpi1x) {
+    if (!dexpi1x || !name.endsWith(ASSIGNMENT_CLASS_SUFFIX)) return null;
+    return scope.enumRefs.get(name.slice(0, -ASSIGNMENT_CLASS_SUFFIX.length)) || null;
+}
+
+// A list value is accepted as the value's name or its Abbreviation.
+function enumListValueValid(attrIndex, listClass, value) {
+    const values = attrIndex.enumValues.get(listClass);
+    return !values || values.has((value || "").trim());
 }
 
 // ---- Element usage (Export Element…) ---------------------------------------
@@ -508,10 +557,13 @@ function attributeInScope(scope, name, attrUri) {
 // otherwise under its ComponentClass (superType from the DEXPI 1.4 model).
 //
 // Returns { classes: [{className, superType, count, valid}],
-//           attributes: [{className, superType, attribute, count, valid}] }.
+//           attributes: [{className, superType, attribute, count, valid}],
+//           symbols: [{reference, className, superType, kind, count, valid}],
+//           usesProfile: boolean }.
 export function collectElementUsage(mainDoc, discDoc) {
     const profileClassIndex = buildProfileClassSuperTypeIndex(discDoc);
     const attrIndex = buildProfileAttributeIndex(discDoc);
+    const dexpi1x = isDexpi1x(mainDoc);
     const profileFacts = buildProfileFacts(discDoc);
     const classes = new Map();
     const attributes = new Map();
@@ -561,14 +613,64 @@ export function collectElementUsage(mainDoc, discDoc) {
                     attrValid = isCustomObjectSubtype(componentClass)
                         && (name !== "TypeURIAssignmentClass" || !discDoc || !!profileClassIndex.get(ga.getAttribute("Value") || ""));
                 }
-                else attrValid = attributeInScope(scope, name, attrUri);
+                else if (enumListFor(scope, name, dexpi1x)) attrValid = enumListValueValid(attrIndex, enumListFor(scope, name, dexpi1x), ga.getAttribute("Value"));
+                else attrValid = attributeInScope(scope, name, attrUri, dexpi1x)
+                    || (dexpi1x && isDexpi1xPropertyBreakAttribute(componentClass, name, attrUri));
                 bump(attributes, `${className}\u0000${superType}\u0000${name}\u0000${attrValid}`,
                     { className, superType, attribute: name, valid: attrValid });
             });
         });
     });
 
-    return { classes: [...classes.values()], attributes: [...attributes.values()] };
+    // Symbols: every placed object and <Label> with a ComponentName, the
+    // symbol identified by its SymbolRegistrationNumber. Valid when that
+    // resolves in the profile catalogue (PRF-SYM-01, placed objects only)
+    // and, if the profile gives the symbol a usage class, the object's class
+    // satisfies it (PRF-SYM-02). No usage setting -> valid.
+    const symbols = new Map();
+    const registrationIndex = buildSymbolRegistrationIndex(mainDoc);
+    const symbolUsageIndex = buildSymbolUsageIndex(discDoc);
+    const checkCatalogue = profileFacts.hasProfile && profileFacts.symbolNames.size > 0;
+    // SuperType of the listed class: from the DEXPI 1.4 model, else from the
+    // profile class of that name (a profile-only class such as ThreadedPipeCap).
+    const profileClassByName = new Map([...profileClassIndex.values()].map(info => [info.name, info]));
+    const superTypeOf = cls => (rdl.classes[cls]?.superTypes || profileClassByName.get(cls)?.superTypes || []).join(" ");
+    // `cls` is checked against the symbol's usage; `shownClass` is what the
+    // sheet lists (for a label, the class of the object using the label).
+    const addSymbol = (el, kind, cls, shownClass = cls) => {
+        const { raw, registered, profileSymbol, usageKey } = resolveSymbolReference(el, registrationIndex, profileFacts);
+        if (!raw) return;
+        let valid = kind === "Label" || !checkCatalogue || !!profileSymbol;
+        const usage = usageKey ? symbolUsageIndex.get(usageKey) : null;
+        if (valid && usage && classIsResolvable(usage, profileClassIndex)) {
+            valid = classSatisfiesConstraint(el, cls, usage, profileClassIndex);
+        }
+        const reference = profileSymbol || registered || raw;
+        const superType = superTypeOf(shownClass);
+        bump(symbols, `${reference}\u0000${shownClass}\u0000${kind}\u0000${valid}`, { reference, className: shownClass, superType, kind, valid });
+    };
+    collectValidatableElements(mainDoc).forEach(el => addSymbol(el, "Symbol", el.getAttribute("ComponentClass") || ""));
+    const elementById = buildElementByIdIndex(mainDoc);
+    // The object a label belongs to: the element it is nested in, else the
+    // object its text references (ObjectAttributesReference/@ItemID).
+    const labelOwnerClass = el => {
+        const parent = el.parentElement?.closest?.("[ComponentClass]");
+        if (parent && parent.tagName !== "Label") return parent.getAttribute("ComponentClass");
+        const ref = qsa(el, "ObjectAttributesReference[ItemID]")[0];
+        const target = ref ? elementById.get(ref.getAttribute("ItemID")) : null;
+        return target?.getAttribute("ComponentClass") || "";
+    };
+    qsa(mainDoc, "Label[ComponentName]").forEach(el => {
+        if (el.closest && el.closest("ShapeCatalogue")) return;
+        const labelClass = el.getAttribute("ComponentClass") || "";
+        addSymbol(el, "Label", labelClass, labelOwnerClass(el) || labelClass);
+    });
+
+    // Symbol validity is a profile rule: only meaningful for a file that
+    // uses the profile (same test as the DISC-scoped codes).
+    const usesProfile = profileFacts.hasProfile && detectDiscClaim(mainDoc, profileFacts).claims;
+
+    return { classes: [...classes.values()], attributes: [...attributes.values()], symbols: [...symbols.values()], usesProfile };
 }
 
 // connectivityMap is the Map parseProteusPackage() returns (objectId ->
@@ -586,6 +688,7 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
     const symbolUsageIndex = buildSymbolUsageIndex(discDoc);
     // Class-scoped DiscProfile.xml DataProperties, for the attribute-name check below.
     const profileAttrIndex = buildProfileAttributeIndex(discDoc);
+    const dexpi1x = isDexpi1x(mainDoc);
     // DiscProfile.xml's own Profile/Symbol catalogue (keyed "DiscProfile/<name>"),
     // used by checkLabelTextTemplates() below. Empty when no DiscProfile.xml
     // is loaded.
@@ -862,7 +965,7 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
                 if (typeUriResult.reason) reasons.push(typeUriResult.reason);
             }
 
-            const symbol = symbolRegistrationIndex.get(el.getAttribute("ComponentName") || "");
+            const symbol = resolveSymbolReference(el, symbolRegistrationIndex, profileFacts).usageKey;
             const rawExpectedSymbolClass = symbol ? symbolUsageIndex.get(symbol) : null;
             const expectedSymbolClass = rawExpectedSymbolClass && classIsResolvable(rawExpectedSymbolClass, profileClassIndex) ? rawExpectedSymbolClass : null;
             let symbolEvidenceUsed = false;
@@ -870,7 +973,9 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
                 checked = true;
                 if (!classSatisfiesConstraint(el, componentClass, expectedSymbolClass, profileClassIndex)) {
                     symbolEvidenceUsed = true;
-                    reasons.push(`the drawn symbol "${symbol}" is expected to be used only by "${expectedSymbolClass}" (or a Custom class whose TypeURIAssignmentClass resolves to it)`);
+                    reasons.push(componentClass === expectedSymbolClass && !rdl.classes[componentClass]
+                        ? `the drawn symbol "${symbol}" is for "${expectedSymbolClass}", which is a profile class, not a DEXPI 1.4 class - use a Custom class whose TypeURIAssignmentClass resolves to it`
+                        : `the drawn symbol "${symbol}" is expected to be used only by "${expectedSymbolClass}" (or a Custom class whose TypeURIAssignmentClass resolves to it)`);
                 }
             }
 
@@ -1025,10 +1130,24 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
                 const propInfo = inherited.get(shortName);
 
                 if (!propInfo) {
+                    // DEXPI 1.x PropertyBreak attributes (see profileRules.js).
+                    if (dexpi1x && isDexpi1xPropertyBreakAttribute(componentClass, rawName, attrUri)) return;
                     // Declared for this class in the profile (directly, via
                     // its profile superType chain, or a ClassExtension on
                     // one of its classes): no finding.
-                    if (attributeInScope(scope, rawName.trim(), attrUri)) {
+                    const listClass = enumListFor(scope, rawName.trim(), dexpi1x);
+                    if (listClass) {
+                        if (!enumListValueValid(profileAttrIndex, listClass, rawValue)) {
+                            invalidEnumCount++;
+                            const allowed = [...profileAttrIndex.enumValues.get(listClass)];
+                            findings.push({
+                                severity: "warning", code: "SER-VAL-04", category: "invalid-enum-value", objectId, componentClass,
+                                message: `${rawName.trim()} = "${rawValue ?? ""}" is not a value of the DiscProfile.xml list ${listClass} (${allowed.join(", ")}).`,
+                            });
+                        }
+                        return;
+                    }
+                    if (attributeInScope(scope, rawName.trim(), attrUri, dexpi1x)) {
                         profileExtensionAttrCount++;
                         return;
                     }
@@ -1037,10 +1156,14 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
                     const isProfileProp = profileAttrIndex.allNames.has(shortTrim) || profileAttrIndex.allNames.has(stripNameSuffix(shortTrim))
                         || (!!attrUri && profileAttrIndex.allUris.has(attrUri));
                     const isDexpiNamespace = DEXPI_ATTRIBUTE_URI_NAMESPACES.some(ns => attrUri.startsWith(ns));
+                    const enumRefName = stripNameSuffix(shortTrim);
+                    const wrongEnumForm = dexpi1x && scope.enumRefs.has(enumRefName) && !shortTrim.endsWith(ASSIGNMENT_CLASS_SUFFIX);
                     findings.push({
                         code: isProfileProp ? "PRF-EXT-01" : isDexpiNamespace ? "MDL-PRP-05" : "MDL-PRP-01",
                         severity: "warning", category: "unknown-attribute", objectId, componentClass,
-                        message: isProfileProp
+                        message: wrongEnumForm
+                            ? `Attribute "${rawName}" refers to the DiscProfile.xml list "${enumRefName}" - in a DEXPI 1.x file it must be written as "${enumRefName}${ASSIGNMENT_CLASS_SUFFIX}".`
+                            : isProfileProp
                             ? `Attribute "${rawName}" is a DiscProfile.xml property, but not one declared for ${componentClass}, its TypeURIAssignmentClass profile class, or their supertypes/ClassExtensions.`
                             : `Attribute "${rawName}" is not declared for ${componentClass} or its supertypes in the DEXPI 1.4 model or the loaded DiscProfile.xml${attrUri ? ` (AttributeURI: ${attrUri})` : " (no AttributeURI)"}.`,
                     });

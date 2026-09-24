@@ -2,7 +2,7 @@
 
 A browser-based viewer and validation tool for legacy **DEXPI 1.4 / Proteus 4.1.1** XML files, rendered and checked using **DEXPI 2.x profile** symbols, classes and attributes by way of a loaded `DiscProfile.xml`.
 
-Developed by **Tonia Pedersen**. Version **2.0**. See `ChangeLog_0.0_to_2.0.md` for what changed.
+Developed by **Tonia Pedersen**. Version **2.1**. See `ChangeLog_0.0_to_2.1.md` for what changed.
 
 ---
 
@@ -117,10 +117,11 @@ The currently loaded `DiscProfile.xml` is used for every file in the run — by 
 
 **Save PNG…**, next to it, renders every `.xml` in a folder and its subfolders and saves each drawing as a `.png` with the same name, next to its source file. The browser asks for permission to write to the folder. Browsers without folder write access download each PNG instead. The PNG uses the same rendering as the drawing toolbar's **Save PNG**, fitted to the whole drawing, and honours the drawing toolbar's current **Profile labels**, **Line Boost** and **Include symbol outlines** settings. Line weights are scaled so they match what you see on screen. A BG image is not included. The file you had open is restored afterwards.
 
-**Export Element…** reads every `.xml` in a folder and its subfolders and downloads `<folder>-elements.xlsx` with two sheets:
+**Export Element…** reads every `.xml` in a folder and its subfolders and downloads `<folder>-elements.xlsx` with three sheets:
 
 - **Classes** — File, Class, SuperType, Count, IsValid. A CustomObject subtype (`Custom<X>`) with a `TypeURIAssignmentClass` is counted under the DiscProfile.xml class it maps to, with that class's superType. Other elements are counted under their `ComponentClass`, with the DEXPI 1.4 superTypes. IsValid is **No** when the type URI matches no profile class (MDL-CLS-01), when the profile superType doesn't match the ComponentClass, or when the class is abstract, unknown or an unmapped `Custom<X>`.
-- **Attributes** — File, Class, SuperType, Attribute, Count, IsValid, for every attribute in the `DexpiAttributes` and `DexpiCustomAttributes` sets. Attributes in other sets are ignored. An attribute is valid only when its name is declared for the class it is used with, directly or through a supertype. That means the DEXPI 1.4 model properties of the ComponentClass and its ancestors, the DataProperties of its TypeURIAssignmentClass profile class and that class's profile superTypes, and the DataProperties of any ClassExtension on those classes. A vendor AttributeURI does not make an attribute valid. `TypeNameAssignmentClass` and `TypeURIAssignmentClass` are valid only on CustomObject subtypes (the `Custom<X>` classes). Values (enums, cardinality) are not checked here.
+- **Attributes** — File, Class, SuperType, Attribute, Count, IsValid, for every attribute in the `DexpiAttributes` and `DexpiCustomAttributes` sets. Attributes in other sets are ignored. An attribute is valid only when its name is declared for the class it is used with, directly or through a supertype. That means the DEXPI 1.4 model properties of the ComponentClass and its ancestors, the DataProperties of its TypeURIAssignmentClass profile class and that class's profile superTypes, and the DataProperties of any ClassExtension on those classes. In DEXPI 1.x files, a DiscProfile.xml reference to an enumerated list (e.g. `ProcessInstrumentationFunctionExtension.TypeCode` → `ProcessInstrumentationFunctionTypeCode`) is allowed as `<Name>AssignmentClass`, e.g. `TypeCodeAssignmentClass` on a ProcessInstrumentationFunction. Its value must be one of the list's values, given as the value name or its abbreviation (e.g. `EmergencyShutdown` or `ESD`), otherwise **SER-VAL-04**. The bare name (`TypeCode`) raises PRF-EXT-01. A vendor AttributeURI does not make an attribute valid. `TypeNameAssignmentClass` and `TypeURIAssignmentClass` are valid only on CustomObject subtypes (the `Custom<X>` classes). Values (enums, cardinality) are not checked here.
+- **Symbols** — File, Symbol, Class, SuperType, Reference Type, Count, IsValid, for every placed object (**Symbol**) and `<Label>` (**Label**) with a `ComponentName`. Symbol is the `SymbolRegistrationNumber` the `ComponentName` carries, or the `ComponentName` itself when it has none. Symbols are identified by `SymbolRegistrationNumber` only. Class is the `ComponentClass` of the object using the symbol. For a label, that's the object the label belongs to: the element it's nested in, otherwise the object its text references (`ObjectAttributesReference`). If neither exists, it's the label's own class. SuperType is that class's superType(s) from the DEXPI 1.4 model, or from DiscProfile.xml for a profile-only class. A label's usage check is still made against the label's own class. IsValid is **No** when a placed object has no `SymbolRegistrationNumber`, or one that is not in the profile catalogue (PRF-SYM-01), or when the profile gives the symbol a usage class that the using class does not satisfy (PRF-SYM-02). The using class satisfies it when it is a DEXPI 1.4 class equal to or descending from the usage class, or a `Custom<X>` whose type URI resolves to it. A profile-only class written directly as the ComponentClass (e.g. `ThreadedPipeCap`) never satisfies it. A symbol with no usage setting, including a label whose symbol isn't in the catalogue, is **Yes**. For a file that doesn't claim DISC (see 7.3), or with no profile loaded, IsValid is **N/A**.
 
 Results arrive as one list grouped by file:
 
@@ -303,6 +304,8 @@ Two independent facts gate every code:
 - **Needs** — what data the check requires: the XSD alone, the information model, the profile, or both. `Model (+ profile if DISC)` means the profile is required only when the file claims DISC — the profile declares 172 classes of its own, so a DISC file checked without it cannot have its class names resolved at all.
 - **Scope** — which files the check is meaningful for: all DEXPI files, or only a file that claims the DISC profile. Asking whether a plain DEXPI file stays inside the DISC `AllowedClasses` list is meaningless, because it never claimed to.
 
+A file claims DISC only through its `SymbolRegistrationNumber` values: at least one must be a symbol in the loaded profile's catalogue. With no `DiscProfile.xml` loaded, no file is treated as a DISC file. Registration numbers from other symbol sets, such as ISO 10628, don't count, and neither do `ComponentName` values or RDL URIs.
+
 A check that cannot be answered reports **not-evaluated**, never *pass*. That is the difference between a file that is clean and a file that was never really checked. In the viewer an unevaluated code produces no findings at all.
 
 Codes marked as not implemented in [section 8](#8-validation-code-reference) are registered and reserved, but the check behind them is not written yet — they always report not-evaluated.
@@ -394,7 +397,22 @@ The five DEXPI 2.0-only codes (`SER-FMT-03`, `SER-FMT-05`, `MDL-REF-06`, `PRF-LB
 | `PRF-VAR-01` | Variant condition not satisfied | Variant selection | Warning | Profile | DISC files | — |
 | `PRF-VAR-02` | No variant selected or VariantNumber out of range | Variant selection | Warning | Profile | DISC files | — |
 
-In DEXPI 1.x files (ApplicationVersion 1.x, or none declared), PRF-SCP-02 accepts the DEXPI 1.4 `PropertyBreak` properties `CompositionBreak`, `InsulationBreak`, `NominalDiameterBreak` and `PipingClassBreak` (each 0..1, typed by its `*BreakClassification` enum). DiscProfile.xml models property breaks the DEXPI 2.0 way (LogicalBreak classes and PropertyBreakExtension), which the Proteus schema cannot carry. They are accepted only on `PropertyBreak`.
+In DEXPI 1.x files (ApplicationVersion 1.x, or none declared), the attributes below are accepted on `PropertyBreak`, by PRF-SCP-02 and by the attribute-name check (MDL-PRP-01/05, PRF-EXT-01, and IsValid in Export Element…). An attribute matches by name (with or without the `AssignmentClass` / `Specialization` suffix) or by its AttributeURI. DiscProfile.xml models property breaks the DEXPI 2.0 way (LogicalBreak classes and PropertyBreakExtension), which the Proteus schema cannot carry, so a 1.x file carries them as attributes on `PropertyBreak`. They are accepted only on `PropertyBreak`.
+
+| Attribute | AttributeURI |
+|---|---|
+| `AreaBreak` | `http://noaka.org/rdl/AreaBreakAssignmentClass` |
+| `HeatTracingBreak` | `http://noaka.org/rdl/HeatTracingBreakAssignmentClass` |
+| `InsulationBreak` | `http://sandbox.dexpi.org/rdl/InsulationBreakSpecialization` |
+| `NominalDiameterBreak` | `http://sandbox.dexpi.org/rdl/NominalDiameterBreakSpecialization` |
+| `PipingClassBreak` | `http://sandbox.dexpi.org/rdl/PipingClassBreakSpecialization` |
+| `ContractorBreak` | `http://noaka.org/rdl/ContractorBreakAssignmentClass` |
+| `CommissioningBreak` | `http://noaka.org/rdl/CommissioningBreakAssignmentClass` |
+| `PipingInstrumentBreak` | `http://noaka.org/rdl/PipingInstrumentBreakAssignmentClass` |
+| `LineIDBreak` | `http://noaka.org/rdl/LineIDBreakAssignmentClass` |
+| `BreakValue1` | `http://noaka.org/rdl/BreakValue1AssignmentClass` |
+| `BreakValue2` | `http://noaka.org/rdl/BreakValue2AssignmentClass` |
+| `CompositionBreak` | (DEXPI 1.4 model property) |
 
 The type URI is matched against the profile class extensions (MDL-CLS-01 if unmatched, MDL-CLS-03 if the superType is wrong) only for CustomObject subtypes. PRF-SCP-02 reports `TypeNameAssignmentClass` and `TypeURIAssignmentClass` on any class that is not a CustomObject subtype (the `Custom<X>` classes, e.g. `CustomEquipment`, `CustomOperatedValve`).
 
@@ -462,8 +480,11 @@ The picked folder is no longer readable — the permission lapsed, or the file c
 **No PRF or GEO findings at all**
 Those codes need a profile. Check that one is listed under the load buttons — if the default could not be fetched, load a `DiscProfile.xml` by hand. Without one the codes report not-evaluated rather than passing.
 
-**Everything reports not-evaluated for a DISC file**
-The file claims DISC but no profile was loaded, so its class names cannot be resolved. Load the profile.
+**DISC-only codes report not-evaluated for a DISC file**
+No profile is loaded, so the file is not treated as a DISC file (see 7.3). Load the `DiscProfile.xml`.
+
+**"XSD validation ran out of memory on this file"**
+The in-browser schema validator could not hold the file. Its memory limit is sized from the file (up to 512 MiB), so this only happens with very large files. It says nothing about whether the file is valid, and the DEXPI model and profile checks still run.
 
 **Drawing renders blank or partially**
 The file may reference profile symbols that are not loaded. Load the matching `DiscProfile.xml` — the file is re-parsed automatically when a profile is added.

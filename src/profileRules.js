@@ -135,14 +135,35 @@ export function expectedCustomFamily(componentClass, facts, versionRenames) {
  * PRF-SCP-01 / PRF-SCP-02 - checks whether the class, and each DEXPI-modeled
  * attribute, is in the set the DISC profile sanctions.
  */
-// DEXPI 1.x PropertyBreak properties accepted by PRF-SCP-02. DiscProfile.xml
-// models property breaks the DEXPI 2.0 way (LogicalBreak classes and
-// PropertyBreakExtension), which the Proteus schema cannot carry, so a 1.x
-// file keeps the 1.4 PropertyBreak attributes (all 0..1, typed by the
-// matching *BreakClassification enum).
-const DEXPI1X_ALLOWED_PROPERTIES = new Map([
-    ["PropertyBreak", new Set(["CompositionBreak", "InsulationBreak", "NominalDiameterBreak", "PipingClassBreak"])],
+// DEXPI 1.x PropertyBreak attributes. DiscProfile.xml models property breaks
+// the DEXPI 2.0 way (LogicalBreak classes and PropertyBreakExtension), which
+// the Proteus schema cannot carry, so a 1.x file carries them as attributes
+// on PropertyBreak. Accepted there by name (AssignmentClass/Specialization
+// suffix stripped) or by AttributeURI, by PRF-SCP-02 and the attribute-name
+// check. name -> AttributeURI (null: none given).
+const PROPERTY_BREAK_CLASS = "PropertyBreak";
+const DEXPI1X_PROPERTY_BREAK_ATTRIBUTES = new Map([
+    ["CompositionBreak", null],
+    ["AreaBreak", "http://noaka.org/rdl/AreaBreakAssignmentClass"],
+    ["HeatTracingBreak", "http://noaka.org/rdl/HeatTracingBreakAssignmentClass"],
+    ["InsulationBreak", "http://sandbox.dexpi.org/rdl/InsulationBreakSpecialization"],
+    ["NominalDiameterBreak", "http://sandbox.dexpi.org/rdl/NominalDiameterBreakSpecialization"],
+    ["PipingClassBreak", "http://sandbox.dexpi.org/rdl/PipingClassBreakSpecialization"],
+    ["ContractorBreak", "http://noaka.org/rdl/ContractorBreakAssignmentClass"],
+    ["CommissioningBreak", "http://noaka.org/rdl/CommissioningBreakAssignmentClass"],
+    ["PipingInstrumentBreak", "http://noaka.org/rdl/PipingInstrumentBreakAssignmentClass"],
+    ["LineIDBreak", "http://noaka.org/rdl/LineIDBreakAssignmentClass"],
+    ["BreakValue1", "http://noaka.org/rdl/BreakValue1AssignmentClass"],
+    ["BreakValue2", "http://noaka.org/rdl/BreakValue2AssignmentClass"],
 ]);
+const DEXPI1X_PROPERTY_BREAK_URIS = new Set([...DEXPI1X_PROPERTY_BREAK_ATTRIBUTES.values()].filter(Boolean));
+
+/** True for one of the DEXPI 1.x PropertyBreak attributes above, used on PropertyBreak. */
+export function isDexpi1xPropertyBreakAttribute(componentClass, rawName, attrUri) {
+    if (componentClass !== PROPERTY_BREAK_CLASS) return false;
+    const bare = (rawName || "").trim().replace(/(AssignmentClass|Specialization)$/, "");
+    return DEXPI1X_PROPERTY_BREAK_ATTRIBUTES.has(bare) || (!!attrUri && DEXPI1X_PROPERTY_BREAK_URIS.has(attrUri));
+}
 
 /** True for a DEXPI 1.x (Proteus) file: ApplicationVersion 1.x, or none declared. */
 export function isDexpi1x(mainDoc) {
@@ -184,7 +205,7 @@ export function checkDiscScope(els, facts, dexpiAttributeSets, opts = {}) {
                 }
                 const bare = normalizeAttributeName(rawName);
                 if (!bare || facts.allowedProperties.has(bare)) return;
-                if (opts.dexpi1x && DEXPI1X_ALLOWED_PROPERTIES.get(componentClass)?.has(bare)) return;
+                if (opts.dexpi1x && isDexpi1xPropertyBreakAttribute(componentClass, rawName, ga.getAttribute("AttributeURI"))) return;
                 findings.push({
                     code: "PRF-SCP-02", severity: "warning", objectId, componentClass,
                     message: `Property "${bare}" is not in the DISC profile's AllowedProperties list.`,
@@ -207,10 +228,13 @@ export function checkDiscScope(els, facts, dexpiAttributeSets, opts = {}) {
  *
  * A ComponentName is a local catalogue name, not a DISC symbol id.
  *
- * Three outcomes:
+ * The symbol is identified by its SymbolRegistrationNumber only; a
+ * ComponentName that happens to equal a profile symbol name does not count.
+ *
+ * Outcomes:
  *   - no ComponentName: nothing is referenced, nothing to report.
- *   - the reference resolves, directly or through the registration number: fine.
- *   - the reference resolves nowhere: PRF-SYM-01.
+ *   - the registration number is a profile symbol: fine.
+ *   - no registration number, or one the profile does not declare: PRF-SYM-01.
  *
  * @param {Map<string,string>} registrationIndex ComponentName -> SymbolRegistrationNumber
  */
@@ -220,9 +244,7 @@ export function checkSymbolCatalogue(els, facts, registrationIndex) {
     els.forEach(({ el, objectId, componentClass }) => {
         const raw = el.getAttribute("ComponentName") || "";
         if (!raw) return;                       // no ComponentName reference
-        const bare = normalizeSymbolName(raw);
-        if (!bare) return;
-        if (facts.symbolNames.has(bare)) return;            // names the profile symbol directly
+        if (!normalizeSymbolName(raw)) return;
 
         const registered = registrationIndex ? registrationIndex.get(raw) : null;
         if (registered && facts.symbolNames.has(normalizeSymbolName(registered))) return;
@@ -231,7 +253,7 @@ export function checkSymbolCatalogue(els, facts, registrationIndex) {
             code: "PRF-SYM-01", severity: "warning", objectId, componentClass,
             message: registered
                 ? `ComponentName "${raw}" registers symbol "${registered}", which the loaded DiscProfile.xml does not declare. No symbol can be drawn for it.`
-                : `ComponentName "${raw}" is not declared by the file's ShapeCatalogue and is not a profile symbol, so it resolves to nothing. No symbol can be drawn for it.`,
+                : `ComponentName "${raw}" has no SymbolRegistrationNumber, so it does not identify a profile symbol.`,
         });
     });
     return findings;
@@ -264,36 +286,23 @@ export function profileGridUnit(discDoc) {
  * Does the file claim the DISC profile, independent of whether a profile was
  * loaded for this run.
  *
- * When a profile is loaded, membership in its symbol catalogue decides.
- * Otherwise, falls back to the markers a DISC export leaves in the Proteus
- * serialization.
+ * Decided by the file's SymbolRegistrationNumber values only: one that is a
+ * symbol in the loaded profile's catalogue means the file uses DISC. With no
+ * profile loaded, no file is treated as a DISC file.
  *
  * @returns {{claims: boolean, evidence: string[]}}
  */
 export function detectDiscClaim(mainDoc, facts) {
+    // Decided by SymbolRegistrationNumber only. A registration number is
+    // standard DEXPI (e.g. ISO 10628 numbers); only one naming a symbol in
+    // the loaded profile's catalogue shows the file uses the profile.
     const evidence = [];
-    const names = qsa(mainDoc, "[ComponentName]")
-        .map(el => normalizeSymbolName(el.getAttribute("ComponentName") || ""))
-        .filter(Boolean);
-
-    // Strongest signal: the file places symbols the loaded profile declares.
-    if (facts && facts.hasProfile && facts.symbolNames && facts.symbolNames.size) {
-        const hits = names.filter(n => facts.symbolNames.has(n)).length;
-        if (hits > 0) evidence.push(`${hits} symbol name(s) found in the loaded profile catalogue`);
-    }
-
-    // Fallbacks, usable with no profile loaded.
-    const nd = names.filter(n => /^ND\d{4}[A-Z]?$/.test(n)).length;
-    if (nd > 0) evidence.push(`${nd} DISC symbol id(s) of the form ND####`);
-
+    if (!facts?.hasProfile || !facts.symbolNames?.size) return { claims: false, evidence };
+    const isDiscSymbol = v => facts.symbolNames.has(v);
     const srn = qsa(mainDoc, "GenericAttribute")
-        .filter(a => (a.getAttribute("Name") || "").startsWith("SymbolRegistrationNumber")).length;
-    if (srn > 0) evidence.push(`${srn} SymbolRegistrationNumber attribute(s)`);
-
-    const noaka = qsa(mainDoc, "[URI]")
-        .filter(e => /noaka\.org|disc/i.test(e.getAttribute("URI") || "")).length;
-    if (noaka > 0) evidence.push(`${noaka} DISC/NOAKA RDL reference(s)`);
-
+        .filter(a => (a.getAttribute("Name") || "").startsWith("SymbolRegistrationNumber"))
+        .filter(a => isDiscSymbol(normalizeSymbolName(a.getAttribute("Value") || ""))).length;
+    if (srn > 0) evidence.push(`${srn} SymbolRegistrationNumber attribute(s) naming a DISC symbol`);
     return { claims: evidence.length > 0, evidence };
 }
 

@@ -128,6 +128,28 @@ function categorizeXsdError(message) {
     return { code: XSD_FALLBACK_CODE, codeLabel: XSD_FALLBACK_LABEL, issueCode: XSD_FALLBACK_ISSUE_CODE };
 }
 
+// ─── Memory limit ──────────────────────────────────────────────────────────
+// xmllint-wasm defaults to a 32 MiB WebAssembly memory ceiling, which a
+// multi-MB Proteus file plus the schema exceeds; libxml2 then exits with
+// code 9 (out of memory) and xmllint-wasm rejects with its raw output. The
+// ceiling is sized from the document (16 MiB + 8x its size, in 64 KiB wasm
+// pages), and a code-9 failure is retried once at MAX_MEMORY_PAGES.
+const WASM_PAGE_BYTES = 64 * 1024;
+const MIB_PAGES = 16;
+const MIN_MEMORY_PAGES = 512;   // 32 MiB, the library default
+const MAX_MEMORY_PAGES = 8192;  // 512 MiB
+const XMLLINT_OUT_OF_MEMORY = 9;
+
+function memoryPagesFor(xmlText) {
+    const bytes = new TextEncoder().encode(xmlText).length;
+    const pages = 16 * MIB_PAGES + Math.ceil((bytes * 8) / WASM_PAGE_BYTES);
+    return Math.min(MAX_MEMORY_PAGES, Math.max(MIN_MEMORY_PAGES, pages));
+}
+
+async function runXmllint(xml, maxMemoryPages) {
+    return validateXML({ xml, schema: proteusXsdSource, maxMemoryPages });
+}
+
 /**
  * Validates a Proteus/DEXPI 1.4 XML document against the bundled
  * ProteusPIDSchema 4.1.1 disc.xsd.
@@ -149,11 +171,25 @@ export async function validateProteusXsd(xmlText) {
     const { xml: filteredXml, removedCount, removedSets } = stripNonDexpiGenericAttributes(xmlText);
     let result;
     try {
-        result = await validateXML({
-            xml: filteredXml,
-            schema: proteusXsdSource,
-        });
+        const pages = memoryPagesFor(filteredXml);
+        try {
+            result = await runXmllint(filteredXml, pages);
+        } catch (e) {
+            if (e?.code !== XMLLINT_OUT_OF_MEMORY || pages >= MAX_MEMORY_PAGES) throw e;
+            result = await runXmllint(filteredXml, MAX_MEMORY_PAGES);
+        }
     } catch (e) {
+        if (e?.code === XMLLINT_OUT_OF_MEMORY) {
+            const mb = (new TextEncoder().encode(filteredXml).length / (1024 * 1024)).toFixed(1);
+            const oom = new Error(
+                `XSD validation ran out of memory on this file (${mb} MB after removing vendor attribute groups, ` +
+                `limit ${MAX_MEMORY_PAGES / MIB_PAGES} MiB). This says nothing about whether the file is valid: ` +
+                `the in-browser validator could not hold it. The DEXPI model checks are unaffected.`
+            );
+            oom.outOfMemory = true;
+            oom.rawMessage = e?.message || String(e);
+            throw oom;
+        }
         const raw = e?.message || String(e);
         // Fallback for a schema-compile failure: reports a clear error
         // instead of letting the exception propagate unhandled.

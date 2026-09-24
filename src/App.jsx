@@ -1083,7 +1083,7 @@ export default function App() {
         setPngResult({ folder: name, total: files.length, saved, failed, downloaded: !dirHandle, cancelled: pngCancelRef.current });
     }
 
-    // Export Element…: classes and DEXPI attributes used per file, as an .xlsx download.
+    // Export Element…: classes, DEXPI attributes and symbols used per file, as an .xlsx download.
     async function handleExportElementButton() {
         if (!supportsDirectoryPicker()) { folderElemInputRef.current?.click(); return; }
         let picked = null;
@@ -1818,7 +1818,7 @@ export default function App() {
                                 <button style={S.btn} disabled={!!folderProgress || !!pngProgress || !!elemProgress} onClick={handleSavePngButton} title="Render every .xml in a folder, and its subfolders, and save each as a .png next to it. The browser asks permission to write to the folder.">
                                     Save PNG…
                                 </button>
-                                <button style={S.btn} disabled={!!folderProgress || !!pngProgress || !!elemProgress} onClick={handleExportElementButton} title="Export every class (including TypeURIAssignmentClass-mapped profile classes) and every DexpiAttributes / DexpiCustomAttributes attribute used in a folder's .xml files, with counts and validity, as an Excel file.">
+                                <button style={S.btn} disabled={!!folderProgress || !!pngProgress || !!elemProgress} onClick={handleExportElementButton} title="Export every class (including TypeURIAssignmentClass-mapped profile classes) every DexpiAttributes / DexpiCustomAttributes attribute and every symbol and label symbol used in a folder's .xml files, with counts and validity, as an Excel file.">
                                     Export Element…
                                 </button>
                             </div>
@@ -1872,7 +1872,7 @@ export default function App() {
                                     <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
                                         <li><b>Validate…</b> checks each file against the same two engines.</li>
                                         <li><b>Save PNG…</b> saves each drawing as a .png next to its file, using the drawing toolbar's Profile labels, Line Boost and Include symbol outlines settings.</li>
-                                        <li><b>Export Element…</b> downloads an Excel file listing the classes and DEXPI attributes used in each file, with counts and whether each is valid.</li>
+                                        <li><b>Export Element…</b> downloads an Excel file listing the classes, DEXPI attributes and symbols used in each file, with counts and whether each is valid.</li>
                                     </ul>
                                     <div style={{ marginTop: 8, padding: "8px 10px", background: "#f6f8fa", border: "1px solid #eef2f6", borderRadius: 6 }}>
                                         <b>Nothing is uploaded.</b> The files are read and processed inside this browser, on this machine, and are never sent to a server.

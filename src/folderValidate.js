@@ -178,8 +178,8 @@ export function buildFolderReport(results, typeOf) {
 }
 
 /**
- * Export Element…: classes and DEXPI attributes used per file, as two
- * xlsx sheets (see collectElementUsage() in rdlValidate.js).
+ * Export Element…: classes, DEXPI attributes and symbols used per file, as
+ * three xlsx sheets (see collectElementUsage() in rdlValidate.js).
  *
  * @returns {Promise<{name:string, columns:object[], rows:any[][]}[]>}
  */
@@ -187,7 +187,7 @@ export async function collectFolderElements(files, profileText, opts = {}) {
     const { onProgress, isCancelled } = opts;
     const parser = new DOMParser();
     const discDoc = profileText ? parser.parseFromString(profileText, "application/xml") : null;
-    const classRows = [], attrRows = [];
+    const classRows = [], attrRows = [], symbolRows = [];
     const yn = v => (v ? "Yes" : "No");
 
     for (let i = 0; i < files.length; i++) {
@@ -205,6 +205,9 @@ export async function collectFolderElements(files, profileText, opts = {}) {
             usage.attributes
                 .sort((a, b) => a.className.localeCompare(b.className) || a.attribute.localeCompare(b.attribute))
                 .forEach(a => attrRows.push([path, a.className, a.superType, a.attribute, a.count, yn(a.valid)]));
+            usage.symbols
+                .sort((a, b) => a.kind.localeCompare(b.kind) || a.reference.localeCompare(b.reference) || a.className.localeCompare(b.className))
+                .forEach(y => symbolRows.push([path, y.reference, y.className, y.superType, y.kind, y.count, usage.usesProfile ? yn(y.valid) : "N/A"]));
         } catch (e) {
             classRows.push([path, `(error: ${e.message || e})`, "", 0, "No"]);
         }
@@ -223,6 +226,12 @@ export async function collectFolderElements(files, profileText, opts = {}) {
             columns: [{ header: "File", width: 40 }, { header: "Class", width: 32 }, { header: "SuperType", width: 40 },
                 { header: "Attribute", width: 36 }, { header: "Count", width: 8 }, { header: "IsValid", width: 9 }],
             rows: attrRows,
+        },
+        {
+            name: "Symbols",
+            columns: [{ header: "File", width: 40 }, { header: "Symbol", width: 28 }, { header: "Class", width: 32 }, { header: "SuperType", width: 40 },
+                { header: "Reference Type", width: 14 }, { header: "Count", width: 8 }, { header: "IsValid", width: 9 }],
+            rows: symbolRows,
         },
     ];
 }
