@@ -2,7 +2,7 @@
 
 A browser-based viewer and validation tool for legacy **DEXPI 1.4 / Proteus 4.1.1** XML files, rendered and checked using **DEXPI 2.x profile** symbols, classes and attributes by way of a loaded `DiscProfile.xml`.
 
-Developed by **Tonia Pedersen**. Version **2.1**. See `ChangeLog_0.0_to_2.1.md` for what changed.
+Developed by **Tonia Pedersen**. Version **2.2**. See `ChangeLog_2.1_to_2.2.md` for what changed since 2.1.
 
 ---
 
@@ -314,7 +314,7 @@ Codes marked as not implemented in [section 8](#8-validation-code-reference) are
 
 ## 8. Validation Code Reference
 
-81 codes are registered; 40 are implemented today. **Type** is the default the viewer gives the code (Major → Error, Minor → Warning). **Needs** and **Scope** are the gates described in 7.3, and **Implemented** marks the checks that actually run today.
+81 codes are registered; 42 are implemented today. **Type** is the default the viewer gives the code (Major → Error, Minor → Warning). **Needs** and **Scope** are the gates described in 7.3, and **Implemented** marks the checks that actually run today.
 
 The five DEXPI 2.0-only codes (`SER-FMT-03`, `SER-FMT-05`, `MDL-REF-06`, `PRF-LBL-05`, `PRF-SYM-05`) are deliberately absent: this tool can never produce them for a 1.3/1.4 file, and carrying them would report them as not-evaluated for ever.
 
@@ -328,7 +328,7 @@ The five DEXPI 2.0-only codes (`SER-FMT-03`, `SER-FMT-05`, `MDL-REF-06`, `PRF-LB
 | `SER-FMT-04` | Declared version does not match the content | File format | Error | XSD only | All files | ✓ |
 | `SER-IDN-01` | Duplicate id within the file | Identity & references | Error | XSD only | All files | ✓ |
 | `SER-IDN-02` | id does not match the ID pattern | Identity & references | Error | XSD only | All files | ✓ |
-| `SER-IDN-03` | Reference does not resolve inside the file | Identity & references | Error | XSD only | All files | — |
+| `SER-IDN-03` | Reference does not resolve inside the file | Identity & references | Error | XSD only | All files | ✓ |
 | `SER-IDN-04` | Name collision in one scope | Identity & references | Error | XSD only | All files | ✓ |
 | `SER-REQ-01` | Required attribute missing | Required content | Error | XSD only | All files | ✓ |
 | `SER-REQ-02` | Required child element missing | Required content | Error | XSD only | All files | ✓ |
@@ -339,6 +339,15 @@ The five DEXPI 2.0-only codes (`SER-FMT-03`, `SER-FMT-05`, `MDL-REF-06`, `PRF-LB
 | `SER-VAL-02` | Empty or placeholder reference string | Lexical values | Error | XSD only | All files | — |
 | `SER-VAL-03` | Value not lexically valid for its datatype | Lexical values | Error | XSD only | All files | ✓ |
 | `SER-VAL-04` | Enumeration literal not declared | Lexical values | Error | XSD only | All files | ✓ |
+
+**`SER-IDN-03` — unresolved references.** libxml2 does not check reference targets during schema validation, so this runs with the model checks. It reports:
+
+- an `ItemID` that matches no `ID` in the file;
+- a `Connection` `FromID`/`ToID` that matches no `ID` or `TagName` (a Nozzle also as `<EquipmentTag>-<NozzleTag>`);
+- a `Connection` `FromNode`/`ToNode` that is not a Node of the resolved target's `ConnectionPoints`. Nodes are indexed from 0. A target with no `ConnectionPoints`, such as a segment, is skipped;
+- a `ConnectionPoints` `FlowIn`/`FlowOut` that is not one of its own Nodes (indexed from 0);
+- an `Association` `TagName` that matches no `TagName` in the file;
+- an `Association` `PersistentIDIdentifier` (with `PersistentIDContext`, if given) that matches no `PersistentID` in the file.
 
 ### MDL — Effective information model
 
@@ -352,7 +361,7 @@ The five DEXPI 2.0-only codes (`SER-FMT-03`, `SER-FMT-05`, `MDL-REF-06`, `PRF-LB
 | `MDL-CMP-02` | Child class not permitted by the composition property | Composition | Error | Model (+ profile if DISC) | All files | ✓ |
 | `MDL-CMP-03` | Required sub-component missing | Composition | Error | Model (+ profile if DISC) | All files | ✓ |
 | `MDL-CMP-04` | Container present but empty | Composition | Warning | Model (+ profile if DISC) | All files | — |
-| `MDL-CYC-01` | Cyclic dependency | Cyclic dependency | Error | Model | All files | — |
+| `MDL-CYC-01` | Cyclic dependency | Cyclic dependency | Error | Model | All files | ✓ |
 | `MDL-MUL-01` | Multiplicity bound violated | Multiplicity | Error | Model (+ profile if DISC) | All files | ✓ |
 | `MDL-MUL-03` | Opposite multiplicity exceeded | Multiplicity | Error | Model (+ profile if DISC) | All files | — |
 | `MDL-MUL-04` | Duplicate entry in a unique property | Multiplicity | Warning | Model (+ profile if DISC) | All files | — |
@@ -375,6 +384,22 @@ The five DEXPI 2.0-only codes (`SER-FMT-03`, `SER-FMT-05`, `MDL-REF-06`, `PRF-LB
 | `PRF-MAP-02` | RDL URI does not resolve against the profile | Class usage | Warning | Model + profile | DISC files | — |
 | `PRF-MAP-03` | Custom wrapper does not match the family its URI resolves to | Class usage | Error | Model + profile | DISC files | — |
 | `PRF-MAP-04` | Class mapped by name across a version rename | Class usage | Error | Model + profile | DISC files | — |
+
+**`MDL-CYC-01` — cyclic dependency.** These relations must not loop back on themselves:
+
+- whole-part: `is a part of`, `is a component of`, `is an element of`, `is contained in`, their inverses, and XML nesting (a child element is part of its nearest parent with an `ID`);
+- location: `is located in` / `is the location of`;
+- drive: `is driven by` / `drives`;
+- fulfilment: `fulfills` / `is fulfilled by`.
+
+Each cycle is reported once, on its first object, listing the objects in the loop. Flow, signal and connection relations are not checked for longer loops, because loops there are legitimate (recycle lines, control loops).
+
+MDL-CYC-01 also reports self-references:
+
+- a `Connection` whose `FromID`/`ToID` (with its `FromNode`/`ToNode`) points back at the element that owns the connection, e.g. a `PipingNetworkSegment` or `InformationFlow` connecting to itself;
+- an `InformationFlow` whose `has logical start` (Source) or `has logical end` (Target) is the InformationFlow itself.
+
+MDL-REF-03, GEO-MDL-01 and SER-IDN-03 still apply as usual, so a self-reference can also be reported by those codes (e.g. MDL-REF-03 for a Source that is a signal line).
 
 ### PRF — DISC profile — symbols & scope
 
@@ -420,12 +445,13 @@ The type URI is matched against the profile class extensions (MDL-CLS-01 if unma
 
 | Code | Issue | Category | Type | Needs | Scope | Implemented |
 |---|---|---|---|---|---|:--:|
-| `GEO-ALN-01` | Connected items not coincident | Connection alignment | Error | Model | All files | ✓ |
+| `GEO-ALN-01` | Connected items not coincident | Connection alignment | Warning | Model | All files | ✓ |
 | `GEO-ALN-02` | Zero-length connector | Connection alignment | Error | Model | All files | ✓ |
 | `GEO-ALN-03` | Duplicate ports co-located | Connection alignment | Warning | Profile | DISC files | — |
 | `GEO-DIR-01` | Connection approaches at a direction the node forbids | Approach direction | Warning | Profile | DISC files | — |
 | `GEO-GRD-01` | SymbolUsage position not on the grid | Grid alignment | Error | Profile | DISC files | ✓ |
 | `GEO-GRD-02` | Node position not on the grid | Grid alignment | Error | Profile | DISC files | ✓ |
+| `GEO-MDL-01` | Actuating signal connector end on wrong object type | Modelling conventions | Warning | Model | All files | ✓ |
 | `GEO-NCT-01` | Node referenced by no connection | Node counts | Warning | Model | All files | ✓ |
 | `GEO-NCT-02` | Connection count outside the node's declared bounds | Node counts | Error | Profile | DISC files | — |
 | `GEO-NCT-04` | Component declares more ports than are referenced | Node counts | Warning | Profile | DISC files | — |
@@ -440,9 +466,21 @@ The type URI is matched against the profile class extensions (MDL-CLS-01 if unma
 **`GEO-ALN-01` — piping segment continuity.** For each `PipingNetworkSegment`, the check takes the first and last point of every CenterLine and the connection-node positions of every component, and requires that:
 
 - all items in the segment join into a single run, with touching end points (within 0.01 drawing units). If they don't, one finding lists the separate runs, e.g. *run 1: CenterLine 1, BallValve-3; run 2: BlindFlange-1*.
-- the segment's start and end sit on the nodes named in its `Connection` (`FromID`/`FromNode`, `ToID`/`ToNode`). If not, the finding gives the expected node position, the nearest point in the segment and the distance between them. An end that connects to another segment, or to a node with no position, is skipped.
+- the segment's start and end sit on the nodes named in its `Connection` (`FromID`/`FromNode`, `ToID`/`ToNode`). If not, the finding gives the expected node position, the nearest point in the segment and the distance between them. An end that connects to a node with no position is skipped.
+- an end whose `FromID`/`ToID` points at another `PipingNetworkSegment` (the segment itself, or a component in it with no usable node number) touches one of that segment's CenterLine end points or node positions. This applies whether the other segment is in the same `PipingNetworkSystem` or a different one; the message says which.
+- the segments of one `PipingNetworkSystem` form a single linked network. If they don't, one finding on the system lists the separate groups, e.g. *group 1: PipingNetworkSegment-4; group 2: PipingNetworkSegment-5, PipingNetworkSegment-6*.
 
-Items with neither points nor positioned nodes, such as flow arrows, are ignored. The finding is reported on the segment.
+Items with neither points nor positioned nodes, such as flow arrows, are ignored. Findings are reported on the segment, or on the system for the network check.
+
+GEO-ALN-01 is a Warning: the Proteus schema and the DEXPI 1.4 model define which items connect, but not that their coordinates must coincide.
+
+**`GEO-MDL-01` — actuating signal connector ends.** Modelling conventions are checks with no specific schema, model or profile rule behind them, so they are Warnings. For each `InformationFlow`:
+
+- if its Source (`has logical start`) is an `ActuatingFunction`, the `Connection` `FromID`/`FromNode` must be a `ControlledActuator`;
+- if its Target (`has logical end`) is an `ActuatingFunction`, the `Connection` `ToID`/`ToNode` must be a `ControlledActuator`;
+- if its Target is an `ActuatingElectricalFunction`, the `Connection` `ToID`/`ToNode` must be a `Nozzle`.
+
+`FromID`/`ToID` is resolved by ID, TagName, or `<EquipmentTag>-<NozzleTag>`. A missing `Connection`, a missing ID attribute or an ID that resolves to nothing is also reported.
 
 ---
 

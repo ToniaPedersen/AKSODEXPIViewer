@@ -14,7 +14,7 @@ import { ISSUE_CODES, PROFILE_CODES, DISC_SCOPED_CODES, UNION_MODEL_CODES, ALL_C
 import {
     buildProfileFacts, expectedCustomFamily, normalizeSymbolName,
     checkDiscScope, checkSymbolCatalogue,
-    checkGridAlignment, checkDeclaredVersion, checkZeroLengthConnectors, checkSegmentContinuity,
+    checkGridAlignment, checkDeclaredVersion, checkZeroLengthConnectors, checkSegmentContinuity, checkPipingLinkage,
     detectDiscClaim, isDexpi1x, isDexpi1xPropertyBreakAttribute,
 } from "./profileRules.js";
 import { qsa, directChildrenByTag, parseEnumLiteralSymbols, parseSymbolCatalogue } from "./dexpiParser.js";
@@ -77,11 +77,35 @@ function profileSuperTypeChain(resolved, profileClassIndex) {
     return out;
 }
 
+// CustomEquipment typed as a DISC ProcessVesselComponent (the class itself or
+// a subtype) is allowed, but only as a <Component> child of a Vessel
+// <Equipment> (VesselExtension.ProcessVesselComponents). The placement is
+// checked separately as MDL-CMP-02.
+const VESSEL_COMPONENT_WRAPPER = "CustomEquipment";
+const VESSEL_COMPONENT_FAMILY = "ProcessVesselComponent";
+const VESSEL_CLASS = "Vessel";
+
+function isVesselComponentType(el, componentClass, profileClassIndex) {
+    if (componentClass !== VESSEL_COMPONENT_WRAPPER) return false;
+    const typeUri = customTypeUri(el);
+    const resolved = typeUri ? profileClassIndex.get(typeUri) : null;
+    if (!resolved) return false;
+    return resolved.name === VESSEL_COMPONENT_FAMILY
+        || profileSuperTypeChain(resolved, profileClassIndex).some(st => lastSegment(st) === VESSEL_COMPONENT_FAMILY);
+}
+
+function isVesselComponentPlacementValid(el) {
+    const parentEl = el.parentElement;
+    return el.tagName === "Component" && !!parentEl && parentEl.tagName === "Equipment"
+        && classDescendsFrom(parentEl.getAttribute("ComponentClass") || "", VESSEL_CLASS);
+}
+
 function describeComponentClassTypeUriMismatch(el, componentClass, profileClassIndex, profileFacts) {
     const typeUri = customTypeUri(el);
     if (!typeUri || !componentClass) return { applicable: false, reason: null };
     const resolved = profileClassIndex.get(typeUri);
     if (!resolved) return { applicable: false, reason: null };
+    if (isVesselComponentType(el, componentClass, profileClassIndex)) return { applicable: true, reason: null };
     const chain = profileSuperTypeChain(resolved, profileClassIndex);
 
     const actualDesc = resolved.superTypes.length ? resolved.superTypes.join(", ") : "(no superTypes declared)";
@@ -347,6 +371,28 @@ function collectSignalEndpointReferencedIds(mainDoc) {
     return ids;
 }
 
+// ---- Actuating signal connector endpoint check ---------------------------
+//
+// An InformationFlow whose Source or Target is an ActuatingFunction must
+// have its <Connection> end on that side (FromID/FromNode for Source,
+// ToID/ToNode for Target) on a ControlledActuator. One whose Target is an
+// ActuatingElectricalFunction must have its ToID/ToNode on a Nozzle.
+const ACTUATOR_CLASSES = new Set(["ControlledActuator"]);
+
+// Resolves a Connection FromID/ToID by ID, TagName, or "<EquipmentTag>-<NozzleTag>".
+function buildConnectionTargetResolver(mainDoc, elementById) {
+    const byTag = new Map();
+    qsa(mainDoc, "[TagName]").forEach(el => {
+        const tag = el.getAttribute("TagName");
+        if (!tag || el.tagName === "Association") return;
+        if (!byTag.has(tag)) byTag.set(tag, el);
+        if (el.tagName !== "Nozzle") return;
+        const equipTag = el.parentElement?.closest?.("[TagName]")?.getAttribute("TagName");
+        if (equipTag && !byTag.has(`${equipTag}-${tag}`)) byTag.set(`${equipTag}-${tag}`, el);
+    });
+    return value => elementById.get(value) || byTag.get(value) || null;
+}
+
 // ---- PipingNodeOwner coverage checks --------------------------------------
 //
 // PipingNodeOwner.Nodes (RDL) -> PipingNode: represented in Proteus XML by a
@@ -585,7 +631,8 @@ export function collectElementUsage(mainDoc, discDoc) {
                 className = resolved.name;
                 superType = resolved.superTypes.join(" ");
                 valid = resolved.kind !== "Abstract"
-                    && !describeComponentClassTypeUriMismatch(el, componentClass, profileClassIndex, profileFacts).reason;
+                    && !describeComponentClassTypeUriMismatch(el, componentClass, profileClassIndex, profileFacts).reason
+                    && (!isVesselComponentType(el, componentClass, profileClassIndex) || isVesselComponentPlacementValid(el));
             } else {
                 className = findAttributeInSet(el, CUSTOM_CLASS_ATTR_SET, "TypeNameAssignmentClass")?.getAttribute("Value") || typeUri;
                 superType = "";
@@ -684,6 +731,7 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
     const els = collectValidatableElements(mainDoc);
     const elementById = buildElementByIdIndex(mainDoc);
     const signalEndpointReferencedIds = collectSignalEndpointReferencedIds(mainDoc);
+    const resolveConnectionTarget = buildConnectionTargetResolver(mainDoc, elementById);
     const symbolRegistrationIndex = buildSymbolRegistrationIndex(mainDoc);
     const symbolUsageIndex = buildSymbolUsageIndex(discDoc);
     // Class-scoped DiscProfile.xml DataProperties, for the attribute-name check below.
@@ -704,14 +752,17 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
         componentClassMismatchCheckedCount = 0, componentClassMismatchCount = 0,
         signalFlowClassMissingCount = 0, signalFlowClassInvalidCount = 0,
         signalEndpointUnresolvedCount = 0, signalEndpointInvalidCount = 0,
+        actuatingConnectorCheckedCount = 0, actuatingConnectorInvalidCount = 0,
         missingSignalConnectionCount = 0, pipingNodeOwnerNoNodeCount = 0, pipingNodeOwnerNoConnectionCount = 0,
         transmissionSystemCheckedCount = 0, transmissionSystemParentIssueCount = 0, transmissionSystemDriveChainIssueCount = 0,
+        vesselComponentCheckedCount = 0, vesselComponentParentIssueCount = 0,
         pifSymbolAttrCheckedCount = 0, pifSymbolAttrMissingCount = 0,
         zeroScaleSymbolCheckedCount = 0, zeroScaleSymbolCount = 0,
         textTemplateAttrCheckedCount = 0, textTemplateAttrInvalidCount = 0,
         abstractClassUsedCount = 0, abstractComponentClassUsedCount = 0,
         genericAttributesNumberCheckedCount = 0, genericAttributesNumberMismatchCount = 0,
-        persistentIdContextCheckedCount = 0, persistentIdContextDuplicateCount = 0;
+        persistentIdContextCheckedCount = 0, persistentIdContextDuplicateCount = 0,
+        referenceCheckedCount = 0, referenceUnresolvedCount = 0, cycleCount = 0;
 
     // ---- GenericAttributes Number/actual-count mismatch check -------------
     //
@@ -772,6 +823,222 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
             message: `Element has more than one PersistentID sharing the same Context, which defeats Context's purpose of separately identifying them: ${detail}.`,
         });
     });
+
+    // ---- Unresolved in-file reference check ------------------------------
+    //
+    // ItemID (xs:IDREF) must name an ID in the file; libxml2 does not enforce
+    // this during schema validation. Connection FromID/ToID may carry either
+    // an ID or a TagName (Nozzles as "<EquipmentTag>-<NozzleTag>").
+    const tagNames = new Set();
+    qsa(mainDoc, "[TagName]").forEach(el => {
+        const tag = el.getAttribute("TagName");
+        if (!tag || el.tagName === "Association") return; // a reference, not a declaration
+        tagNames.add(tag);
+        if (el.tagName !== "Nozzle") return;
+        const equipTag = el.parentElement?.closest?.("[TagName]")?.getAttribute("TagName");
+        if (equipTag) tagNames.add(`${equipTag}-${tag}`);
+    });
+    const reportUnresolved = (el, attr, value, alsoTag) => {
+        referenceCheckedCount++;
+        if (elementById.has(value) || (alsoTag && tagNames.has(value))) return;
+        referenceUnresolvedCount++;
+        const ownerEl = el.closest ? el.closest("[ID]") : null;
+        const objectId = ownerEl ? ownerEl.getAttribute("ID") : null;
+        const componentClass = ownerEl ? ownerEl.getAttribute("ComponentClass") : null;
+        const where = ownerEl === el ? "" : ` on <${el.tagName}>`;
+        findings.push({
+            severity: "warning", code: "SER-IDN-03", category: "unresolved-reference", objectId, componentClass,
+            message: `${attr}="${value}"${where} does not match any ID${alsoTag ? " or TagName" : ""} in the file.`,
+        });
+    };
+    qsa(mainDoc, "[ItemID]").forEach(el => {
+        const value = el.getAttribute("ItemID");
+        if (value) reportUnresolved(el, "ItemID", value, false);
+    });
+    qsa(mainDoc, "Connection").forEach(el => {
+        ["FromID", "ToID"].forEach(attr => {
+            const value = el.getAttribute(attr);
+            if (value) reportUnresolved(el, attr, value, true);
+        });
+    });
+
+    // Node indices: Connection FromNode/ToNode and ConnectionPoints
+    // FlowIn/FlowOut index the target's ConnectionPoints Nodes from 0.
+    const reportBadIndex = (ownerSource, message) => {
+        referenceUnresolvedCount++;
+        const ownerEl = ownerSource.closest ? ownerSource.closest("[ID]") : null;
+        findings.push({
+            severity: "warning", code: "SER-IDN-03", category: "unresolved-node-index",
+            objectId: ownerEl ? ownerEl.getAttribute("ID") : null,
+            componentClass: ownerEl ? ownerEl.getAttribute("ComponentClass") : null,
+            message,
+        });
+    };
+    const nodeCount = el => {
+        const cp = directChildrenByTag(el, "ConnectionPoints")[0];
+        return cp ? directChildrenByTag(cp, "Node").length : 0;
+    };
+    qsa(mainDoc, "Connection").forEach(el => {
+        [["FromID", "FromNode"], ["ToID", "ToNode"]].forEach(([idAttr, nodeAttr]) => {
+            const raw = el.getAttribute(nodeAttr);
+            const ref = el.getAttribute(idAttr);
+            if (raw == null || !ref) return;
+            const target = resolveConnectionTarget(ref);
+            if (!target) return; // unresolved ID already reported above
+            if (!directChildrenByTag(target, "ConnectionPoints")[0]) return; // e.g. a segment: no node list to index
+            referenceCheckedCount++;
+            const idx = parseInt(raw, 10), n = nodeCount(target);
+            if (Number.isInteger(idx) && idx >= 0 && idx < n) return;
+            reportBadIndex(el, `${nodeAttr}="${raw}" on <Connection> does not match a Node of ${idAttr}="${ref}", which has ${n} Node${n === 1 ? "" : "s"} (indexed from 0).`);
+        });
+    });
+    qsa(mainDoc, "ConnectionPoints").forEach(cp => {
+        const n = directChildrenByTag(cp, "Node").length;
+        ["FlowIn", "FlowOut"].forEach(attr => {
+            const raw = cp.getAttribute(attr);
+            if (raw == null) return;
+            referenceCheckedCount++;
+            const idx = parseInt(raw, 10);
+            if (Number.isInteger(idx) && idx >= 0 && idx < n) return;
+            reportBadIndex(cp, `ConnectionPoints ${attr}="${raw}" does not match any of its ${n} Node${n === 1 ? "" : "s"} (indexed from 0).`);
+        });
+    });
+
+    // Association TagName / PersistentID references (ItemReferenceGroup).
+    const persistentIds = new Set(qsa(mainDoc, "PersistentID").map(p => `${p.getAttribute("Context") || ""}\u0000${p.getAttribute("Identifier") || ""}`));
+    const persistentIdentifiers = new Set(qsa(mainDoc, "PersistentID").map(p => p.getAttribute("Identifier") || ""));
+    qsa(mainDoc, "Association").forEach(el => {
+        const tag = el.getAttribute("TagName");
+        if (tag) {
+            referenceCheckedCount++;
+            if (!tagNames.has(tag)) {
+                referenceUnresolvedCount++;
+                const ownerEl = el.closest ? el.closest("[ID]") : null;
+                findings.push({
+                    severity: "warning", code: "SER-IDN-03", category: "unresolved-reference",
+                    objectId: ownerEl ? ownerEl.getAttribute("ID") : null, componentClass: ownerEl ? ownerEl.getAttribute("ComponentClass") : null,
+                    message: `TagName="${tag}" on <Association> does not match any TagName in the file.`,
+                });
+            }
+        }
+        const pid = el.getAttribute("PersistentIDIdentifier");
+        if (pid) {
+            referenceCheckedCount++;
+            const ctx = el.getAttribute("PersistentIDContext");
+            const ok = ctx != null ? persistentIds.has(`${ctx}\u0000${pid}`) : persistentIdentifiers.has(pid);
+            if (!ok) {
+                referenceUnresolvedCount++;
+                const ownerEl = el.closest ? el.closest("[ID]") : null;
+                findings.push({
+                    severity: "warning", code: "SER-IDN-03", category: "unresolved-reference",
+                    objectId: ownerEl ? ownerEl.getAttribute("ID") : null, componentClass: ownerEl ? ownerEl.getAttribute("ComponentClass") : null,
+                    message: `PersistentIDIdentifier="${pid}"${ctx != null ? ` PersistentIDContext="${ctx}"` : ""} on <Association> does not match any PersistentID in the file.`,
+                });
+            }
+        }
+    });
+
+    // ---- Cyclic dependency check (MDL-CYC-01) ---------------------------
+    //
+    // Whole-part, location, drive and fulfilment relations must not loop
+    // back on themselves. Edges point from the dependent object to the one
+    // it depends on (part -> whole, located -> location, driven -> driver,
+    // fulfiller -> fulfilled); inverse Association types are flipped.
+    // XML nesting counts as part -> whole. Flow, signal and connection
+    // relations are excluded: loops there are legitimate (recycles, control
+    // loops).
+    {
+        const CYCLE_RELATIONS = {
+            "whole-part": { forward: ["is a part of", "is a component of", "is an element of", "is contained in"],
+                            inverse: ["is a collection including", "is an assembly including", "is a composition including", "contains"] },
+            "location": { forward: ["is located in"], inverse: ["is the location of"] },
+            "drive": { forward: ["is driven by"], inverse: ["drives"] },
+            "fulfilment": { forward: ["fulfills"], inverse: ["is fulfilled by"] },
+        };
+        // Self-references: a Connection end, or a signal Source/Target, that
+        // points back at the element owning it.
+        const reportSelf = (ownerEl, message) => {
+            cycleCount++;
+            findings.push({
+                severity: "warning", code: "MDL-CYC-01", category: "self-reference",
+                objectId: ownerEl.getAttribute("ID"), componentClass: ownerEl.getAttribute("ComponentClass") || null, message,
+            });
+        };
+        qsa(mainDoc, "Connection").forEach(conn => {
+            const ownerEl = conn.parentElement?.closest?.("[ID]");
+            if (!ownerEl) return;
+            [["FromID", "FromNode"], ["ToID", "ToNode"]].forEach(([idAttr, nodeAttr]) => {
+                const ref = conn.getAttribute(idAttr);
+                if (!ref || resolveConnectionTarget(ref) !== ownerEl) return;
+                const node = conn.getAttribute(nodeAttr);
+                reportSelf(ownerEl, `<Connection> ${idAttr}="${ref}"${node ? ` ${nodeAttr}="${node}"` : ""} refers back to the ${ownerEl.tagName} that owns the connection.`);
+            });
+        });
+        collectInformationFlowElements(mainDoc).forEach(flow => {
+            const id = flow.getAttribute("ID");
+            directChildrenByTag(flow, "Association").forEach(a => {
+                const type = a.getAttribute("Type") || "";
+                if ((type === "has logical start" || type === "has logical end") && a.getAttribute("ItemID") === id)
+                    reportSelf(flow, `${type === "has logical start" ? "Source" : "Target"} ("${type}") refers back to the InformationFlow itself.`);
+            });
+        });
+
+        const graphs = Object.fromEntries(Object.keys(CYCLE_RELATIONS).map(k => [k, new Map()]));
+        const addEdge = (kind, from, to) => {
+            const g = graphs[kind];
+            if (!g.has(from)) g.set(from, new Set());
+            g.get(from).add(to);
+        };
+        qsa(mainDoc, "[ID]").forEach(el => {
+            if (el.closest && el.closest("ShapeCatalogue")) return;
+            const id = el.getAttribute("ID");
+            const parent = el.parentElement?.closest?.("[ID]");
+            if (parent && parent.tagName !== "Drawing") addEdge("whole-part", id, parent.getAttribute("ID"));
+            directChildrenByTag(el, "Association").forEach(a => {
+                const type = a.getAttribute("Type") || "";
+                const other = a.getAttribute("ItemID");
+                if (!other || !elementById.has(other)) return;
+                for (const [kind, rel] of Object.entries(CYCLE_RELATIONS)) {
+                    if (rel.forward.includes(type)) addEdge(kind, id, other);
+                    else if (rel.inverse.includes(type)) addEdge(kind, other, id);
+                }
+            });
+        });
+        for (const [kind, g] of Object.entries(graphs)) {
+            const state = new Map(); // 1 = on stack, 2 = done
+            const stack = [];
+            const seen = new Set();
+            const visit = start => {
+                const iters = [[start, [...(g.get(start) || [])][Symbol.iterator]()]];
+                state.set(start, 1); stack.push(start);
+                while (iters.length) {
+                    const [node, it] = iters[iters.length - 1];
+                    const nx = it.next();
+                    if (nx.done) { state.set(node, 2); stack.pop(); iters.pop(); continue; }
+                    const next = nx.value;
+                    if (state.get(next) === 1) {
+                        const cycle = stack.slice(stack.indexOf(next));
+                        const key = [...cycle].sort().join("\u0000");
+                        if (seen.has(key)) continue;
+                        seen.add(key);
+                        cycleCount++;
+                        const first = elementById.get(cycle[0]);
+                        findings.push({
+                            severity: "warning", code: "MDL-CYC-01", category: `cyclic-${kind}`,
+                            objectId: cycle[0], componentClass: first ? first.getAttribute("ComponentClass") : null,
+                            message: cycle.length === 1
+                                ? `Object refers to itself in a ${kind} relation.`
+                                : `Cyclic ${kind} relation: ${[...cycle, cycle[0]].join(" \u2192 ")}.`,
+                        });
+                    } else if (!state.get(next)) {
+                        state.set(next, 1); stack.push(next);
+                        iters.push([next, [...(g.get(next) || [])][Symbol.iterator]()]);
+                    }
+                }
+            };
+            for (const node of g.keys()) if (!state.get(node)) visit(node);
+        }
+    }
 
     // "Invalid Text Template Attribute Reference" check - see
     // symbolLabelAttributeNames()/isValidTextTemplateAttribute() in
@@ -880,6 +1147,39 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
                 });
             }
         });
+
+        // Actuating signal connector endpoint check - see ACTUATOR_CLASSES above.
+        {
+            const endClass = type => {
+                const a = findDirectAssociation(el, type);
+                const ref = a ? elementById.get(a.getAttribute("ItemID") || "") : null;
+                return ref ? ref.getAttribute("ComponentClass") : null;
+            };
+            const sourceClass = endClass("has logical start");
+            const targetClass = endClass("has logical end");
+            const connection = directChildrenByTag(el, "Connection")[0] || null;
+            const checkEnd = (side, fnClass, allowed, expected) => {
+                actuatingConnectorCheckedCount++;
+                const idAttr = `${side}ID`, nodeAttr = `${side}Node`;
+                const value = connection ? connection.getAttribute(idAttr) : null;
+                const endEl = value ? resolveConnectionTarget(value) : null;
+                if (endEl && allowed(endEl)) return;
+                actuatingConnectorInvalidCount++;
+                const node = connection?.getAttribute(nodeAttr);
+                const got = !connection ? "the InformationFlow has no <Connection>"
+                    : !value ? `<Connection> has no ${idAttr}`
+                    : !endEl ? `${idAttr}="${value}" does not resolve to any object`
+                    : `${idAttr}="${value}"${node ? ` ${nodeAttr}="${node}"` : ""} is a ${endEl.tagName}${endEl.getAttribute("ComponentClass") ? ` (${endEl.getAttribute("ComponentClass")})` : ""}`;
+                findings.push({
+                    severity: "warning", code: "GEO-MDL-01", category: "actuating-connector-endpoint", objectId, componentClass,
+                    message: `${side === "From" ? "Source" : "Target"} is ${fnClass}, so the connector's ${idAttr}/${nodeAttr} must be ${expected}, but ${got}.`,
+                });
+            };
+            const isActuator = e => ACTUATOR_CLASSES.has(e.getAttribute("ComponentClass") || "");
+            if (sourceClass === "ActuatingFunction") checkEnd("From", sourceClass, isActuator, "a ControlledActuator");
+            if (targetClass === "ActuatingFunction") checkEnd("To", targetClass, isActuator, "a ControlledActuator");
+            if (targetClass === "ActuatingElectricalFunction") checkEnd("To", targetClass, e => e.tagName === "Nozzle", "a Nozzle");
+        }
     });
 
     els.forEach(el => {
@@ -1048,6 +1348,21 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
                         message: `${componentClass} object has no upstream/downstream/group connection after connectivity was calculated.`,
                     });
                 }
+            }
+        }
+
+        // CustomEquipment-as-ProcessVesselComponent placement - see
+        // isVesselComponentType() above.
+        if (isVesselComponentType(el, componentClass, profileClassIndex)) {
+            vesselComponentCheckedCount++;
+            if (!isVesselComponentPlacementValid(el)) {
+                vesselComponentParentIssueCount++;
+                const parentEl = el.parentElement;
+                const parentDesc = parentEl ? `<${parentEl.tagName}${parentEl.getAttribute("ComponentClass") ? ` ComponentClass="${parentEl.getAttribute("ComponentClass")}"` : ""}>` : "no parent";
+                findings.push({
+                    severity: "warning", code: "MDL-CMP-02", category: "vessel-component-parent", objectId, componentClass,
+                    message: `CustomEquipment typed as a ProcessVesselComponent ("${profileClassIndex.get(customTypeUri(el)).name}") must be a <Component> element nested directly in a Vessel <Equipment>; found <${el.tagName}> in ${parentDesc}.`,
+                });
             }
         }
 
@@ -1223,6 +1538,7 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
     findings.push(...checkDeclaredVersion(mainDoc));
     findings.push(...checkZeroLengthConnectors(mainDoc, lookup));
     findings.push(...checkSegmentContinuity(mainDoc, lookup));
+    findings.push(...checkPipingLinkage(mainDoc, lookup));
     findings.push(...checkDiscScope(elList, profileFacts, DEXPI_ATTRIBUTE_SETS, { dexpi1x: isDexpi1x(mainDoc), isCustomObject: isCustomObjectSubtype }));
     findings.push(...checkSymbolCatalogue(elList, profileFacts, symbolRegistrationIndex));
     findings.push(...checkGridAlignment(mainDoc, discDoc, lookup));
@@ -1287,6 +1603,9 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
             genericAttributesNumberMismatches: genericAttributesNumberMismatchCount,
             persistentIdContextChecked: persistentIdContextCheckedCount,
             persistentIdContextDuplicates: persistentIdContextDuplicateCount,
+            referencesChecked: referenceCheckedCount,
+            referencesUnresolved: referenceUnresolvedCount,
+            cyclicDependencies: cycleCount,
             customClassesChecked: customClassCheckedCount,
             customClassUnresolved: customClassUnresolvedCount,
             typeUriUnresolved: typeUriUnresolvedCount,
@@ -1296,11 +1615,15 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
             signalFlowClassInvalid: signalFlowClassInvalidCount,
             signalEndpointUnresolved: signalEndpointUnresolvedCount,
             signalEndpointInvalid: signalEndpointInvalidCount,
+            actuatingConnectorChecked: actuatingConnectorCheckedCount,
+            actuatingConnectorInvalid: actuatingConnectorInvalidCount,
             missingSignalConnection: missingSignalConnectionCount,
             pipingNodeOwnerNoNode: pipingNodeOwnerNoNodeCount,
             pipingNodeOwnerNoConnection: pipingNodeOwnerNoConnectionCount,
             transmissionSystemsChecked: transmissionSystemCheckedCount,
             transmissionSystemParentIssues: transmissionSystemParentIssueCount,
+            vesselComponentsChecked: vesselComponentCheckedCount,
+            vesselComponentParentIssues: vesselComponentParentIssueCount,
             transmissionSystemDriveChainIssues: transmissionSystemDriveChainIssueCount,
             customClassAttrMissing: customClassAttrMissingCount,
             pifSymbolAttrChecked: pifSymbolAttrCheckedCount,

@@ -32,7 +32,7 @@ export const ISSUE_CODES = {
         "layer": "GEO",
         "category": "Connection alignment",
         "title": "Connected items not coincident",
-        "severity": "major",
+        "severity": "minor",
         "needs": "model",
         "scope": "all",
         "drivenBy": null,
@@ -91,6 +91,17 @@ export const ISSUE_CODES = {
         "needs": "profile",
         "scope": "disc",
         "drivenBy": "Grid unit declared by the profile rule set (currently 1.0, zero tolerance)",
+        "implemented": true
+    },
+    "GEO-MDL-01": {
+        "code": "GEO-MDL-01",
+        "layer": "GEO",
+        "category": "Modelling conventions",
+        "title": "Actuating signal connector end on wrong object type",
+        "severity": "minor",
+        "needs": "model",
+        "scope": "all",
+        "drivenBy": null,
         "implemented": true
     },
     "GEO-NCT-01": {
@@ -300,7 +311,7 @@ export const ISSUE_CODES = {
         "needs": "model",
         "scope": "all",
         "drivenBy": null,
-        "implemented": false
+        "implemented": true
     },
     "MDL-MUL-01": {
         "code": "MDL-MUL-01",
@@ -795,7 +806,7 @@ export const ISSUE_CODES = {
         "needs": "schema",
         "scope": "all",
         "drivenBy": null,
-        "implemented": false
+        "implemented": true
     },
     "SER-IDN-04": {
         "code": "SER-IDN-04",

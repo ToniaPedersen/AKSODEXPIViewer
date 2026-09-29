@@ -71,7 +71,7 @@ footer{margin-top:60px;padding-top:14px;border-top:1px solid var(--line);color:v
 <main>
 <h1 id="dexpi-14-disc-profile-viewer-user-guide">DEXPI 1.4 / DISC Profile Viewer — User Guide</h1>
 <p>A browser-based viewer and validation tool for legacy <strong>DEXPI 1.4 / Proteus 4.1.1</strong> XML files, rendered and checked using <strong>DEXPI 2.x profile</strong> symbols, classes and attributes by way of a loaded <code>DiscProfile.xml</code>.</p>
-<p>Developed by <strong>Tonia Pedersen</strong>. Version <strong>2.1</strong>. See <code>ChangeLog_0.0_to_2.1.md</code> for what changed.</p>
+<p>Developed by <strong>Tonia Pedersen</strong>. Version <strong>2.2</strong>. See <code>ChangeLog_2.1_to_2.2.md</code> for what changed since 2.1.</p>
 <hr />
 <hr />
 <h2 id="1-introduction">1. Introduction</h2>
@@ -519,7 +519,7 @@ npm run dev
 <p>Codes marked as not implemented in <a href="#8-validation-code-reference">section 8</a> are registered and reserved, but the check behind them is not written yet — they always report not-evaluated.</p>
 <hr />
 <h2 id="8-validation-code-reference">8. Validation Code Reference</h2>
-<p>81 codes are registered; 40 are implemented today. <strong>Type</strong> is the default the viewer gives the code (Major → Error, Minor → Warning). <strong>Needs</strong> and <strong>Scope</strong> are the gates described in 7.3, and <strong>Implemented</strong> marks the checks that actually run today.</p>
+<p>81 codes are registered; 42 are implemented today. <strong>Type</strong> is the default the viewer gives the code (Major → Error, Minor → Warning). <strong>Needs</strong> and <strong>Scope</strong> are the gates described in 7.3, and <strong>Implemented</strong> marks the checks that actually run today.</p>
 <p>The five DEXPI 2.0-only codes (<code>SER-FMT-03</code>, <code>SER-FMT-05</code>, <code>MDL-REF-06</code>, <code>PRF-LBL-05</code>, <code>PRF-SYM-05</code>) are deliberately absent: this tool can never produce them for a 1.3/1.4 file, and carrying them would report them as not-evaluated for ever.</p>
 <h3 id="ser-serialization-schema">SER — Serialization &amp; schema</h3>
 <div class="tablewrap"><table>
@@ -596,7 +596,7 @@ npm run dev
 <td>Error</td>
 <td>XSD only</td>
 <td>All files</td>
-<td style="text-align: center;">—</td>
+<td style="text-align: center;">✓</td>
 </tr>
 <tr>
 <td><code>SER-IDN-04</code></td>
@@ -690,6 +690,15 @@ npm run dev
 </tr>
 </tbody>
 </table></div>
+<p><strong><code>SER-IDN-03</code> — unresolved references.</strong> libxml2 does not check reference targets during schema validation, so this runs with the model checks. It reports:</p>
+<ul>
+<li>an <code>ItemID</code> that matches no <code>ID</code> in the file;</li>
+<li>a <code>Connection</code> <code>FromID</code>/<code>ToID</code> that matches no <code>ID</code> or <code>TagName</code> (a Nozzle also as <code>&lt;EquipmentTag&gt;-&lt;NozzleTag&gt;</code>);</li>
+<li>a <code>Connection</code> <code>FromNode</code>/<code>ToNode</code> that is not a Node of the resolved target's <code>ConnectionPoints</code>. Nodes are indexed from 0. A target with no <code>ConnectionPoints</code>, such as a segment, is skipped;</li>
+<li>a <code>ConnectionPoints</code> <code>FlowIn</code>/<code>FlowOut</code> that is not one of its own Nodes (indexed from 0);</li>
+<li>an <code>Association</code> <code>TagName</code> that matches no <code>TagName</code> in the file;</li>
+<li>an <code>Association</code> <code>PersistentIDIdentifier</code> (with <code>PersistentIDContext</code>, if given) that matches no <code>PersistentID</code> in the file.</li>
+</ul>
 <h3 id="mdl-effective-information-model">MDL — Effective information model</h3>
 <div class="tablewrap"><table>
 <thead>
@@ -783,7 +792,7 @@ npm run dev
 <td>Error</td>
 <td>Model</td>
 <td>All files</td>
-<td style="text-align: center;">—</td>
+<td style="text-align: center;">✓</td>
 </tr>
 <tr>
 <td><code>MDL-MUL-01</code></td>
@@ -985,6 +994,20 @@ npm run dev
 </tr>
 </tbody>
 </table></div>
+<p><strong><code>MDL-CYC-01</code> — cyclic dependency.</strong> These relations must not loop back on themselves:</p>
+<ul>
+<li>whole-part: <code>is a part of</code>, <code>is a component of</code>, <code>is an element of</code>, <code>is contained in</code>, their inverses, and XML nesting (a child element is part of its nearest parent with an <code>ID</code>);</li>
+<li>location: <code>is located in</code> / <code>is the location of</code>;</li>
+<li>drive: <code>is driven by</code> / <code>drives</code>;</li>
+<li>fulfilment: <code>fulfills</code> / <code>is fulfilled by</code>.</li>
+</ul>
+<p>Each cycle is reported once, on its first object, listing the objects in the loop. Flow, signal and connection relations are not checked for longer loops, because loops there are legitimate (recycle lines, control loops).</p>
+<p>MDL-CYC-01 also reports self-references:</p>
+<ul>
+<li>a <code>Connection</code> whose <code>FromID</code>/<code>ToID</code> (with its <code>FromNode</code>/<code>ToNode</code>) points back at the element that owns the connection, e.g. a <code>PipingNetworkSegment</code> or <code>InformationFlow</code> connecting to itself;</li>
+<li>an <code>InformationFlow</code> whose <code>has logical start</code> (Source) or <code>has logical end</code> (Target) is the InformationFlow itself.</li>
+</ul>
+<p>MDL-REF-03, GEO-MDL-01 and SER-IDN-03 still apply as usual, so a self-reference can also be reported by those codes (e.g. MDL-REF-03 for a Source that is a signal line).</p>
 <h3 id="prf-disc-profile-symbols-scope">PRF — DISC profile — symbols &amp; scope</h3>
 <div class="tablewrap"><table>
 <thead>
@@ -1223,7 +1246,7 @@ npm run dev
 <td><code>GEO-ALN-01</code></td>
 <td>Connected items not coincident</td>
 <td>Connection alignment</td>
-<td>Error</td>
+<td>Warning</td>
 <td>Model</td>
 <td>All files</td>
 <td style="text-align: center;">✓</td>
@@ -1271,6 +1294,15 @@ npm run dev
 <td>Error</td>
 <td>Profile</td>
 <td>DISC files</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>GEO-MDL-01</code></td>
+<td>Actuating signal connector end on wrong object type</td>
+<td>Modelling conventions</td>
+<td>Warning</td>
+<td>Model</td>
+<td>All files</td>
 <td style="text-align: center;">✓</td>
 </tr>
 <tr>
@@ -1368,9 +1400,19 @@ npm run dev
 <p><strong><code>GEO-ALN-01</code> — piping segment continuity.</strong> For each <code>PipingNetworkSegment</code>, the check takes the first and last point of every CenterLine and the connection-node positions of every component, and requires that:</p>
 <ul>
 <li>all items in the segment join into a single run, with touching end points (within 0.01 drawing units). If they don't, one finding lists the separate runs, e.g. <em>run 1: CenterLine 1, BallValve-3; run 2: BlindFlange-1</em>.</li>
-<li>the segment's start and end sit on the nodes named in its <code>Connection</code> (<code>FromID</code>/<code>FromNode</code>, <code>ToID</code>/<code>ToNode</code>). If not, the finding gives the expected node position, the nearest point in the segment and the distance between them. An end that connects to another segment, or to a node with no position, is skipped.</li>
+<li>the segment's start and end sit on the nodes named in its <code>Connection</code> (<code>FromID</code>/<code>FromNode</code>, <code>ToID</code>/<code>ToNode</code>). If not, the finding gives the expected node position, the nearest point in the segment and the distance between them. An end that connects to a node with no position is skipped.</li>
+<li>an end whose <code>FromID</code>/<code>ToID</code> points at another <code>PipingNetworkSegment</code> (the segment itself, or a component in it with no usable node number) touches one of that segment's CenterLine end points or node positions. This applies whether the other segment is in the same <code>PipingNetworkSystem</code> or a different one; the message says which.</li>
+<li>the segments of one <code>PipingNetworkSystem</code> form a single linked network. If they don't, one finding on the system lists the separate groups, e.g. <em>group 1: PipingNetworkSegment-4; group 2: PipingNetworkSegment-5, PipingNetworkSegment-6</em>.</li>
 </ul>
-<p>Items with neither points nor positioned nodes, such as flow arrows, are ignored. The finding is reported on the segment.</p>
+<p>Items with neither points nor positioned nodes, such as flow arrows, are ignored. Findings are reported on the segment, or on the system for the network check.</p>
+<p>GEO-ALN-01 is a Warning: the Proteus schema and the DEXPI 1.4 model define which items connect, but not that their coordinates must coincide.</p>
+<p><strong><code>GEO-MDL-01</code> — actuating signal connector ends.</strong> Modelling conventions are checks with no specific schema, model or profile rule behind them, so they are Warnings. For each <code>InformationFlow</code>:</p>
+<ul>
+<li>if its Source (<code>has logical start</code>) is an <code>ActuatingFunction</code>, the <code>Connection</code> <code>FromID</code>/<code>FromNode</code> must be a <code>ControlledActuator</code>;</li>
+<li>if its Target (<code>has logical end</code>) is an <code>ActuatingFunction</code>, the <code>Connection</code> <code>ToID</code>/<code>ToNode</code> must be a <code>ControlledActuator</code>;</li>
+<li>if its Target is an <code>ActuatingElectricalFunction</code>, the <code>Connection</code> <code>ToID</code>/<code>ToNode</code> must be a <code>Nozzle</code>.</li>
+</ul>
+<p><code>FromID</code>/<code>ToID</code> is resolved by ID, TagName, or <code>&lt;EquipmentTag&gt;-&lt;NozzleTag&gt;</code>. A missing <code>Connection</code>, a missing ID attribute or an ID that resolves to nothing is also reported.</p>
 <hr />
 <h2 id="9-csv-and-excel-export">9. CSV and Excel Export</h2>
 <p>The <strong>CSV</strong> button in the Validation tab writes every issue of the current run (all types, not just the filtered ones). The Folder tab's <strong>CSV</strong> and <strong>Excel</strong> buttons write every issue of a whole folder run. All three use the same columns, one row per finding:</p>

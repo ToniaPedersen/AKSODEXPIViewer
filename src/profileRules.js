@@ -509,3 +509,95 @@ export function checkSegmentContinuity(mainDoc, elementLookup) {
     });
     return findings;
 }
+
+/**
+ * GEO-ALN-01 (continued) - piping segments and systems must be linked by
+ * coincident coordinates. A segment's Connection FromID/ToID that points into
+ * another PipingNetworkSegment (the segment itself or an item in it) must
+ * meet that target: at node FromNode/ToNode for a component (already covered
+ * by checkSegmentContinuity above, so skipped here), else at any of the
+ * target segment's points. The segments of one PipingNetworkSystem must also
+ * form one linked network.
+ */
+function segmentPoints(seg) {
+    const pts = [];
+    Array.from(seg.children).forEach(c => {
+        if (c.tagName === "CenterLine") {
+            const cs = directChildrenByTag(c, "Coordinate")
+                .map(k => ({ x: parseFloat(k.getAttribute("X")), y: parseFloat(k.getAttribute("Y")) }))
+                .filter(p => !Number.isNaN(p.x) && !Number.isNaN(p.y));
+            if (cs.length) pts.push(cs[0], cs[cs.length - 1]);
+        } else {
+            pts.push(...nodePoints(c).filter(Boolean));
+        }
+    });
+    return pts;
+}
+
+export function checkPipingLinkage(mainDoc, elementLookup) {
+    const findings = [];
+    const near = (a, b) => Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y)) <= SEGMENT_MATCH_TOLERANCE;
+    const fmt = p => `(${+p.x.toFixed(3)}, ${+p.y.toFixed(3)})`;
+    const byId = new Map(qsa(mainDoc, "[ID]").map(e => [e.getAttribute("ID"), e]));
+    const byTag = new Map();
+    qsa(mainDoc, "[TagName]").forEach(e => { const t = e.getAttribute("TagName"); if (t && !byTag.has(t)) byTag.set(t, e); });
+    const segs = qsa(mainDoc, "PipingNetworkSegment");
+    const pointsOf = new Map(segs.map(s => [s, segmentPoints(s)]));
+    const systemOf = el => el.parentElement?.closest?.("PipingNetworkSystem") || null;
+    const push = (code, el, message) => {
+        const owner = elementLookup(el);
+        findings.push({ code, severity: "warning", objectId: owner?.objectId || el.getAttribute("ID") || "", componentClass: owner?.componentClass || "", message });
+    };
+
+    // Connection ends that point into another segment.
+    segs.forEach(seg => {
+        const conn = directChildrenByTag(seg, "Connection")[0];
+        const pts = pointsOf.get(seg);
+        if (!conn || !pts.length) return;
+        const segId = seg.getAttribute("ID") || "";
+        [["From", "start"], ["To", "end"]].forEach(([side, word]) => {
+            const ref = conn.getAttribute(`${side}ID`);
+            const target = ref ? (byId.get(ref) || byTag.get(ref)) : null;
+            if (!target) return;
+            const targetSeg = target.tagName === "PipingNetworkSegment" ? target : target.closest?.("PipingNetworkSegment");
+            if (!targetSeg || targetSeg === seg) return;
+            let candidates;
+            const idx = parseInt(conn.getAttribute(`${side}Node`) || "", 10);
+            if (target === targetSeg) candidates = pointsOf.get(targetSeg);
+            else {
+                const nodes = nodePoints(target);
+                const p = Number.isInteger(idx) ? nodes[idx] : null; // 0-based, DefaultNode first (as GEO-ALN-01)
+                if (p) return; // reported by checkSegmentContinuity
+                candidates = nodes.filter(Boolean);
+            }
+            if (!candidates.length) return;
+            if (candidates.some(p => pts.some(q => near(p, q)))) return;
+            let best = null, bestD = Infinity;
+            candidates.forEach(p => pts.forEach(q => {
+                const d = Math.hypot(p.x - q.x, p.y - q.y);
+                if (d < bestD) { bestD = d; best = [p, q]; }
+            }));
+            const sameSystem = systemOf(seg) === systemOf(targetSeg);
+            const where = `${ref}${target !== targetSeg && Number.isInteger(idx) ? ` node ${idx}` : ""} in ${sameSystem ? "segment" : "system"} ${sameSystem ? (targetSeg.getAttribute("ID") || "") : (systemOf(targetSeg)?.getAttribute("ID") || targetSeg.getAttribute("ID") || "")}`;
+            push("GEO-ALN-01", seg,
+                `Segment ${segId} ${word} (${side}ID) is not coincident with ${where}: target at ${fmt(best[0])}, nearest segment point ${fmt(best[1])}, ${+bestD.toFixed(3)} away.`);
+        });
+    });
+
+    // Segments of one system must form a single linked network.
+    qsa(mainDoc, "PipingNetworkSystem").forEach(sys => {
+        const own = directChildrenByTag(sys, "PipingNetworkSegment").filter(s => pointsOf.get(s).length);
+        if (own.length < 2) return;
+        const parent = own.map((_, i) => i);
+        const find = i => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+        for (let i = 0; i < own.length; i++)
+            for (let j = i + 1; j < own.length; j++)
+                if (pointsOf.get(own[i]).some(p => pointsOf.get(own[j]).some(q => near(p, q)))) parent[find(i)] = find(j);
+        const groups = new Map();
+        own.forEach((s, i) => { const r = find(i); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(s.getAttribute("ID") || "?"); });
+        if (groups.size < 2) return;
+        const list = [...groups.values()].map((g, i) => `group ${i + 1}: ${g.join(", ")}`).join("; ");
+        push("GEO-ALN-01", sys, `PipingNetworkSystem segments are not all linked by coincident coordinates - ${groups.size} separate groups (${list}).`);
+    });
+    return findings;
+}
