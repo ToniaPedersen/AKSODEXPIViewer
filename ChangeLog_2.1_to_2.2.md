@@ -44,10 +44,14 @@ Checks with no specific schema, information model or profile rule behind them. T
 
 81 codes are registered; 42 are implemented.
 
+### Drawing view / export
+
+- **Fit, Save PNG/PDF and folder Save PNG** now include text in the drawing bounds. Previously only geometry counted, so notes below the lowest line or symbol were cut off (e.g. notes 4-8 on FPQ-AKSO-P-XB-10001-01).
+
 ### User Guide
 
 - `public/UserGuide.md` and the generated `public/UserGuide.html`: version 2.2, the GEO-ALN-01, GEO-MDL-01, SER-IDN-03 and MDL-CYC-01 rows and descriptions, and the implemented-code count. SER-IDN-03 was already implemented in 2.1 but was shown as not implemented in the guide.
 
 ### Files changed
 
-`package.json`, `package-lock.json`, `README.md`, `ChangeLog_2.1_to_2.2.md` (new), `public/UserGuide.md`, `public/UserGuide.html`, `src/rdlValidate.js`, `src/profileRules.js`, `src/issueCodes.js`.
+`package.json`, `package-lock.json`, `README.md`, `ChangeLog_2.1_to_2.2.md` (new), `public/UserGuide.md`, `public/UserGuide.html`, `src/rdlValidate.js`, `src/profileRules.js`, `src/issueCodes.js`, `src/dexpiParser.js`.

@@ -741,6 +741,21 @@ export function parseDexpiPackage(mainXml, discProfileXml) {
     return { mainDoc, discDoc, tree, flatTree, treeMap, symbolMap, graphics, meta, connectivityMap, heatTraceSet };
 }
 
+// Approximate text extent (0.6 x height per character), matching renderPrimitive's anchor/baseline and rotation.
+function textBoxCorners(p) {
+    const size = p.style?.size || 3.5;
+    const lines = String(p.value ?? p.resolvedTemplateValue ?? "").split(/\r\n|\r|\n/);
+    const w = Math.max(...lines.map(l => l.length)) * size * 0.6;
+    const h = lines.length * size * 1.2;
+    const hz = (p.style?.horizontal || "").toLowerCase(), vt = (p.style?.vertical || "").toLowerCase();
+    const x0 = hz.includes("left") ? 0 : hz.includes("right") ? -w : -w / 2;
+    const y0 = vt.includes("top") ? 0 : vt.includes("bottom") ? -h : -h / 2;
+    const r = (p.rotation || 0) * Math.PI / 180, c = Math.cos(r), s = Math.sin(r);
+    return [[x0, y0], [x0 + w, y0], [x0, y0 + h], [x0 + w, y0 + h]].map(([dx, dy]) => ({
+        x: p.position.x + dx * c - dy * s, y: p.position.y + dx * s + dy * c,
+    }));
+}
+
 export function boundsFromElements(graphics) {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     const visit = p => { if (!p) return; minX = Math.min(minX, p.x); minY = Math.min(minY, p.y); maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y); };
@@ -762,6 +777,8 @@ export function boundsFromElements(graphics) {
         } else if (el.primitive?.kind === "rect") {
             visit({ x: el.primitive.center.x - el.primitive.width / 2, y: el.primitive.center.y - el.primitive.height / 2 });
             visit({ x: el.primitive.center.x + el.primitive.width / 2, y: el.primitive.center.y + el.primitive.height / 2 });
+        } else if (el.primitive?.kind === "text") {
+            textBoxCorners(el.primitive).forEach(visit);
         }
     });
     if (minX === Infinity) return { minX: 0, minY: 0, maxX: 1000, maxY: 1000 };
