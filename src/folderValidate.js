@@ -12,10 +12,16 @@ import { buildReportRows, buildTagIndex, locationFromModel, locationFromXsd } fr
 const XML_EXTS = [".xml"];
 
 const isXml = (name) => XML_EXTS.includes((name.match(/\.[^.]+$/) || [""])[0].toLowerCase());
+const isPng = (name) => /\.png$/i.test(name);
 
 /** Files a folder pick should actually validate. */
 export function pickXmlFiles(fileList) {
     return [...(fileList || [])].filter(f => isXml(f.name));
+}
+
+/** .png files of a folder pick, keyed by lower-cased relative path. */
+export function pickPngFiles(fileList) {
+    return new Map([...(fileList || [])].filter(f => isPng(f.name)).map(f => [(f.webkitRelativePath || f.name).toLowerCase(), f]));
 }
 
 /** True when the browser offers showDirectoryPicker(). */
@@ -23,24 +29,26 @@ export function supportsDirectoryPicker() {
     return typeof window !== "undefined" && typeof window.showDirectoryPicker === "function";
 }
 
-async function collectXmlFiles(dirHandle, prefix, out) {
+async function collectXmlFiles(dirHandle, prefix, out, pngs) {
     for await (const entry of dirHandle.values()) {
         const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
         if (entry.kind === "directory") {
-            await collectXmlFiles(entry, rel, out);
+            await collectXmlFiles(entry, rel, out, pngs);
         } else if (isXml(entry.name)) {
             const file = await entry.getFile();
             try { file.relPath = rel; } catch { /* File is not extensible in this engine */ }
             out.push(file);
+        } else if (pngs && isPng(entry.name)) {
+            pngs.set(rel.toLowerCase(), entry);
         }
     }
 }
 
 /**
  * Opens the directory picker and reads every .xml in the chosen folder and
- * its subfolders.
+ * its subfolders. .png file handles are returned in pngs, keyed by lower-cased relative path.
  *
- * @returns {Promise<{name:string, files:File[]}|null>} null if cancelled
+ * @returns {Promise<{name:string, files:File[], pngs:Map<string,FileSystemFileHandle>}|null>} null if cancelled
  */
 export async function pickDirectory() {
     let dirHandle;
@@ -51,9 +59,10 @@ export async function pickDirectory() {
         throw e;
     }
     const files = [];
-    await collectXmlFiles(dirHandle, "", files);
+    const pngs = new Map();
+    await collectXmlFiles(dirHandle, "", files, pngs);
     files.sort((a, b) => (a.relPath || a.name).localeCompare(b.relPath || b.name));
-    return { name: dirHandle.name, files };
+    return { name: dirHandle.name, files, pngs };
 }
 
 /**

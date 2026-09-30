@@ -359,13 +359,15 @@ export function checkGridAlignment(mainDoc, discDoc, elementLookup) {
 /**
  * SER-FMT-04 - checks whether PlantInformation/@ApplicationVersion agrees
  * with the classes the file actually uses, via membership in the set of
- * classes unique to each version.
+ * classes unique to each version. The tool targets 1.4, so a file that
+ * declares 1.4 is accepted as is.
  */
 export function checkDeclaredVersion(mainDoc) {
     const findings = [];
     const info = qsa(mainDoc, "PlantInformation")[0];
     if (!info) return findings;
     const declared = (info.getAttribute("ApplicationVersion") || "").trim();
+    if (declared.startsWith("1.4")) return findings;
     const used = new Set(qsa(mainDoc, "[ComponentClass]").map(el => el.getAttribute("ComponentClass")));
 
     const hits = v => versionClasses[v].filter(c => used.has(c));
@@ -385,11 +387,6 @@ export function checkDeclaredVersion(mainDoc) {
         findings.push({
             code: "SER-FMT-04", severity: "warning", objectId: "", componentClass: "",
             message: `File declares ApplicationVersion="${declared}" but uses ${only14.length} class(es) that exist only in 1.4: ${describe(only14)}.`,
-        });
-    } else if (declared.startsWith("1.4") && only131.length) {
-        findings.push({
-            code: "SER-FMT-04", severity: "warning", objectId: "", componentClass: "",
-            message: `File declares ApplicationVersion="${declared}" but uses ${only131.length} class(es) dropped after 1.3.1: ${describe(only131)}.`,
         });
     }
     return findings;

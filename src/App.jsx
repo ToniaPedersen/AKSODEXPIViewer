@@ -8,7 +8,7 @@ import { parseProteusPackage, SEGMENT_SYSTEM_MEMBERSHIP_REF_PROPERTIES, TREE_CON
 import { validateProteusXsd } from "./xsdValidate.js";
 import { validateAgainstRdl } from "./rdlValidate.js";
 import { ISSUE_CODES, ALL_CODES } from "./issueCodes.js";
-import { pickXmlFiles, pickDirectory, pickDirectoryForWrite, pngPathFor, writeFileAt, collectFolderElements, supportsDirectoryPicker, validateFiles, buildFolderReport } from "./folderValidate.js";
+import { pickXmlFiles, pickPngFiles, pickDirectory, pickDirectoryForWrite, pngPathFor, writeFileAt, collectFolderElements, supportsDirectoryPicker, validateFiles, buildFolderReport } from "./folderValidate.js";
 import { buildReportRows, buildTagIndex, locationFromModel, locationFromXsd } from "./reportColumns.js";
 import { buildXlsxBlob } from "./xlsxBlob.js";
 import { buildLineResolver } from "./lineResolve.js";
@@ -783,6 +783,8 @@ export default function App() {
     const folderInputRef = useRef(null);
     // Picked files kept by path, so a file can be reopened from its row in the Folder tab without re-picking the folder.
     const folderFilesRef = useRef(new Map());
+    // .png files of the validated folder (lower-cased relative path -> File or FileSystemFileHandle), for the auto BG image.
+    const folderPngsRef = useRef(new Map());
     const folderCancelRef = useRef(false);
     const folderPngInputRef = useRef(null);
     const folderElemInputRef = useRef(null);
@@ -963,12 +965,18 @@ export default function App() {
         } catch (e) { setParseError(e.message || String(e)); }
     }
 
+    const baseName = (name) => name.replace(/\.[^.]+$/, "").toLowerCase();
+
+    // The XML and its same-named .png can be picked together; the .png is loaded as the BG image.
     async function handleMainFile(e) {
-        const file = e.target.files?.[0]; if (!file) return;
+        const picked = [...(e.target.files || [])];
+        const file = picked.find(f => !/\.png$/i.test(f.name)); if (!file) return;
+        const png = picked.find(f => /\.png$/i.test(f.name) && baseName(f.name) === baseName(file.name));
         const txt = await file.text(); setMainXmlText(txt); setMainFileLoaded(true);
         setMainFileName(file.name);
         setXsdStatus("idle"); setXsdResult(null); setXsdError("");
         rebuild(txt, discXmlText);
+        applyAutoBg(png);
     }
 
     // xmlText is passed explicitly by the callers holding the just-read text; the `mainXmlText` state covers the rest.
@@ -997,7 +1005,7 @@ export default function App() {
             return;
         }
         if (!picked) return;
-        runFolderValidation(picked.files, picked.name);
+        runFolderValidation(picked.files, picked.name, picked.pngs);
     }
 
     // Fallback path: <input webkitdirectory>.
@@ -1005,7 +1013,7 @@ export default function App() {
         const picked = pickXmlFiles(e.target.files);
         const first = picked[0]?.webkitRelativePath || "";
         if (folderInputRef.current) folderInputRef.current.value = "";
-        runFolderValidation(picked, first.includes("/") ? first.split("/")[0] : "");
+        runFolderValidation(picked, first.includes("/") ? first.split("/")[0] : "", pickPngFiles(e.target.files));
     }
 
     // Save PNG…: writes <name>.png next to each .xml when the browser can write to the folder, otherwise downloads each PNG.
@@ -1125,7 +1133,7 @@ export default function App() {
     }
 
     // Validates every .xml found, against the currently loaded profile.
-    async function runFolderValidation(files, name) {
+    async function runFolderValidation(files, name, pngs) {
         setLeftTab("folder");
         setFolderName(name || "");
         if (!files.length) { setFolderResults([]); setFolderProgress(null); return; }
@@ -1141,6 +1149,7 @@ export default function App() {
             if (!go) { setFolderProgress(null); return; }
         }
         folderFilesRef.current = new Map(files.map(f => [f.relPath || f.webkitRelativePath || f.name, f]));
+        folderPngsRef.current = pngs || new Map();
         folderCancelRef.current = false;
         setFolderResults(null);
         setFolderProgress({ done: 0, total: files.length, name: files[0].name });
@@ -1162,6 +1171,8 @@ export default function App() {
         setXsdStatus("idle"); setXsdResult(null); setXsdError("");
         rebuild(txt, discXmlText);
         setLeftTab("topology");
+        const png = folderPngsRef.current.get(pngPathFor(path).toLowerCase());
+        applyAutoBg(png?.getFile ? await png.getFile() : png);
     }
 
     // Report rows for the loaded file, in the same layout as the folder run.
@@ -1229,6 +1240,22 @@ export default function App() {
     }
     async function handleBgFile(e) {
         const file = e.target.files?.[0]; if (!file) return;
+        await loadBgFile(file);
+        e.target.value = "";
+    }
+
+    function removeBg() {
+        if (bgObjectUrlRef.current) { URL.revokeObjectURL(bgObjectUrlRef.current); bgObjectUrlRef.current = null; }
+        setBgImage(null); setShowBgControls(false);
+    }
+
+    // Opening a DEXPI file removes the previous BG image and loads its same-named .png, if any (Blend 0.35 = 65% BG opacity, controls shown).
+    async function applyAutoBg(pngFile) {
+        removeBg();
+        if (pngFile && await loadBgFile(pngFile, { auto: true })) setShowBgControls(true);
+    }
+
+    async function loadBgFile(file, { auto = false } = {}) {
         try {
             const bytes = new Uint8Array(await file.arrayBuffer());
             const isPng = isPngBytes(bytes);
@@ -1243,18 +1270,19 @@ export default function App() {
             // Loads the image's raw pixel dimensions so the overlay can be fit into the drawing's coordinate space, preserving aspect ratio.
             const probe = new Image();
             const base = {
-                // BG Image Default Placement: a newly loaded BG image starts centered (blend 0).
-                src, blend: 0, scale: placement.scale, offsetX: placement.offsetX, offsetY: placement.offsetY, visible: true,
+                // BG Image Default Placement: a hand-picked BG image starts centered (blend 0); an auto-loaded one at 0.35 (65% BG opacity).
+                src, blend: auto ? 0.35 : 0, auto, scale: placement.scale, offsetX: placement.offsetX, offsetY: placement.offsetY, visible: true,
                 // sourceBytes/isPng/fileName/embeddedPlacement support the Clear/Download-default controls; see clearBgDefault()/downloadBgPlacementPng().
                 sourceBytes: bytes, isPng, fileName: file.name, embeddedPlacement: embedded,
             };
             probe.onload = () => setBgImage({ ...base, naturalWidth: probe.naturalWidth, naturalHeight: probe.naturalHeight });
             probe.onerror = () => setBgImage({ ...base, naturalWidth: 0, naturalHeight: 0 });
             probe.src = src;
+            return true;
         } catch (err) {
             alert("Could not read the selected image: " + (err.message || String(err)));
+            return false;
         }
-        e.target.value = "";
     }
 
     // Embeds the current Scale/X/Y into a copy of the loaded PNG's bytes and downloads it. The original file is never modified.
@@ -1595,10 +1623,10 @@ export default function App() {
                             <button style={S.collapseBtn} onClick={() => setLeftCollapsed(true)}>{"<"}</button>
                         </div>
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                            <button style={{ ...S.btn, background: mainFileLoaded ? "#eaf2ff" : "white" }} onClick={() => mainInputRef.current?.click()}>{mainFileLoaded ? "✓ " : ""}Load Proteus XML</button>
+                            <button style={{ ...S.btn, background: mainFileLoaded ? "#eaf2ff" : "white" }} onClick={() => mainInputRef.current?.click()} title="Pick the XML, optionally with its same-named .png to load it as the BG image">{mainFileLoaded ? "✓ " : ""}Load Proteus XML</button>
                             <button style={{ ...S.btn, background: discFileLoaded ? "#eaf2ff" : "white" }} onClick={() => discInputRef.current?.click()}>{discFileLoaded ? "✓ " : ""}Load DiscProfile.xml</button>
                         </div>
-                        <input ref={mainInputRef} type="file" accept=".xml" style={{ display: "none" }} onChange={handleMainFile} />
+                        <input ref={mainInputRef} type="file" accept=".xml,.png" multiple style={{ display: "none" }} onChange={handleMainFile} />
                         {/* webkitdirectory turns this into a folder picker; files are read in the browser, nothing is uploaded. */}
                         <input ref={folderInputRef} type="file" webkitdirectory="" directory="" multiple style={{ display: "none" }} onChange={handleFolderPick} />
                         <input ref={folderPngInputRef} type="file" webkitdirectory="" directory="" multiple style={{ display: "none" }} onChange={handleFolderPngPick} />
@@ -2098,7 +2126,7 @@ export default function App() {
                                 Clear Default
                             </button>
                         )}
-                        <button style={{ ...S.btnSmall, color: "#cf222e" }} onClick={() => { if (bgObjectUrlRef.current) { URL.revokeObjectURL(bgObjectUrlRef.current); bgObjectUrlRef.current = null; } setBgImage(null); setShowBgControls(false); }}>Remove</button>
+                        <button style={{ ...S.btnSmall, color: "#cf222e" }} onClick={removeBg}>Remove</button>
                     </div>
                 )}
 

@@ -258,6 +258,17 @@ export const ISSUE_CODES = {
         "drivenBy": "DEXPI 1.4 XMI classes / Plant.xml + Core.xml classes",
         "implemented": true
     },
+    "MDL-CLS-05": {
+        "code": "MDL-CLS-05",
+        "layer": "MDL",
+        "category": "Class usage",
+        "title": "ComponentClass or ComponentClassURI missing",
+        "severity": "major",
+        "needs": "model",
+        "scope": "all",
+        "drivenBy": null,
+        "implemented": true
+    },
     "MDL-CMP-01": {
         "code": "MDL-CMP-01",
         "layer": "MDL",
@@ -332,8 +343,8 @@ export const ISSUE_CODES = {
         "severity": "major",
         "needs": "model+profileForDisc",
         "scope": "all",
-        "drivenBy": null,
-        "implemented": false
+        "drivenBy": "Declared upper multiplicity on the reference property at the far end of the Association pair",
+        "implemented": true
     },
     "MDL-MUL-04": {
         "code": "MDL-MUL-04",

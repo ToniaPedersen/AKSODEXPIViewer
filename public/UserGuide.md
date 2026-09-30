@@ -2,7 +2,7 @@
 
 A browser-based viewer and validation tool for legacy **DEXPI 1.4 / Proteus 4.1.1** XML files, rendered and checked using **DEXPI 2.x profile** symbols, classes and attributes by way of a loaded `DiscProfile.xml`.
 
-Developed by **Tonia Pedersen**. Version **2.2**. See `ChangeLog_2.1_to_2.2.md` for what changed since 2.1.
+Developed by **Tonia Pedersen**. Version **2.3**. See `ChangeLog_2.2_to_2.3.md` for what changed since 2.2.
 
 ---
 
@@ -52,7 +52,7 @@ This guide is generated: edit `public/UserGuide.md`, then run `python scripts/bu
 
 In the left panel:
 
-1. **Load Proteus XML** — the drawing renders immediately and the Topology tree populates. Required.
+1. **Load Proteus XML** — the drawing renders immediately and the Topology tree populates. Required. Pick the `.xml` together with its same-named `.png` to load that image as the background (see 5.7).
 2. **Load DiscProfile.xml** — optional, and usually unnecessary, because one is already loaded (see below). Picking a file here replaces the default, which is what you want when checking against a profile revision of your own. A profile resolves symbols, classes and attribute usage and switches on every profile-dependent check; the Proteus file is re-parsed automatically when a profile is added or removed.
 
 Both buttons show a ✓ and turn blue once loaded, and the file names are listed underneath. The small **x** next to the profile name unloads the profile and returns to plain DEXPI viewing.
@@ -237,6 +237,8 @@ With a profile loaded, a **Profile labels** checkbox appears.
 | Clear Default | Shown once a loaded PNG carries an embedded placement; downloads a copy with it removed. |
 | Remove | Unloads the image. |
 
+Opening a DEXPI file removes the previous background image and loads the `.png` with the same name, if there is one, with BG Controls open and Blend at 0.35 (image at 65% opacity). From the Folder tab the `.png` is taken from the picked folder; with **Load Proteus XML**, pick the `.xml` and its `.png` together.
+
 The image sits in the same coordinate space as the drawing, so it pans and zooms in lockstep and stays aligned at any zoom. Only PNG can carry an embedded placement — other image types re-fit each time they are loaded.
 
 ### 5.8 Draw order — Send to Back
@@ -314,7 +316,7 @@ Codes marked as not implemented in [section 8](#8-validation-code-reference) are
 
 ## 8. Validation Code Reference
 
-81 codes are registered; 42 are implemented today. **Type** is the default the viewer gives the code (Major → Error, Minor → Warning). **Needs** and **Scope** are the gates described in 7.3, and **Implemented** marks the checks that actually run today.
+82 codes are registered; 44 are implemented today. **Type** is the default the viewer gives the code (Major → Error, Minor → Warning). **Needs** and **Scope** are the gates described in 7.3, and **Implemented** marks the checks that actually run today.
 
 The five DEXPI 2.0-only codes (`SER-FMT-03`, `SER-FMT-05`, `MDL-REF-06`, `PRF-LBL-05`, `PRF-SYM-05`) are deliberately absent: this tool can never produce them for a 1.3/1.4 file, and carrying them would report them as not-evaluated for ever.
 
@@ -340,15 +342,6 @@ The five DEXPI 2.0-only codes (`SER-FMT-03`, `SER-FMT-05`, `MDL-REF-06`, `PRF-LB
 | `SER-VAL-03` | Value not lexically valid for its datatype | Lexical values | Error | XSD only | All files | ✓ |
 | `SER-VAL-04` | Enumeration literal not declared | Lexical values | Error | XSD only | All files | ✓ |
 
-**`SER-IDN-03` — unresolved references.** libxml2 does not check reference targets during schema validation, so this runs with the model checks. It reports:
-
-- an `ItemID` that matches no `ID` in the file;
-- a `Connection` `FromID`/`ToID` that matches no `ID` or `TagName` (a Nozzle also as `<EquipmentTag>-<NozzleTag>`);
-- a `Connection` `FromNode`/`ToNode` that is not a Node of the resolved target's `ConnectionPoints`. Nodes are indexed from 0. A target with no `ConnectionPoints`, such as a segment, is skipped;
-- a `ConnectionPoints` `FlowIn`/`FlowOut` that is not one of its own Nodes (indexed from 0);
-- an `Association` `TagName` that matches no `TagName` in the file;
-- an `Association` `PersistentIDIdentifier` (with `PersistentIDContext`, if given) that matches no `PersistentID` in the file.
-
 ### MDL — Effective information model
 
 | Code | Issue | Category | Type | Needs | Scope | Implemented |
@@ -357,13 +350,14 @@ The five DEXPI 2.0-only codes (`SER-FMT-03`, `SER-FMT-05`, `MDL-REF-06`, `PRF-LB
 | `MDL-CLS-02` | Abstract class used as an object class | Class usage | Error | Model (+ profile if DISC) | All files | ✓ |
 | `MDL-CLS-03` | Class contradicts other evidence in the file | Class usage | Error | Model + profile | DISC files | ✓ |
 | `MDL-CLS-04` | Type URI unresolvable or echoes the class name | Class usage | Warning | Model + profile | DISC files | ✓ |
+| `MDL-CLS-05` | `ComponentClass` or `ComponentClassURI` missing on an element whose schema type allows them (ShapeCatalogue content and `Symbol` subtypes such as `PipeSlopeSymbol` are not checked) | Class usage | Error | Model | All files | ✓ |
 | `MDL-CMP-01` | Components property not defined for the parent class | Composition | Error | Model (+ profile if DISC) | All files | — |
 | `MDL-CMP-02` | Child class not permitted by the composition property | Composition | Error | Model (+ profile if DISC) | All files | ✓ |
 | `MDL-CMP-03` | Required sub-component missing | Composition | Error | Model (+ profile if DISC) | All files | ✓ |
 | `MDL-CMP-04` | Container present but empty | Composition | Warning | Model (+ profile if DISC) | All files | — |
 | `MDL-CYC-01` | Cyclic dependency | Cyclic dependency | Error | Model | All files | ✓ |
 | `MDL-MUL-01` | Multiplicity bound violated | Multiplicity | Error | Model (+ profile if DISC) | All files | ✓ |
-| `MDL-MUL-03` | Opposite multiplicity exceeded | Multiplicity | Error | Model (+ profile if DISC) | All files | — |
+| `MDL-MUL-03` | Opposite multiplicity exceeded | Multiplicity | Error | Model (+ profile if DISC) | All files | ✓ |
 | `MDL-MUL-04` | Duplicate entry in a unique property | Multiplicity | Warning | Model (+ profile if DISC) | All files | — |
 | `MDL-PRP-01` | Property not defined on the class or an ancestor | Properties | Error | Model (+ profile if DISC) | All files | ✓ |
 | `MDL-PRP-02` | Property value type does not match the declared type | Properties | Error | Model (+ profile if DISC) | All files | — |
@@ -384,22 +378,6 @@ The five DEXPI 2.0-only codes (`SER-FMT-03`, `SER-FMT-05`, `MDL-REF-06`, `PRF-LB
 | `PRF-MAP-02` | RDL URI does not resolve against the profile | Class usage | Warning | Model + profile | DISC files | — |
 | `PRF-MAP-03` | Custom wrapper does not match the family its URI resolves to | Class usage | Error | Model + profile | DISC files | — |
 | `PRF-MAP-04` | Class mapped by name across a version rename | Class usage | Error | Model + profile | DISC files | — |
-
-**`MDL-CYC-01` — cyclic dependency.** These relations must not loop back on themselves:
-
-- whole-part: `is a part of`, `is a component of`, `is an element of`, `is contained in`, their inverses, and XML nesting (a child element is part of its nearest parent with an `ID`);
-- location: `is located in` / `is the location of`;
-- drive: `is driven by` / `drives`;
-- fulfilment: `fulfills` / `is fulfilled by`.
-
-Each cycle is reported once, on its first object, listing the objects in the loop. Flow, signal and connection relations are not checked for longer loops, because loops there are legitimate (recycle lines, control loops).
-
-MDL-CYC-01 also reports self-references:
-
-- a `Connection` whose `FromID`/`ToID` (with its `FromNode`/`ToNode`) points back at the element that owns the connection, e.g. a `PipingNetworkSegment` or `InformationFlow` connecting to itself;
-- an `InformationFlow` whose `has logical start` (Source) or `has logical end` (Target) is the InformationFlow itself.
-
-MDL-REF-03, GEO-MDL-01 and SER-IDN-03 still apply as usual, so a self-reference can also be reported by those codes (e.g. MDL-REF-03 for a Source that is a signal line).
 
 ### PRF — DISC profile — symbols & scope
 
@@ -462,25 +440,6 @@ The type URI is matched against the profile class extensions (MDL-CLS-01 if unma
 | `GEO-NTY-03` | Instrumentation node used by a piping connection | Node type usage | Error | Profile | DISC files | — |
 | `GEO-SNS-01` | Sensing location not coincident with the measured item | Sensing location | Warning | Model | All files | — |
 | `GEO-SNS-02` | Sensing location references an impermissible object type | Sensing location | Error | Model | All files | — |
-
-**`GEO-ALN-01` — piping segment continuity.** For each `PipingNetworkSegment`, the check takes the first and last point of every CenterLine and the connection-node positions of every component, and requires that:
-
-- all items in the segment join into a single run, with touching end points (within 0.01 drawing units). If they don't, one finding lists the separate runs, e.g. *run 1: CenterLine 1, BallValve-3; run 2: BlindFlange-1*.
-- the segment's start and end sit on the nodes named in its `Connection` (`FromID`/`FromNode`, `ToID`/`ToNode`). If not, the finding gives the expected node position, the nearest point in the segment and the distance between them. An end that connects to a node with no position is skipped.
-- an end whose `FromID`/`ToID` points at another `PipingNetworkSegment` (the segment itself, or a component in it with no usable node number) touches one of that segment's CenterLine end points or node positions. This applies whether the other segment is in the same `PipingNetworkSystem` or a different one; the message says which.
-- the segments of one `PipingNetworkSystem` form a single linked network. If they don't, one finding on the system lists the separate groups, e.g. *group 1: PipingNetworkSegment-4; group 2: PipingNetworkSegment-5, PipingNetworkSegment-6*.
-
-Items with neither points nor positioned nodes, such as flow arrows, are ignored. Findings are reported on the segment, or on the system for the network check.
-
-GEO-ALN-01 is a Warning: the Proteus schema and the DEXPI 1.4 model define which items connect, but not that their coordinates must coincide.
-
-**`GEO-MDL-01` — actuating signal connector ends.** Modelling conventions are checks with no specific schema, model or profile rule behind them, so they are Warnings. For each `InformationFlow`:
-
-- if its Source (`has logical start`) is an `ActuatingFunction`, the `Connection` `FromID`/`FromNode` must be a `ControlledActuator`;
-- if its Target (`has logical end`) is an `ActuatingFunction`, the `Connection` `ToID`/`ToNode` must be a `ControlledActuator`;
-- if its Target is an `ActuatingElectricalFunction`, the `Connection` `ToID`/`ToNode` must be a `Nozzle`.
-
-`FromID`/`ToID` is resolved by ID, TagName, or `<EquipmentTag>-<NozzleTag>`. A missing `Connection`, a missing ID attribute or an ID that resolves to nothing is also reported.
 
 ---
 

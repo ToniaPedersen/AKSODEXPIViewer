@@ -262,6 +262,29 @@ function collectInformationFlowElements(mainDoc) {
     return qsa(mainDoc, "InformationFlow[ID]");
 }
 
+// Elements whose Proteus 4.1.1 schema type allows ComponentClass / ComponentClassURI; each must carry both (ShapeCatalogue content and Symbol subtypes excepted).
+const CLASS_BEARING_TAGS = [
+    "ActuatingElectricalFunction", "ActuatingElectricalSystem", "ActuatingElectricalSystemComponent", "ActuatingFunction",
+    "ActuatingSystem", "ActuatingSystemComponent", "Component", "Equipment", "InformationFlow", "InstrumentComponent",
+    "InstrumentConnection", "InstrumentLoop", "InstrumentationLoopFunction", "InsulationSymbol", "Label", "MetaData", "Note",
+    "Nozzle", "PipeConnectorSymbol", "PipeFlowArrow", "PipeOffPageConnector", "PipeOffPageConnectorReference", "PipeSlopeSymbol",
+    "PipingComponent", "PipingNetworkSegment", "PipingNetworkSystem", "PlantArea", "PlantItem", "PlantStructureItem",
+    "ProcessInstrument", "ProcessInstrumentationFunction", "ProcessSignalGeneratingFunction", "ProcessSignalGeneratingSystem",
+    "ProcessSignalGeneratingSystemComponent", "PropertyBreak", "ScopeBubble", "SignalConnectorSymbol", "SignalOffPageConnector",
+    "SignalOffPageConnectorReference", "Symbol",
+];
+
+// DEXPI Symbol subtypes are not checked by MDL-CLS-05: by ComponentClass, or by element name when it has none.
+const SYMBOL_TAGS = new Set(["Symbol", "InsulationSymbol", "PipeFlowArrow", "PipeSlopeSymbol"]);
+function isSymbolElement(el, componentClass) {
+    return componentClass
+        ? componentClass === "Symbol" || classDescendsFrom(componentClass, "Symbol")
+        : SYMBOL_TAGS.has(el.tagName);
+}
+
+// Elements whose schema type allows ID but does not require it (a missing required ID is the XSD engine's SER-REQ-01).
+const OPTIONAL_ID_TAGS = ["CenterLine"];
+
 // ---- SignalConveyingFunction Source/Target endpoint-type check -----------
 //
 // SignalConveyingFunction.Source and .Target are typed against two abstract
@@ -402,6 +425,83 @@ const PIPING_NODE_OWNER_ROLE = "PipingNodeOwner";
 
 function elementHasPipingNode(el) {
     return directChildrenByTag(el, "ConnectionPoints").some(cp => directChildrenByTag(cp, "Node").length > 0);
+}
+
+// ---- Reference multiplicity check (MDL-MUL-03) ----------------------------
+//
+// A Proteus Association is one end of a model reference; the bound on how
+// many objects may sit at its far end is the multiplicity the model declares
+// on the reference property. Each entry maps an Association pair to the
+// object whose class declares the property (the "holder": the object that
+// carries the forward type, or that the inverse type points at) and to the
+// property names that may realize it. XML nesting counts as whole-part.
+// For every holder, the distinct objects linked to it through either type
+// are counted against the property's upper bound; the property is picked by
+// the partner's class descending from its valueType, first match wins.
+const REFERENCE_MULTIPLICITY = [
+    { forward: ["is located in"], inverse: ["is the location of"],
+      props: ["Chamber", "SensingLocation", "ActuatingLocation", "ActuatingElectricalLocation", "PlantArea", "PlantSystem", "PlantTrain", "ParentStructure"] },
+    { forward: ["is a part of", "is a component of", "is an element of", "is contained in"],
+      inverse: ["is a collection including", "is an assembly including", "is a composition including", "contains"], nesting: true,
+      props: ["PlantArea", "PlantSystem", "PlantTrain", "ParentStructure"] },
+    { forward: ["is fulfilled by"], inverse: ["fulfills"], props: ["Systems"] },
+    { forward: ["refers to"], inverse: ["is referenced by"], props: ["ReferencedConnector", "ConnectorReference"] },
+    { forward: ["is driven by"], inverse: ["drives"], props: ["Driver", "DrivingTransmissionSystem"] },
+    { forward: ["has logical start"], inverse: ["is logical start of"], props: ["Source"] },
+    { forward: ["has logical end"], inverse: ["is logical end of"], props: ["Target"] },
+];
+
+function checkReferenceMultiplicity(elList) {
+    const findings = [];
+    const byId = new Map(elList.filter(e => e.objectId).map(e => [e.objectId, e]));
+    REFERENCE_MULTIPLICITY.forEach(rel => {
+        // holderId -> partnerId -> how the link is expressed
+        const links = new Map();
+        const add = (holderId, partnerId, via) => {
+            if (!holderId || !partnerId || holderId === partnerId || !byId.has(holderId) || !byId.has(partnerId)) return;
+            if (!links.has(holderId)) links.set(holderId, new Map());
+            const partners = links.get(holderId);
+            if (!partners.has(partnerId)) partners.set(partnerId, via);
+        };
+        elList.forEach(({ el, objectId }) => {
+            if (el.closest && el.closest("ShapeCatalogue")) return;
+            directChildrenByTag(el, "Association").forEach(a => {
+                const type = a.getAttribute("Type") || "";
+                const other = a.getAttribute("ItemID");
+                if (rel.forward.includes(type)) add(objectId, other, `"${type}"`);
+                else if (rel.inverse.includes(type)) add(other, objectId, `"${type}" on ${objectId}`);
+            });
+            if (rel.nesting) {
+                const parent = el.parentElement?.closest?.("[ID]");
+                if (parent && parent.tagName !== "Drawing") add(objectId, parent.getAttribute("ID"), "XML nesting");
+            }
+        });
+        links.forEach((partners, holderId) => {
+            const holder = byId.get(holderId);
+            if (!holder.componentClass || !rdl.classes[holder.componentClass]) return;
+            const inherited = resolveInheritedProperties(holder.componentClass);
+            const byProp = new Map(); // prop short name -> [{ id, via }]
+            partners.forEach((via, partnerId) => {
+                const partnerClass = byId.get(partnerId).componentClass;
+                const prop = rel.props.find(p => {
+                    const info = inherited.get(p);
+                    return info && info.kind === "Object" && partnerClass && classDescendsFrom(partnerClass, info.valueType);
+                });
+                if (!prop) return;
+                if (!byProp.has(prop)) byProp.set(prop, []);
+                byProp.get(prop).push({ id: partnerId, via });
+            });
+            byProp.forEach((list, prop) => {
+                const info = inherited.get(prop);
+                if (typeof info.upper !== "number" || list.length <= info.upper) return;
+                findings.push({
+                    severity: "error", code: "MDL-MUL-03", category: "reference-multiplicity", objectId: holderId, componentClass: holder.componentClass,
+                    message: `${info.owner}.${prop} allows at most ${info.upper} ${info.valueType}, but ${list.length} objects are linked: ${list.map(l => `${l.id} (${l.via})`).join(", ")}.`,
+                });
+            });
+        });
+    });
+    return findings;
 }
 
 // ---- TransmissionSystem sub-model check -----------------------------------
@@ -751,6 +851,7 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
         customClassAttrMissingCount = 0, typeUriUnresolvedCount = 0,
         componentClassMismatchCheckedCount = 0, componentClassMismatchCount = 0,
         signalFlowClassMissingCount = 0, signalFlowClassInvalidCount = 0,
+        componentClassMissingCount = 0, componentClassUriMissingCount = 0, idMissingCount = 0,
         signalEndpointUnresolvedCount = 0, signalEndpointInvalidCount = 0,
         actuatingConnectorCheckedCount = 0, actuatingConnectorInvalidCount = 0,
         missingSignalConnectionCount = 0, pipingNodeOwnerNoNodeCount = 0, pipingNodeOwnerNoConnectionCount = 0,
@@ -1095,7 +1196,7 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
         if (!componentClass) {
             signalFlowClassMissingCount++;
             findings.push({
-                severity: "warning", code: "MDL-CLS-01", category: "signal-flow-class", objectId, componentClass: null,
+                severity: "error", code: "MDL-CLS-05", category: "componentclass-missing", objectId, componentClass: null,
                 message: `InformationFlow has no ComponentClass attribute - expected "SignalConveyingFunction" or a subtype (MeasuringLineFunction, SignalLineFunction).`,
             });
         } else if (!SIGNAL_FLOW_COMPONENT_CLASSES.has(componentClass)) {
@@ -1180,6 +1281,43 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
             if (targetClass === "ActuatingFunction") checkEnd("To", targetClass, isActuator, "a ControlledActuator");
             if (targetClass === "ActuatingElectricalFunction") checkEnd("To", targetClass, e => e.tagName === "Nozzle", "a Nozzle");
         }
+    });
+
+    // MDL-CLS-05: ComponentClass / ComponentClassURI missing. InformationFlow without a ComponentClass is reported above.
+    // Keyed by ComponentName when the element has no ID.
+    qsa(mainDoc, CLASS_BEARING_TAGS.join(", ")).forEach(el => {
+        if (el.closest && el.closest("ShapeCatalogue")) return;
+        if (isSymbolElement(el, el.getAttribute("ComponentClass"))) return;
+        const objectId = el.getAttribute("ID") || el.getAttribute("ComponentName") || null;
+        const componentClass = el.getAttribute("ComponentClass") || null;
+        if (!componentClass && el.tagName !== "InformationFlow") {
+            componentClassMissingCount++;
+            findings.push({
+                severity: "error", code: "MDL-CLS-05", category: "componentclass-missing", objectId, componentClass,
+                message: `<${el.tagName}> has no ComponentClass attribute, so it cannot be mapped to a DEXPI class.`,
+            });
+        }
+        if (!el.getAttribute("ComponentClassURI")) {
+            componentClassUriMissingCount++;
+            findings.push({
+                severity: "error", code: "MDL-CLS-05", category: "componentclassuri-missing", objectId, componentClass,
+                message: componentClass
+                    ? `ComponentClass "${componentClass}" has no ComponentClassURI (RDL reference).`
+                    : `<${el.tagName}> has no ComponentClassURI (RDL reference).`,
+            });
+        }
+    });
+
+    // SER-REQ-01: an element whose schema type allows an ID must have one.
+    qsa(mainDoc, OPTIONAL_ID_TAGS.join(", ")).forEach(el => {
+        if (el.getAttribute("ID")) return;
+        idMissingCount++;
+        const owner = el.parentNode?.closest ? el.parentNode.closest("[ID]") : null;
+        findings.push({
+            severity: "error", code: "SER-REQ-01", category: "id-missing", objectId: owner ? owner.getAttribute("ID") : null,
+            componentClass: owner ? owner.getAttribute("ComponentClass") : null,
+            message: `<${el.tagName}> has no ID attribute.`,
+        });
     });
 
     els.forEach(el => {
@@ -1539,6 +1677,7 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
     findings.push(...checkZeroLengthConnectors(mainDoc, lookup));
     findings.push(...checkSegmentContinuity(mainDoc, lookup));
     findings.push(...checkPipingLinkage(mainDoc, lookup));
+    findings.push(...checkReferenceMultiplicity(elList));
     findings.push(...checkDiscScope(elList, profileFacts, DEXPI_ATTRIBUTE_SETS, { dexpi1x: isDexpi1x(mainDoc), isCustomObject: isCustomObjectSubtype }));
     findings.push(...checkSymbolCatalogue(elList, profileFacts, symbolRegistrationIndex));
     findings.push(...checkGridAlignment(mainDoc, discDoc, lookup));
@@ -1612,6 +1751,9 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
             componentClassMismatchChecked: componentClassMismatchCheckedCount,
             componentClassMismatches: componentClassMismatchCount,
             signalFlowClassMissing: signalFlowClassMissingCount,
+            componentClassMissing: componentClassMissingCount,
+            componentClassUriMissing: componentClassUriMissingCount,
+            idMissing: idMissingCount,
             signalFlowClassInvalid: signalFlowClassInvalidCount,
             signalEndpointUnresolved: signalEndpointUnresolvedCount,
             signalEndpointInvalid: signalEndpointInvalidCount,
