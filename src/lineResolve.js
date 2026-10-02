@@ -20,15 +20,18 @@ const WINDOW = 200;
 export function buildLineResolver(text) {
     if (!text) return () => null;
 
-    const lines = text.split(/\r\n|\r|\n/);
-
-    // Offset of each line start, so a match index maps to a line in log time.
-    const starts = new Array(lines.length);
+    // Line starts are taken from the text itself, so CRLF (two characters)
+    // and LF line ends both map a match offset to the right line.
+    const lines = [], starts = [];
+    const BREAK = /\r\n|\r|\n/g;
     let at = 0;
-    for (let i = 0; i < lines.length; i++) {
-        starts[i] = at;
-        at += lines[i].length + 1;
+    for (let m = BREAK.exec(text); m; m = BREAK.exec(text)) {
+        starts.push(at);
+        lines.push(text.slice(at, m.index));
+        at = m.index + m[0].length;
     }
+    starts.push(at);
+    lines.push(text.slice(at));
     const lineAt = (offset) => {
         let lo = 0, hi = lines.length - 1;
         while (lo < hi) {

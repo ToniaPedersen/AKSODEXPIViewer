@@ -27,7 +27,9 @@ const DEFAULT_VALIDATION_SEVERITIES = Object.fromEntries(
     ALL_CODES.map(code => [code, ISSUE_CODES[code].severity === "major" ? "error" : "warning"])
 );
 
-function resolveValidationSeverity(code, severityConfig) {
+// A finding may carry severityOverride (e.g. MDL-CMP-03 when the model requires the sub-component); that wins over the code's setting.
+function resolveValidationSeverity(code, severityConfig, finding) {
+    if (finding?.severityOverride) return finding.severityOverride;
     if (severityConfig && severityConfig[code]) return severityConfig[code];
     if (DEFAULT_VALIDATION_SEVERITIES[code]) return DEFAULT_VALIDATION_SEVERITIES[code];
     return "error"; // unknown validation code: defaults to "error"
@@ -873,12 +875,12 @@ export default function App() {
             list.push({
                 key: `rdl-${i}`, source: "rdl",
                 code: f.code, codeLabel: VALIDATION_CODE_LABELS[f.code] || f.code,
-                message: f.message, objectId: f.objectId || null, line: lineOf(f),
+                message: f.message, objectId: f.objectId || null, line: lineOf(f), severityOverride: f.severityOverride,
             });
         });
         return list.map(issue => ({
             ...issue,
-            severity: resolveValidationSeverity(issue.code, severityConfig),
+            severity: resolveValidationSeverity(issue.code, severityConfig, issue),
         }));
     }, [xsdResult, rdlResult, severityConfig, lineOf]);
 
@@ -926,7 +928,7 @@ export default function App() {
             key: `${r.path}#${i}`,
             path: r.path,
             codeLabel: VALIDATION_CODE_LABELS[f.code] || f.code,
-            severity: resolveValidationSeverity(f.code, severityConfig),
+            severity: resolveValidationSeverity(f.code, severityConfig, f),
         })));
         return out;
     }, [folderResults, severityConfig]);
@@ -1189,12 +1191,12 @@ export default function App() {
         }));
         return buildReportRows(
             [{ path: mainFileName || "validation", findings }],
-            code => SEV_LABELS[resolveValidationSeverity(code, severityConfig)]
+            (code, finding) => SEV_LABELS[resolveValidationSeverity(code, severityConfig, finding)]
         );
     }
 
     function folderReportRows() {
-        return buildFolderReport(folderResults || [], code => SEV_LABELS[resolveValidationSeverity(code, severityConfig)]);
+        return buildFolderReport(folderResults || [], (code, finding) => SEV_LABELS[resolveValidationSeverity(code, severityConfig, finding)]);
     }
     function downloadFolderXlsx() {
         const { columns, rows } = folderReportRows();

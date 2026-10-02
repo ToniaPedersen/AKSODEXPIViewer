@@ -74,7 +74,7 @@ export function buildReportRows(files, typeOf) {
                 f.path,
                 finding.line ?? "",
                 finding.location || "",
-                String(typeOf(code) || "").toUpperCase(),
+                String(typeOf(code, finding) || "").toUpperCase(),
                 LAYER_TYPE[code.slice(0, 3)] || "",
                 finding.message || (meta.title || ""),
             ]);

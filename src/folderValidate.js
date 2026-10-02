@@ -180,7 +180,7 @@ export async function validateFiles(files, profileText, opts = {}) {
  * Report rows for a folder run - see reportColumns.js for the layout.
  *
  * @param {Array} results - from validateFiles()
- * @param {(code:string) => string} typeOf - resolved Error/Warning/Info label
+ * @param {(code:string, finding?:object) => string} typeOf - resolved Error/Warning/Info label (finding.severityOverride wins)
  */
 export function buildFolderReport(results, typeOf) {
     return buildReportRows(results, typeOf);
@@ -210,15 +210,15 @@ export async function collectFolderElements(files, profileText, opts = {}) {
             const usage = collectElementUsage(mainDoc, discDoc);
             usage.classes
                 .sort((a, b) => a.className.localeCompare(b.className))
-                .forEach(c => classRows.push([path, c.className, c.superType, c.count, yn(c.valid)]));
+                .forEach(c => classRows.push([path, c.className, c.superType, c.rdlUri, c.count, yn(c.valid)]));
             usage.attributes
                 .sort((a, b) => a.className.localeCompare(b.className) || a.attribute.localeCompare(b.attribute))
-                .forEach(a => attrRows.push([path, a.className, a.superType, a.attribute, a.count, yn(a.valid)]));
+                .forEach(a => attrRows.push([path, a.className, a.superType, a.attribute, a.rdlUri, a.count, yn(a.valid)]));
             usage.symbols
                 .sort((a, b) => a.kind.localeCompare(b.kind) || a.reference.localeCompare(b.reference) || a.className.localeCompare(b.className))
                 .forEach(y => symbolRows.push([path, y.reference, y.className, y.superType, y.kind, y.count, usage.usesProfile ? yn(y.valid) : "N/A"]));
         } catch (e) {
-            classRows.push([path, `(error: ${e.message || e})`, "", 0, "No"]);
+            classRows.push([path, `(error: ${e.message || e})`, "", "", 0, "No"]);
         }
         await new Promise(done => setTimeout(done, 0));
     }
@@ -227,13 +227,13 @@ export async function collectFolderElements(files, profileText, opts = {}) {
         {
             name: "Classes",
             columns: [{ header: "File", width: 40 }, { header: "Class", width: 32 }, { header: "SuperType", width: 40 },
-                { header: "Count", width: 8 }, { header: "IsValid", width: 9 }],
+                { header: "Class RDL", width: 52 }, { header: "Count", width: 8 }, { header: "IsValid", width: 9 }],
             rows: classRows,
         },
         {
             name: "Attributes",
             columns: [{ header: "File", width: 40 }, { header: "Class", width: 32 }, { header: "SuperType", width: 40 },
-                { header: "Attribute", width: 36 }, { header: "Count", width: 8 }, { header: "IsValid", width: 9 }],
+                { header: "Attribute", width: 36 }, { header: "Attribute RDL", width: 60 }, { header: "Count", width: 8 }, { header: "IsValid", width: 9 }],
             rows: attrRows,
         },
         {

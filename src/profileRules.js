@@ -49,6 +49,7 @@ function directDataStrings(node, property) {
  *   hasProfile: boolean,
  *   allowedClasses: Set<string>,      // Profile/UsageConstraint AllowedClasses, bare class names
  *   allowedProperties: Set<string>,   // AllowedProperties, bare property names
+ *   allowedClassProperties: Set<string>, // AllowedProperties as "<Class>.<Property>" (last two segments)
  *   symbolNames: Set<string>,         // every Profile/Symbol in the catalogue, bare
  *   symbolLabelAttrs: Map<string,Set<string>>, // symbol -> attributes its LabelTemplates name
  *   superTypeFamilies: Set<string>,   // last segment of every superTypes entry in the profile
@@ -59,6 +60,7 @@ export function buildProfileFacts(discDoc) {
         hasProfile: !!discDoc,
         allowedClasses: new Set(),
         allowedProperties: new Set(),
+        allowedClassProperties: new Set(),
         symbolNames: new Set(),
         symbolLabelAttrs: new Map(),
         superTypeFamilies: new Set(),
@@ -77,6 +79,7 @@ export function buildProfileFacts(discDoc) {
         directDataStrings(obj, "AllowedProperties").forEach(v => {
             facts.allowedProperties.add(v);
             facts.allowedProperties.add(v.split(".").pop());
+            facts.allowedClassProperties.add(v.split(".").slice(-2).join("."));
         });
     });
 
@@ -138,12 +141,12 @@ export function expectedCustomFamily(componentClass, facts, versionRenames) {
 // DEXPI 1.x PropertyBreak attributes. DiscProfile.xml models property breaks
 // the DEXPI 2.0 way (LogicalBreak classes and PropertyBreakExtension), which
 // the Proteus schema cannot carry, so a 1.x file carries them as attributes
-// on PropertyBreak. Accepted there by name (AssignmentClass/Specialization
-// suffix stripped) or by AttributeURI, by PRF-SCP-02 and the attribute-name
-// check. name -> AttributeURI (null: none given).
+// on PropertyBreak. Accepted there by AttributeURI only (the rdl_uri), by
+// PRF-SCP-02 and the attribute check; the Name is not matched.
+// name -> AttributeURI.
 const PROPERTY_BREAK_CLASS = "PropertyBreak";
 const DEXPI1X_PROPERTY_BREAK_ATTRIBUTES = new Map([
-    ["CompositionBreak", null],
+    ["CompositionBreak", "http://sandbox.dexpi.org/rdl/CompositionBreakSpecialization"],
     ["AreaBreak", "http://noaka.org/rdl/AreaBreakAssignmentClass"],
     ["HeatTracingBreak", "http://noaka.org/rdl/HeatTracingBreakAssignmentClass"],
     ["InsulationBreak", "http://sandbox.dexpi.org/rdl/InsulationBreakSpecialization"],
@@ -158,11 +161,10 @@ const DEXPI1X_PROPERTY_BREAK_ATTRIBUTES = new Map([
 ]);
 const DEXPI1X_PROPERTY_BREAK_URIS = new Set([...DEXPI1X_PROPERTY_BREAK_ATTRIBUTES.values()].filter(Boolean));
 
-/** True for one of the DEXPI 1.x PropertyBreak attributes above, used on PropertyBreak. */
+/** True for one of the DEXPI 1.x PropertyBreak attributes above (by AttributeURI), used on PropertyBreak. */
 export function isDexpi1xPropertyBreakAttribute(componentClass, rawName, attrUri) {
     if (componentClass !== PROPERTY_BREAK_CLASS) return false;
-    const bare = (rawName || "").trim().replace(/(AssignmentClass|Specialization)$/, "");
-    return DEXPI1X_PROPERTY_BREAK_ATTRIBUTES.has(bare) || (!!attrUri && DEXPI1X_PROPERTY_BREAK_URIS.has(attrUri));
+    return !!attrUri && DEXPI1X_PROPERTY_BREAK_URIS.has(attrUri);
 }
 
 /** True for a DEXPI 1.x (Proteus) file: ApplicationVersion 1.x, or none declared. */
@@ -204,11 +206,17 @@ export function checkDiscScope(els, facts, dexpiAttributeSets, opts = {}) {
                     return;
                 }
                 const bare = normalizeAttributeName(rawName);
-                if (!bare || facts.allowedProperties.has(bare)) return;
+                if (!bare) return;
                 if (opts.dexpi1x && isDexpi1xPropertyBreakAttribute(componentClass, rawName, ga.getAttribute("AttributeURI"))) return;
+                // Class-qualified when the caller supplies the resolver (rdlValidate.js);
+                // the bare-name list otherwise.
+                if (opts.isAllowedProperty ? opts.isAllowedProperty(el, componentClass, ga, bare) : facts.allowedProperties.has(bare)) return;
+                const attrUri = ga.getAttribute("AttributeURI") || "";
                 findings.push({
                     code: "PRF-SCP-02", severity: "warning", objectId, componentClass,
-                    message: `Property "${bare}" is not in the DISC profile's AllowedProperties list.`,
+                    message: opts.isAllowedProperty
+                        ? `Property "${bare}"${attrUri ? ` (${attrUri})` : ""} is not in the DISC profile's AllowedProperties list for ${componentClass}, its supertypes, its profile class or their ClassExtensions.`
+                        : `Property "${bare}" is not in the DISC profile's AllowedProperties list.`,
                 });
             });
         });

@@ -2,14 +2,19 @@
 // information model in dexpi14Rdl.json.
 //
 // Unlike xsdValidate.js's structural checks, this cross-references
-// ComponentClass names and GenericAttribute names against the RDL: unknown
-// classes, attribute names not on the object's class or its ancestors, enum
-// values outside the allowed literal set, and attribute counts outside the
-// declared cardinality.
+// ComponentClass names and GenericAttribute AttributeURIs against the RDL:
+// unknown classes, attributes whose AttributeURI is not the rdl_uri of a
+// property on the object's class or its ancestors, enum values outside the
+// allowed literal set, and attribute counts outside the declared cardinality.
 //
 // Attributes outside the core DEXPI 1.4 model are not flagged as errors; see
 // the AttributeURI namespace check below.
 import rdl from "./dexpi14Rdl.json";
+// MetaData/rdl_uri of every DEXPI 1.4 class and data attribute (built by
+// scripts/build-rdl-uris.py). The AttributeURI of a GenericAttribute is
+// matched against these and against the DataProperty rdl_uris of the loaded
+// DiscProfile.xml; the attribute Name is not used for matching.
+import rdlUris from "./dexpiRdlUris.json";
 import { ISSUE_CODES, PROFILE_CODES, DISC_SCOPED_CODES, UNION_MODEL_CODES, ALL_CODES, UNIMPLEMENTED_CODES, codeState } from "./issueCodes.js";
 import {
     buildProfileFacts, expectedCustomFamily, normalizeSymbolName,
@@ -100,12 +105,28 @@ function isVesselComponentPlacementValid(el) {
         && classDescendsFrom(parentEl.getAttribute("ComponentClass") || "", VESSEL_CLASS);
 }
 
+// Accepted ComponentClass / TypeURIAssignmentClass pairs that the superType
+// rule would reject. DEXPI 1.4 (Proteus) files carry a Thermowell as a
+// CustomInlineMeasuringElement, while the profile derives Thermowell from
+// Plant/Piping.Sensorwell. For such an element the allowed attributes are
+// those of the wrapper's own class (InlineMeasuringElement and its
+// ClassExtensions), not the profile class's chain; TypeNameAssignmentClass /
+// TypeURIAssignmentClass are allowed as on any CustomObject subtype.
+const TYPE_URI_WRAPPER_EXCEPTIONS = new Map([
+    ["http://data.posccaesar.org/rdl/RDS418049", new Set(["CustomInlineMeasuringElement"])], // Thermowell
+]);
+
+function isTypeUriWrapperException(componentClass, typeUri) {
+    return !!TYPE_URI_WRAPPER_EXCEPTIONS.get(typeUri)?.has(componentClass);
+}
+
 function describeComponentClassTypeUriMismatch(el, componentClass, profileClassIndex, profileFacts) {
     const typeUri = customTypeUri(el);
     if (!typeUri || !componentClass) return { applicable: false, reason: null };
     const resolved = profileClassIndex.get(typeUri);
     if (!resolved) return { applicable: false, reason: null };
     if (isVesselComponentType(el, componentClass, profileClassIndex)) return { applicable: true, reason: null };
+    if (isTypeUriWrapperException(componentClass, typeUri)) return { applicable: true, reason: null };
     const chain = profileSuperTypeChain(resolved, profileClassIndex);
 
     const actualDesc = resolved.superTypes.length ? resolved.superTypes.join(", ") : "(no superTypes declared)";
@@ -218,7 +239,7 @@ function resolveInheritedProperties(className) {
             const short = dot === -1 ? full : full.slice(dot + 1);
             if (!result.has(short)) {
                 const propInfo = rdl.properties[full] || {};
-                result.set(short, { owner: cls, full, ...propInfo });
+                result.set(short, { owner: cls, full, rdlUri: rdlUris.properties[full] || "", ...propInfo });
             }
         });
         (info.superTypes || []).forEach(walk);
@@ -281,9 +302,6 @@ function isSymbolElement(el, componentClass) {
         ? componentClass === "Symbol" || classDescendsFrom(componentClass, "Symbol")
         : SYMBOL_TAGS.has(el.tagName);
 }
-
-// Elements whose schema type allows ID but does not require it (a missing required ID is the XSD engine's SER-REQ-01).
-const OPTIONAL_ID_TAGS = ["CenterLine"];
 
 // ---- SignalConveyingFunction Source/Target endpoint-type check -----------
 //
@@ -422,6 +440,19 @@ function buildConnectionTargetResolver(mainDoc, elementById) {
 // component's own <ConnectionPoints><Node>...</Node></ConnectionPoints>
 // children.
 const PIPING_NODE_OWNER_ROLE = "PipingNodeOwner";
+
+// MDL-CMP-03 is a warning unless the DEXPI 1.4 model requires the
+// sub-component (reference property lower multiplicity >= 1); then the
+// finding carries severityOverride "error". In the 1.4 model
+// PipingNodeOwner.Nodes and TransmissionSystem.Driver are both 0..*/0..1,
+// and "drives" has no model property, so today every MDL-CMP-03 is a warning.
+function subComponentRequired(componentClass, propShort) {
+    const info = resolveInheritedProperties(componentClass).get(propShort);
+    return typeof info?.lower === "number" && info.lower >= 1;
+}
+function cmp03Finding(componentClass, propShort, finding) {
+    return subComponentRequired(componentClass, propShort) ? { ...finding, severityOverride: "error" } : finding;
+}
 
 function elementHasPipingNode(el) {
     return directChildrenByTag(el, "ConnectionPoints").some(cp => directChildrenByTag(cp, "Node").length > 0);
@@ -574,18 +605,24 @@ function classSatisfiesConstraint(el, componentClass, expectedClass, profileClas
 // ---- Attribute scope (class-aware name check) ------------------------------
 //
 // An attribute in DexpiAttributes / DexpiCustomAttributes is valid only when
-// its name (or AttributeURI) is declared for the class it is used with,
-// directly or via a supertype:
-//  - DEXPI 1.4 model properties of the ComponentClass and its ancestors;
+// its AttributeURI is the MetaData/rdl_uri of a property declared for the
+// class it is used with, directly or via a supertype:
+//  - DEXPI 1.4 model properties of the ComponentClass and its ancestors
+//    (rdl_uri from dexpiRdlUris.json);
 //  - DataProperties of the TypeURIAssignmentClass profile class and its
 //    profile superType chain, plus the model properties of the Plant class
 //    that chain ends in;
 //  - DataProperties of every ClassExtension whose baseType is one of those
 //    classes.
-// A vendor AttributeURI does not make an attribute valid.
+// The rdl_uri is the only link; the attribute Name is not matched. An
+// attribute with no AttributeURI, or a vendor AttributeURI, is not valid.
+// The one exception is a DEXPI 1.x "<Name>AssignmentClass" reference to a
+// profile list (enumListFor()): the profile's ReferenceProperties carry no
+// rdl_uri, so those are matched by name.
 
 function readProfileDataProperties(classEl, enumListClasses) {
-    const names = new Set(), uris = new Set(), enumRefs = new Map(); // ref name -> list class
+    const uris = new Set(), enumRefs = new Map(); // ref name -> list class
+    const propNameByUri = new Map(); // rdl_uri -> DataProperty name
     // A ReferenceProperty to an enumerated list (a class whose values are
     // Objects in the profile, e.g. ProcessInstrumentationFunctionTypeCode).
     directChildrenByTag(classEl, "ReferenceProperty").forEach(rp => {
@@ -594,20 +631,22 @@ function readProfileDataProperties(classEl, enumListClasses) {
         if (name && enumListClasses.has(lastSegment(target))) enumRefs.set(name, lastSegment(target));
     });
     directChildrenByTag(classEl, "DataProperty").forEach(dp => {
-        const name = dp.getAttribute("name");
-        if (name) names.add(name);
         directChildrenByTag(dp, "Data")
             .filter(d => d.getAttribute("property") === "MetaData/rdl_uri")
-            .forEach(d => { const t = directChildrenByTag(d, "String")[0]?.textContent?.trim(); if (t) uris.add(t); });
+            .forEach(d => {
+                const t = directChildrenByTag(d, "String")[0]?.textContent?.trim();
+                if (t) { uris.add(t); propNameByUri.set(t, dp.getAttribute("name") || ""); }
+            });
     });
-    return { names, uris, enumRefs };
+    return { uris, enumRefs, propNameByUri };
 }
 
-// { classProps: Map(profileClassName -> {names, uris}), extProps: Map(baseType last segment -> {names, uris}),
-//   allNames: Set, allUris: Set }
+// { classProps: Map(profileClassName -> {uris, enumRefs, propNameByUri}),
+//   extProps: Map(baseType last segment -> {uris, enumRefs, propNameByUri, extNames}),
+//   allUris: Set (every DataProperty rdl_uri in the profile), enumValues: Map }
 export function buildProfileAttributeIndex(discDoc) {
     // enumValues: list class -> accepted values (each Object's name and its Abbreviation).
-    const index = { classProps: new Map(), extProps: new Map(), allNames: new Set(), allUris: new Set(), enumValues: new Map() };
+    const index = { classProps: new Map(), extProps: new Map(), allUris: new Set(), enumValues: new Map() };
     if (!discDoc) return index;
     qsa(discDoc, "Object[type]").forEach(o => {
         const cls = lastSegment(o.getAttribute("type"));
@@ -620,17 +659,18 @@ export function buildProfileAttributeIndex(discDoc) {
         index.enumValues.set(cls, values);
     });
     const enumListClasses = new Set(index.enumValues.keys());
-    const add = (map, key, props) => {
-        const hit = map.get(key) || { names: new Set(), uris: new Set(), enumRefs: new Map() };
-        props.names.forEach(n => { hit.names.add(n); index.allNames.add(n); });
+    const add = (map, key, props, extName) => {
+        const hit = map.get(key) || { uris: new Set(), enumRefs: new Map(), propNameByUri: new Map(), extNames: new Set() };
         props.uris.forEach(u => { hit.uris.add(u); index.allUris.add(u); });
-        props.enumRefs.forEach((cls, n) => { hit.enumRefs.set(n, cls); index.allNames.add(n); });
+        props.enumRefs.forEach((cls, n) => hit.enumRefs.set(n, cls));
+        props.propNameByUri.forEach((n, u) => hit.propNameByUri.set(u, n));
+        if (extName) hit.extNames.add(extName);
         map.set(key, hit);
     };
     const walk = node => Array.from(node.children || []).forEach(child => {
         const tag = child.tagName;
         if (tag === "ConcreteClass" || tag === "AbstractClass") add(index.classProps, child.getAttribute("name") || "", readProfileDataProperties(child, enumListClasses));
-        else if (tag === "ClassExtension") add(index.extProps, lastSegment(child.getAttribute("baseType") || ""), readProfileDataProperties(child, enumListClasses));
+        else if (tag === "ClassExtension") add(index.extProps, lastSegment(child.getAttribute("baseType") || ""), readProfileDataProperties(child, enumListClasses), child.getAttribute("name") || "");
         walk(child);
     });
     walk(discDoc.documentElement);
@@ -638,6 +678,50 @@ export function buildProfileAttributeIndex(discDoc) {
 }
 
 const REVERSE_RENAMES = new Map([...VERSION_RENAMES].map(([a, b]) => [b, a]));
+
+// ---- Class resolution by ComponentClassURI --------------------------------
+//
+// Like attributes, a class is linked by its rdl_uri: ComponentClassURI is
+// looked up among the DEXPI 1.4 model classes (dexpiRdlUris.json), then the
+// DiscProfile.xml classes. When it resolves to a model class, that class is
+// the one the model checks run against; ComponentClass is used only when
+// the URI is missing or resolves to nothing. A ComponentClass that disagrees
+// with its URI, or a URI that resolves to nothing while the model has an
+// rdl_uri for the ComponentClass, is PRF-EXT-04.
+const MODEL_CLASS_BY_URI = new Map(Object.entries(rdlUris.classes).map(([name, uri]) => [uri, name]));
+
+function resolveClassByUri(el, profileClassIndex) {
+    const uri = el.getAttribute("ComponentClassURI") || "";
+    if (!uri) return { uri, name: null, source: null };
+    const model = MODEL_CLASS_BY_URI.get(uri);
+    if (model) return { uri, name: model, source: "model" };
+    const profile = profileClassIndex?.get(uri);
+    if (profile) return { uri, name: profile.name, source: "profile" };
+    return { uri, name: null, source: null };
+}
+
+// The class the model checks run against (see above).
+function effectiveComponentClass(el, profileClassIndex) {
+    const resolved = resolveClassByUri(el, profileClassIndex);
+    return resolved.source === "model" ? resolved.name : (el.getAttribute("ComponentClass") || "");
+}
+
+// PRF-EXT-04 finding for an element, or null.
+function describeClassUriDisagreement(el, profileClassIndex) {
+    const componentClass = el.getAttribute("ComponentClass") || "";
+    const resolved = resolveClassByUri(el, profileClassIndex);
+    if (!resolved.uri || !componentClass) return null;
+    const sameName = n => n === componentClass || REVERSE_RENAMES.get(n) === componentClass || VERSION_RENAMES.get(n) === componentClass;
+    if (resolved.name) {
+        if (sameName(resolved.name)) return null;
+        return resolved.source === "model"
+            ? `ComponentClassURI ${resolved.uri} is the rdl_uri of DEXPI 1.4 class "${resolved.name}", not of ComponentClass "${componentClass}"; the model checks use "${resolved.name}".`
+            : `ComponentClassURI ${resolved.uri} is the rdl_uri of DiscProfile.xml class "${resolved.name}", not of ComponentClass "${componentClass}".`;
+    }
+    const expected = rdlUris.classes[componentClass];
+    if (expected) return `ComponentClassURI ${resolved.uri} is not the rdl_uri of any DEXPI 1.4 model or DiscProfile.xml class; the model lists ${expected} for "${componentClass}".`;
+    return null;
+}
 
 // DEXPI 1.4 class plus its model ancestors, with 2.0 renames alongside.
 function modelAncestors(className, out) {
@@ -648,28 +732,77 @@ function modelAncestors(className, out) {
     (rdl.classes[cls]?.superTypes || []).forEach(st => modelAncestors(st, out));
 }
 
-// Everything that makes an attribute name valid on this element.
+// Everything that makes an attribute valid on this element:
+//   uris          - every rdl_uri in scope (model properties + profile DataProperties)
+//   modelByUri    - rdl_uri -> DEXPI 1.4 model property (for enum/cardinality checks)
+//   propNameByUri - rdl_uri -> property name (model or profile), for PRF-SCP-02
+//   classNames    - the element's class, its ancestors (1.4 and 2.0 names), its
+//                   profile class chain and the ClassExtensions on those, for PRF-SCP-02
+//   enumRefs      - profile list references, by name (see enumListFor())
 function attributeScope(el, componentClass, profileClassIndex, attrIndex) {
     const modelClasses = new Set();
     modelAncestors(componentClass, modelClasses);
-    const names = new Set(), uris = new Set(), enumRefs = new Map();
-    const addProps = p => { if (p) { p.names.forEach(n => names.add(n)); p.uris.forEach(u => uris.add(u)); p.enumRefs.forEach((cls, n) => enumRefs.set(n, cls)); } };
+    const uris = new Set(), modelByUri = new Map(), propNameByUri = new Map(), enumRefs = new Map(), classNames = new Set();
+    const addProps = p => {
+        if (!p) return;
+        p.uris.forEach(u => uris.add(u));
+        p.propNameByUri.forEach((n, u) => propNameByUri.set(u, n));
+        p.enumRefs.forEach((cls, n) => enumRefs.set(n, cls));
+        p.extNames?.forEach(n => classNames.add(n));
+    };
 
     const typeUri = customTypeUri(el);
-    const resolved = typeUri ? profileClassIndex.get(typeUri) : null;
+    // A wrapper exception (Thermowell on CustomInlineMeasuringElement) takes
+    // the attributes of the wrapper's class, not of the profile class.
+    const resolved = typeUri && !isTypeUriWrapperException(componentClass, typeUri) ? profileClassIndex.get(typeUri) : null;
     if (resolved) {
+        classNames.add(resolved.name);
         addProps(attrIndex.classProps.get(resolved.name));
         profileSuperTypeChain(resolved, profileClassIndex).forEach(st => {
             const seg = lastSegment(st);
+            classNames.add(seg);
             if (attrIndex.classProps.has(seg) && !rdl.classes[seg]) addProps(attrIndex.classProps.get(seg));
             else modelAncestors(seg, modelClasses);
         });
     }
     modelClasses.forEach(cls => {
-        if (rdl.classes[cls]) resolveInheritedProperties(cls).forEach((_, short) => names.add(short));
+        classNames.add(cls);
+        if (rdl.classes[cls]) resolveInheritedProperties(cls).forEach(propInfo => {
+            if (!propInfo.rdlUri) return;
+            uris.add(propInfo.rdlUri);
+            if (!modelByUri.has(propInfo.rdlUri)) modelByUri.set(propInfo.rdlUri, propInfo);
+            if (!propNameByUri.has(propInfo.rdlUri)) propNameByUri.set(propInfo.rdlUri, propInfo.full.split(".").pop());
+        });
         addProps(attrIndex.extProps.get(cls));
     });
-    return { names, uris, enumRefs };
+    return { uris, modelByUri, propNameByUri, classNames, enumRefs };
+}
+
+// PRF-SCP-02: the DISC profile's AllowedProperties entries are class-qualified
+// (<Package>.<Class>.<Property>). An attribute is allowed on an element when
+// some entry names its property on the element's class, one of its ancestors,
+// its profile class chain, or a ClassExtension on one of those. The property
+// is identified through the AttributeURI (rdl_uri) when it resolves in the
+// element's scope; a DEXPI 1.x "<Name>AssignmentClass" list reference by its
+// bare name; anything unresolved by its bare name as a last resort.
+function makeAllowedPropertyCheck(profileFacts, profileClassIndex, attrIndex, dexpi1x) {
+    const scopes = new Map();
+    const scopeOf = (el, componentClass) => {
+        let scope = scopes.get(el);
+        if (!scope) { scope = attributeScope(el, componentClass, profileClassIndex, attrIndex); scopes.set(el, scope); }
+        return scope;
+    };
+    return (el, componentClass, ga, bare) => {
+        const scope = scopeOf(el, componentClass);
+        const attrUri = ga.getAttribute("AttributeURI") || "";
+        const name = (ga.getAttribute("Name") || "").trim();
+        const prop = (attrUri && scope.propNameByUri.get(attrUri))
+            || (enumListFor(scope, name, dexpi1x) ? name.slice(0, -ASSIGNMENT_CLASS_SUFFIX.length) : bare);
+        for (const cls of scope.classNames) {
+            if (profileFacts.allowedClassProperties.has(`${cls}.${prop}`)) return true;
+        }
+        return false;
+    };
 }
 
 // An enumerated-list reference is carried in a DEXPI 1.x file as a
@@ -678,7 +811,7 @@ function attributeScope(el, componentClass, profileClassIndex, attrIndex) {
 const ASSIGNMENT_CLASS_SUFFIX = "AssignmentClass";
 
 function attributeInScope(scope, name, attrUri, dexpi1x = false) {
-    if (scope.names.has(name) || scope.names.has(stripNameSuffix(name)) || (!!attrUri && scope.uris.has(attrUri))) return true;
+    if (!!attrUri && scope.uris.has(attrUri)) return true;
     return !!enumListFor(scope, name, dexpi1x);
 }
 
@@ -688,10 +821,12 @@ function enumListFor(scope, name, dexpi1x) {
     return scope.enumRefs.get(name.slice(0, -ASSIGNMENT_CLASS_SUFFIX.length)) || null;
 }
 
-// A list value is accepted as the value's name or its Abbreviation.
+// A list value is accepted as the value's name or its Abbreviation. An
+// empty value (no selection) is accepted.
 function enumListValueValid(attrIndex, listClass, value) {
     const values = attrIndex.enumValues.get(listClass);
-    return !values || values.has((value || "").trim());
+    const v = (value || "").trim();
+    return !v || !values || values.has(v);
 }
 
 // ---- Element usage (Export Element…) ---------------------------------------
@@ -702,8 +837,8 @@ function enumListValueValid(attrIndex, listClass, value) {
 // under the profile class it maps to (superType from DiscProfile.xml);
 // otherwise under its ComponentClass (superType from the DEXPI 1.4 model).
 //
-// Returns { classes: [{className, superType, count, valid}],
-//           attributes: [{className, superType, attribute, count, valid}],
+// Returns { classes: [{className, superType, rdlUri, count, valid}],
+//           attributes: [{className, superType, attribute, rdlUri, count, valid}],
 //           symbols: [{reference, className, superType, kind, count, valid}],
 //           usesProfile: boolean }.
 export function collectElementUsage(mainDoc, discDoc) {
@@ -720,13 +855,14 @@ export function collectElementUsage(mainDoc, discDoc) {
     };
 
     collectValidatableElements(mainDoc).forEach(el => {
-        const componentClass = el.getAttribute("ComponentClass") || "";
+        const componentClass = effectiveComponentClass(el, profileClassIndex);
         const classInfo = rdl.classes[componentClass];
         const typeUri = customTypeUri(el);
-        let className, superType, valid;
+        let className, superType, rdlUri, valid;
 
         if (typeUri) {
             const resolved = discDoc ? profileClassIndex.get(typeUri) : null;
+            rdlUri = typeUri;
             if (resolved) {
                 className = resolved.name;
                 superType = resolved.superTypes.join(" ");
@@ -741,10 +877,12 @@ export function collectElementUsage(mainDoc, discDoc) {
         } else {
             className = componentClass;
             superType = (classInfo?.superTypes || []).join(" ");
+            // The model's rdl_uri for the class; what the file claims if the model has none.
+            rdlUri = rdlUris.classes[componentClass] || el.getAttribute("ComponentClassURI") || "";
             const isCustom = componentClass.startsWith(CUSTOM_CLASS_PREFIX) && componentClass.length > CUSTOM_CLASS_PREFIX.length;
-            valid = !!classInfo && classInfo.kind !== "Abstract" && !isCustom;
+            valid = !!classInfo && classInfo.kind !== "Abstract" && !isCustom && !describeClassUriDisagreement(el, profileClassIndex);
         }
-        bump(classes, `${className}\u0000${superType}\u0000${valid}`, { className, superType, valid });
+        bump(classes, `${className}\u0000${superType}\u0000${rdlUri}\u0000${valid}`, { className, superType, rdlUri, valid });
 
         const scope = attributeScope(el, componentClass, profileClassIndex, attrIndex);
         directChildrenByTag(el, "GenericAttributes").forEach(group => {
@@ -763,8 +901,9 @@ export function collectElementUsage(mainDoc, discDoc) {
                 else if (enumListFor(scope, name, dexpi1x)) attrValid = enumListValueValid(attrIndex, enumListFor(scope, name, dexpi1x), ga.getAttribute("Value"));
                 else attrValid = attributeInScope(scope, name, attrUri, dexpi1x)
                     || (dexpi1x && isDexpi1xPropertyBreakAttribute(componentClass, name, attrUri));
-                bump(attributes, `${className}\u0000${superType}\u0000${name}\u0000${attrValid}`,
-                    { className, superType, attribute: name, valid: attrValid });
+                // Attribute RDL: the AttributeURI the file carries (the value matched against the rdl_uris).
+                bump(attributes, `${className}\u0000${superType}\u0000${name}\u0000${attrUri}\u0000${attrValid}`,
+                    { className, superType, attribute: name, rdlUri: attrUri, valid: attrValid });
             });
         });
     });
@@ -845,13 +984,14 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
     // that was actually loaded.
     const profileFacts = buildProfileFacts(discDoc);
 
+    let classUriDisagreementCount = 0;
     let unknownClassCount = 0, unknownAttrCount = 0, malformedNameCount = 0,
         invalidEnumCount = 0, cardinalityCount = 0, extensionAttrCount = 0, profileExtensionAttrCount = 0,
         customClassCheckedCount = 0, customClassUnresolvedCount = 0,
         customClassAttrMissingCount = 0, typeUriUnresolvedCount = 0,
         componentClassMismatchCheckedCount = 0, componentClassMismatchCount = 0,
         signalFlowClassMissingCount = 0, signalFlowClassInvalidCount = 0,
-        componentClassMissingCount = 0, componentClassUriMissingCount = 0, idMissingCount = 0,
+        componentClassMissingCount = 0, componentClassUriMissingCount = 0,
         signalEndpointUnresolvedCount = 0, signalEndpointInvalidCount = 0,
         actuatingConnectorCheckedCount = 0, actuatingConnectorInvalidCount = 0,
         missingSignalConnectionCount = 0, pipingNodeOwnerNoNodeCount = 0, pipingNodeOwnerNoConnectionCount = 0,
@@ -1308,21 +1448,19 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
         }
     });
 
-    // SER-REQ-01: an element whose schema type allows an ID must have one.
-    qsa(mainDoc, OPTIONAL_ID_TAGS.join(", ")).forEach(el => {
-        if (el.getAttribute("ID")) return;
-        idMissingCount++;
-        const owner = el.parentNode?.closest ? el.parentNode.closest("[ID]") : null;
-        findings.push({
-            severity: "error", code: "SER-REQ-01", category: "id-missing", objectId: owner ? owner.getAttribute("ID") : null,
-            componentClass: owner ? owner.getAttribute("ComponentClass") : null,
-            message: `<${el.tagName}> has no ID attribute.`,
-        });
-    });
-
     els.forEach(el => {
         const objectId = el.getAttribute("ID");
-        const componentClass = el.getAttribute("ComponentClass");
+        // PRF-EXT-04: ComponentClass vs ComponentClassURI. The checks below
+        // run against the class the URI resolves to (see effectiveComponentClass()).
+        const classUriDisagreement = describeClassUriDisagreement(el, profileClassIndex);
+        if (classUriDisagreement) {
+            classUriDisagreementCount++;
+            findings.push({
+                severity: "warning", code: "PRF-EXT-04", category: "class-uri-disagreement", objectId,
+                componentClass: el.getAttribute("ComponentClass"), message: classUriDisagreement,
+            });
+        }
+        const componentClass = effectiveComponentClass(el, profileClassIndex) || null;
         const classInfo = rdl.classes[componentClass];
 
         // Abstract-class-used check 1 ("abstract-class-used") - see doc
@@ -1469,10 +1607,10 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
         if (classDescendsFrom(componentClass, PIPING_NODE_OWNER_ROLE)) {
             if (!elementHasPipingNode(el)) {
                 pipingNodeOwnerNoNodeCount++;
-                findings.push({
+                findings.push(cmp03Finding(componentClass, "Nodes", {
                     severity: "warning", code: "MDL-CMP-03", category: "piping-node-owner-no-node", objectId, componentClass,
                     message: `${componentClass} object has no ConnectionPoints/Node (PipingNode) defined.`,
-                });
+                }));
             }
             if (connectivityMap) {
                 const conn = connectivityMap.get(objectId);
@@ -1524,24 +1662,26 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
 
             const checkDriveAssociation = (type) => {
                 const assoc = findDirectAssociation(el, type);
+                // "is driven by" is TransmissionSystem.Driver; "drives" has no model property.
+                const prop = type === "is driven by" ? "Driver" : "";
                 if (!assoc) {
                     transmissionSystemDriveChainIssueCount++;
-                    findings.push({
+                    findings.push(cmp03Finding(componentClass, prop, {
                         severity: "warning", code: "MDL-CMP-03", category: "transmission-system-drive-chain", objectId, componentClass,
                         message: `TransmissionSystem has no Association Type="${type}".`,
-                    });
+                    }));
                     return;
                 }
                 const itemId = assoc.getAttribute("ItemID");
                 const refEl = itemId ? elementById.get(itemId) : null;
                 if (!refEl || refEl.tagName !== "Equipment") {
                     transmissionSystemDriveChainIssueCount++;
-                    findings.push({
+                    findings.push(cmp03Finding(componentClass, prop, {
                         severity: "warning", code: "MDL-CMP-03", category: "transmission-system-drive-chain", objectId, componentClass,
                         message: refEl
                             ? `TransmissionSystem's "${type}" Association refers to "${itemId}", which is a <${refEl.tagName}> element, not <Equipment>.`
                             : `TransmissionSystem's "${type}" Association refers to "${itemId}", which does not resolve to any object in the document.`,
-                    });
+                    }));
                 }
             };
             checkDriveAssociation("drives");
@@ -1558,9 +1698,8 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
             return; // can't meaningfully check attributes against an unresolved class
         }
 
-        const inherited = resolveInheritedProperties(componentClass);
         const scope = attributeScope(el, componentClass, profileClassIndex, profileAttrIndex);
-        const occurrenceCounts = new Map(); // shortPropName -> count, for cardinality check
+        const occurrenceCounts = new Map(); // rdl_uri -> { propInfo, count }, for cardinality check
 
         directChildrenByTag(el, "GenericAttributes").forEach(group => {
             const set = group.getAttribute("Set");
@@ -1579,8 +1718,10 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
                     });
                 }
 
-                const shortName = stripNameSuffix(rawName.trim());
-                const propInfo = inherited.get(shortName);
+                // Matched by AttributeURI against the rdl_uri of the model
+                // properties in scope; the Name is not used.
+                const propInfo = attrUri ? scope.modelByUri.get(attrUri) : undefined;
+                const shortName = propInfo ? propInfo.full.split(".").pop() : stripNameSuffix(rawName.trim());
 
                 if (!propInfo) {
                     // DEXPI 1.x PropertyBreak attributes (see profileRules.js).
@@ -1606,8 +1747,8 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
                     }
                     unknownAttrCount++;
                     const shortTrim = rawName.trim();
-                    const isProfileProp = profileAttrIndex.allNames.has(shortTrim) || profileAttrIndex.allNames.has(stripNameSuffix(shortTrim))
-                        || (!!attrUri && profileAttrIndex.allUris.has(attrUri));
+                    // The URI is a profile DataProperty rdl_uri, just not one in this class's scope.
+                    const isProfileProp = !!attrUri && profileAttrIndex.allUris.has(attrUri);
                     const isDexpiNamespace = DEXPI_ATTRIBUTE_URI_NAMESPACES.some(ns => attrUri.startsWith(ns));
                     const enumRefName = stripNameSuffix(shortTrim);
                     const wrongEnumForm = dexpi1x && scope.enumRefs.has(enumRefName) && !shortTrim.endsWith(ASSIGNMENT_CLASS_SUFFIX);
@@ -1616,14 +1757,18 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
                         severity: "warning", category: "unknown-attribute", objectId, componentClass,
                         message: wrongEnumForm
                             ? `Attribute "${rawName}" refers to the DiscProfile.xml list "${enumRefName}" - in a DEXPI 1.x file it must be written as "${enumRefName}${ASSIGNMENT_CLASS_SUFFIX}".`
+                            : !attrUri
+                            ? `Attribute "${rawName}" has no AttributeURI. An attribute is matched to the DEXPI 1.4 model and the loaded DiscProfile.xml by its AttributeURI (the property's rdl_uri) only.`
                             : isProfileProp
-                            ? `Attribute "${rawName}" is a DiscProfile.xml property, but not one declared for ${componentClass}, its TypeURIAssignmentClass profile class, or their supertypes/ClassExtensions.`
-                            : `Attribute "${rawName}" is not declared for ${componentClass} or its supertypes in the DEXPI 1.4 model or the loaded DiscProfile.xml${attrUri ? ` (AttributeURI: ${attrUri})` : " (no AttributeURI)"}.`,
+                            ? `AttributeURI ${attrUri} of "${rawName}" is a DiscProfile.xml property rdl_uri, but not one declared for ${componentClass}, its TypeURIAssignmentClass profile class, or their supertypes/ClassExtensions.`
+                            : `AttributeURI ${attrUri} of "${rawName}" is not the rdl_uri of a property declared for ${componentClass} or its supertypes in the DEXPI 1.4 model or the loaded DiscProfile.xml.`,
                     });
                     return;
                 }
 
-                occurrenceCounts.set(shortName, (occurrenceCounts.get(shortName) || 0) + 1);
+                const seen = occurrenceCounts.get(attrUri) || { propInfo, count: 0 };
+                seen.count++;
+                occurrenceCounts.set(attrUri, seen);
 
                 // Enum value check
                 if (propInfo.valueType && rdl.enums[propInfo.valueType] && rawValue) {
@@ -1641,13 +1786,12 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
 
         // Cardinality check: compare each resolved property's occurrence
         // count against the RDL's declared upper bound.
-        occurrenceCounts.forEach((count, shortName) => {
-            const propInfo = inherited.get(shortName);
+        occurrenceCounts.forEach(({ propInfo, count }, uri) => {
             if (typeof propInfo.upper === "number" && count > propInfo.upper) {
                 cardinalityCount++;
                 findings.push({
                     severity: "warning", code: "MDL-MUL-01", category: "cardinality", objectId, componentClass,
-                    message: `${propInfo.owner}.${shortName} appears ${count} times but the RDL allows at most ${propInfo.upper}.`,
+                    message: `${propInfo.full} (${uri}) appears ${count} times but the RDL allows at most ${propInfo.upper}.`,
                 });
             }
         });
@@ -1657,7 +1801,7 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
     const elList = els.map(el => ({
         el,
         objectId: el.getAttribute("ID") || el.getAttribute("id") || "",
-        componentClass: el.getAttribute("ComponentClass") || "",
+        componentClass: effectiveComponentClass(el, profileClassIndex),
     }));
     const byNode = new Map(elList.map(e => [e.el, e]));
     const lookup = node => {
@@ -1678,7 +1822,10 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
     findings.push(...checkSegmentContinuity(mainDoc, lookup));
     findings.push(...checkPipingLinkage(mainDoc, lookup));
     findings.push(...checkReferenceMultiplicity(elList));
-    findings.push(...checkDiscScope(elList, profileFacts, DEXPI_ATTRIBUTE_SETS, { dexpi1x: isDexpi1x(mainDoc), isCustomObject: isCustomObjectSubtype }));
+    findings.push(...checkDiscScope(elList, profileFacts, DEXPI_ATTRIBUTE_SETS, {
+        dexpi1x: isDexpi1x(mainDoc), isCustomObject: isCustomObjectSubtype,
+        isAllowedProperty: makeAllowedPropertyCheck(profileFacts, profileClassIndex, profileAttrIndex, isDexpi1x(mainDoc)),
+    }));
     findings.push(...checkSymbolCatalogue(elList, profileFacts, symbolRegistrationIndex));
     findings.push(...checkGridAlignment(mainDoc, discDoc, lookup));
 
@@ -1732,6 +1879,7 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
         summary: {
             totalObjects: els.length,
             unknownClasses: unknownClassCount,
+            classUriDisagreements: classUriDisagreementCount,
             unknownAttributes: unknownAttrCount,
             malformedNames: malformedNameCount,
             invalidEnumValues: invalidEnumCount,
@@ -1753,7 +1901,6 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
             signalFlowClassMissing: signalFlowClassMissingCount,
             componentClassMissing: componentClassMissingCount,
             componentClassUriMissing: componentClassUriMissingCount,
-            idMissing: idMissingCount,
             signalFlowClassInvalid: signalFlowClassInvalidCount,
             signalEndpointUnresolved: signalEndpointUnresolvedCount,
             signalEndpointInvalid: signalEndpointInvalidCount,
