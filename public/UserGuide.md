@@ -316,7 +316,7 @@ Codes marked as not implemented in [section 8](#8-validation-code-reference) are
 
 ## 8. Validation Code Reference
 
-82 codes are registered; 45 are implemented today. **Type** is the default the viewer gives the code (Major → Error, Minor → Warning). **Needs** and **Scope** are the gates described in 7.3, and **Implemented** marks the checks that actually run today.
+83 codes are registered; 46 are implemented today. **Type** is the default the viewer gives the code (Major → Error, Minor → Warning). **Needs** and **Scope** are the gates described in 7.3, and **Implemented** marks the checks that actually run today.
 
 The five DEXPI 2.0-only codes (`SER-FMT-03`, `SER-FMT-05`, `MDL-REF-06`, `PRF-LBL-05`, `PRF-SYM-05`) are deliberately absent: this tool can never produce them for a 1.3/1.4 file, and carrying them would report them as not-evaluated for ever.
 
@@ -370,6 +370,7 @@ The five DEXPI 2.0-only codes (`SER-FMT-03`, `SER-FMT-05`, `MDL-REF-06`, `PRF-LB
 | `MDL-REF-03` | Endpoint role violated | References & endpoints | Error | Model (+ profile if DISC) | All files | ✓ |
 | `MDL-REF-04` | Endpoint class cannot be determined | References & endpoints | Warning | Model (+ profile if DISC) | All files | ✓ |
 | `MDL-REF-05` | Object never participates where the model expects it to | References & endpoints | Warning | Model (+ profile if DISC) | All files | ✓ |
+| `MDL-REF-07` | Source/target reference missing, repeated, unresolved or of the wrong class | References & endpoints | Warning | Model | All files | ✓ |
 | `MDL-TAG-01` | Taggable object carries no identifier | Identification | Warning | Model | All files | — |
 | `PRF-EXT-01` | Extension property used off its baseType | Properties | Error | Model + profile | DISC files | ✓ |
 | `PRF-EXT-02` | Extension attribute emitted without the vendor namespace | Properties | Warning | Model + profile | DISC files | — |

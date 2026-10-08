@@ -14,6 +14,8 @@ import { buildXlsxBlob } from "./xlsxBlob.js";
 import { buildLineResolver } from "./lineResolve.js";
 import ErrorExplorer from "./errorExplorer.jsx";
 import { version as APP_VERSION } from "../package.json";
+import SuggestDialog from "./suggestDialog.jsx";
+import { buildSuggestPrompt } from "./suggestPrompt.js";
 import { jsPDF } from "jspdf";
 
 // Issue classification codes reported here come from issueCodes.js, shared by xsdValidate.js and rdlValidate.js.
@@ -772,6 +774,7 @@ export default function App() {
     const [collapsedFolderFiles, setCollapsedFolderFiles] = useState(new Set());
     // Drill-down overlay over the folder run: Layer -> Category -> Code -> documents -> lines.
     const [explorerOpen, setExplorerOpen] = useState(false);
+    const [suggest, setSuggest] = useState(null); // { title, text } for the Suggest... dialog
     // Startup fetch of DEFAULT_PROFILE_URL: "loading" | "loaded" | "error".
     const [defaultProfileState, setDefaultProfileState] = useState("loading");
 
@@ -849,6 +852,25 @@ export default function App() {
     }, [mainXmlText]);
 
     // Re-runs both engines on the loaded file. Each keeps its own status/result (xsdStatus/rdlStatus), both feeding the unified Validation tab.
+    function openSuggest(issue, xmlText, fileName) {
+        setSuggest({
+            title: `${issue.code || ""}${issue.objectId ? ` · ${issue.objectId}` : ""}${fileName ? ` · ${fileName}` : ""}`,
+            text: buildSuggestPrompt({ issue, xmlText, fileName }),
+        });
+    }
+    async function openFolderSuggest(issue) {
+        let text = "";
+        try { text = (await folderFilesRef.current.get(issue.path)?.text()) || ""; } catch { /* folder pick no longer readable */ }
+        openSuggest(issue, text, issue.path);
+    }
+    const suggestBtn = onClick => (
+        <button
+            style={{ ...S.btnSmall, marginLeft: "auto", padding: "1px 6px", fontSize: 11 }}
+            onClick={ev => { ev.stopPropagation(); onClick(); }}
+            title="Build a question about this finding to paste into Copilot"
+        >Suggest…</button>
+    );
+
     function runAllValidation() {
         runXsdValidation(mainXmlText);
         runRdlValidation();
@@ -1819,6 +1841,7 @@ export default function App() {
                                                                 <span style={{ fontFamily: "monospace", fontSize: 11, fontWeight: 700, color: "#24292f" }}>{issue.code}</span>
                                                                 {issue.line != null && <span style={{ fontSize: 11, fontFamily: "monospace", color: "#555" }}>line {issue.line}</span>}
                                                                 {isNavable && <span title="Click to highlight element" style={{ fontSize: 10, color: "#0969da", marginLeft: 2 }}>⊕</span>}
+                                                                {suggestBtn(() => openSuggest(issue, mainXmlText, mainFileName))}
                                                             </div>
                                                             <div style={{ fontSize: 12, fontWeight: 600, color: "#57606a", marginBottom: 2 }}>{issue.codeLabel}</div>
                                                             <div style={{ fontSize: 12, color: "#333", marginBottom: 2 }}>{issue.message}</div>
@@ -1987,6 +2010,7 @@ export default function App() {
                                                             <span style={S.badge(SEV_COLORS[issue.severity])}>{SEV_LABELS[issue.severity]}</span>
                                                             <span style={{ fontFamily: "monospace", fontSize: 11, fontWeight: 700, color: "#24292f" }}>{issue.code}</span>
                                                             {issue.line != null && <span style={{ fontSize: 11, fontFamily: "monospace", color: "#555" }}>line {issue.line}</span>}
+                                                            {suggestBtn(() => openFolderSuggest(issue))}
                                                         </div>
                                                         <div style={{ fontSize: 12, fontWeight: 600, color: "#57606a", marginBottom: 2 }}>{issue.codeLabel}</div>
                                                         <div style={{ fontSize: 12, color: "#333" }}>{issue.message}</div>
@@ -2507,6 +2531,7 @@ export default function App() {
                                             <div style={{ display: "flex", gap: 5, alignItems: "center", marginBottom: 2 }}>
                                                 <span style={S.badge(SEV_COLORS[issue.severity])}>{SEV_LABELS[issue.severity]}</span>
                                                 <span style={{ fontFamily: "monospace", fontSize: 11, fontWeight: 700, color: "#24292f" }}>{issue.code}</span>
+                                                {suggestBtn(() => openSuggest(issue, mainXmlText, mainFileName))}
                                             </div>
                                             <div style={{ fontSize: 12, fontWeight: 600, color: "#57606a", marginBottom: 2 }}>{issue.codeLabel}</div>
                                             <div style={{ fontSize: 12, color: "#333" }}>{issue.message}</div>
@@ -2527,8 +2552,11 @@ export default function App() {
                     fileCount={folderResults.length}
                     onOpenFile={path => { setExplorerOpen(false); openFolderFile(path); }}
                     onClose={() => setExplorerOpen(false)}
+                    onSuggest={openFolderSuggest}
                 />
             )}
+
+            {suggest && <SuggestDialog title={suggest.title} text={suggest.text} onClose={() => setSuggest(null)} />}
         </div>
     );
 }

@@ -314,8 +314,8 @@ function isSymbolElement(el, componentClass) {
 // In the Proteus XML, Source/Target are carried by the InformationFlow's own
 // Association Type="has logical start" (-> Source) / Type="has logical end"
 // (-> Target) elements, whose ItemID points at the referenced object. Both
-// properties are optional (cardinality 0..1); a missing association is not
-// an error, only a present one referencing the wrong ComponentClass is.
+// properties are optional (cardinality 0..1); a missing or repeated
+// association is a MDL-REF-07 warning (see MODEL_ASSOCIATION_REFERENCES).
 const SIGNAL_SOURCE_ROLE = "SignalConveyingFunctionSource";
 const SIGNAL_TARGET_ROLE = "SignalConveyingFunctionTarget";
 
@@ -380,6 +380,36 @@ function resolveSymbolReference(el, registrationIndex, profileFacts) {
     const profileSymbol = registered && profileFacts.symbolNames.has(normalizeSymbolName(registered)) ? normalizeSymbolName(registered) : null;
     return { raw, registered, profileSymbol, usageKey: registered };
 }
+
+// ---- Model reference endpoint check (MDL-REF-07) -------------------------
+//
+// Source/target-style 0..1 ReferenceProperties of the DEXPI model, as
+// carried in the Proteus XML. Each is optional in the model, so every
+// finding is a warning:
+//   missing    - no reference at all
+//   multiple   - more than one (upper bound is 1)
+//   unresolved - the ItemID/FromID/ToID matches no object in the file
+//   class      - the referenced object's ComponentClass does not descend
+//                from the property's value type
+// SignalConveyingFunction Source/Target only get missing/multiple here;
+// unresolved/class are already MDL-REF-04/MDL-REF-03 above.
+// Systems is only checked for ActuatingFunction; the
+// ProcessSignalGeneratingFunction and ActuatingElectricalFunction Systems
+// references are not used.
+const MODEL_ASSOCIATION_REFERENCES = [
+    { owner: "SignalConveyingFunction", prop: "Source", assoc: "has logical start", role: null },
+    { owner: "SignalConveyingFunction", prop: "Target", assoc: "has logical end", role: null },
+    { owner: "ProcessSignalGeneratingFunction", prop: "SensingLocation", assoc: "is located in", role: "SensingLocation" },
+    { owner: "ActuatingFunction", prop: "ActuatingLocation", assoc: "is located in", role: "PipingNetworkSegment" },
+    { owner: "ActuatingFunction", prop: "Systems", assoc: "is fulfilled by", role: "ActuatingSystem" },
+    { owner: "ActuatingElectricalFunction", prop: "ActuatingElectricalLocation", assoc: "is located in", role: "ActuatingElectricalLocation" },
+];
+// PipingNetworkSegment SourceItem/TargetItem: <Connection FromID/ToID>.
+// Another PipingNetworkSegment is accepted as an endpoint (segment-to-segment).
+const SEGMENT_CONNECTION_REFERENCES = [
+    { prop: "SourceItem", attr: "FromID", role: "PipingSourceItem" },
+    { prop: "TargetItem", attr: "ToID", role: "PipingTargetItem" },
+];
 
 // ---- ProcessInstrumentationFunction Source/Target coverage check ---------
 //
@@ -1003,7 +1033,8 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
         abstractClassUsedCount = 0, abstractComponentClassUsedCount = 0,
         genericAttributesNumberCheckedCount = 0, genericAttributesNumberMismatchCount = 0,
         persistentIdContextCheckedCount = 0, persistentIdContextDuplicateCount = 0,
-        referenceCheckedCount = 0, referenceUnresolvedCount = 0, cycleCount = 0;
+        referenceCheckedCount = 0, referenceUnresolvedCount = 0, cycleCount = 0,
+        modelReferenceCheckedCount = 0, modelReferenceIssueCount = 0;
 
     // ---- GenericAttributes Number/actual-count mismatch check -------------
     //
@@ -1446,6 +1477,67 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
                     : `<${el.tagName}> has no ComponentClassURI (RDL reference).`,
             });
         }
+    });
+
+
+    // Model reference endpoint check - see MODEL_ASSOCIATION_REFERENCES /
+    // SEGMENT_CONNECTION_REFERENCES above.
+    const reportModelReference = (objectId, componentClass, category, message) => {
+        modelReferenceIssueCount++;
+        findings.push({ severity: "warning", code: "MDL-REF-07", category, objectId, componentClass, message });
+    };
+    const checkReferenceTargets = (objectId, ownerClass, prop, ids, role, acceptSegment) => {
+        if (ids.length === 0) {
+            reportModelReference(objectId, ownerClass, "reference-missing", `${ownerClass} has no ${prop} reference.`);
+            return;
+        }
+        if (ids.length > 1) {
+            reportModelReference(objectId, ownerClass, "reference-multiple", `${ownerClass} has ${ids.length} ${prop} references (${ids.join(", ")}) - at most 1 is allowed.`);
+        }
+        if (!role) return;
+        ids.forEach(itemId => {
+            const refEl = elementById.get(itemId);
+            if (!refEl) {
+                reportModelReference(objectId, ownerClass, "reference-unresolved", `${prop} reference "${itemId}" does not resolve to any object in the document.`);
+                return;
+            }
+            if (acceptSegment && refEl.tagName === "PipingNetworkSegment") return;
+            const refClass = refEl.getAttribute("ComponentClass");
+            // Unknown or missing class is reported by MDL-CLS-01/05.
+            if (!refClass || !rdl.classes[refClass]) return;
+            if (!classDescendsFrom(refClass, role)) {
+                reportModelReference(objectId, ownerClass, "reference-class", `${prop} reference "${itemId}" has ComponentClass "${refClass}", which is not a ${role}.`);
+            }
+        });
+    };
+    const associationIds = (el, type) => directChildrenByTag(el, "Association")
+        .filter(a => (a.getAttribute("Type") || "") === type)
+        .map(a => a.getAttribute("ItemID") || "")
+        .filter(Boolean);
+
+    const referenceOwners = new Set(els);
+    collectInformationFlowElements(mainDoc).forEach(el => referenceOwners.add(el));
+    referenceOwners.forEach(el => {
+        const objectId = el.getAttribute("ID");
+        const componentClass = el.getAttribute("ComponentClass") || "";
+        const ownerClass = el.tagName === "InformationFlow" ? (componentClass || "SignalConveyingFunction") : componentClass;
+        MODEL_ASSOCIATION_REFERENCES.forEach(rule => {
+            const applies = rule.owner === "SignalConveyingFunction"
+                ? el.tagName === "InformationFlow"
+                : classDescendsFrom(componentClass, rule.owner);
+            if (!applies) return;
+            modelReferenceCheckedCount++;
+            checkReferenceTargets(objectId, ownerClass, rule.prop, associationIds(el, rule.assoc), rule.role, false);
+        });
+    });
+    qsa(mainDoc, "PipingNetworkSegment[ID]").forEach(seg => {
+        const objectId = seg.getAttribute("ID");
+        const connections = directChildrenByTag(seg, "Connection");
+        SEGMENT_CONNECTION_REFERENCES.forEach(rule => {
+            modelReferenceCheckedCount++;
+            const ids = connections.map(c => c.getAttribute(rule.attr) || "").filter(Boolean);
+            checkReferenceTargets(objectId, "PipingNetworkSegment", rule.prop, ids, rule.role, true);
+        });
     });
 
     els.forEach(el => {
@@ -1923,6 +2015,8 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
             textTemplateAttrInvalid: textTemplateAttrInvalidCount,
             abstractClassUsed: abstractClassUsedCount,
             abstractComponentClassUsed: abstractComponentClassUsedCount,
+            modelReferencesChecked: modelReferenceCheckedCount,
+            modelReferenceIssues: modelReferenceIssueCount,
         },
         // Only findings whose code was actually evaluated; suppressedFindings
         // above counts what was withheld.

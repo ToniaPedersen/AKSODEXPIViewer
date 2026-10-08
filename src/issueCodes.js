@@ -478,6 +478,17 @@ export const ISSUE_CODES = {
         "drivenBy": null,
         "implemented": true
     },
+    "MDL-REF-07": {
+        "code": "MDL-REF-07",
+        "layer": "MDL",
+        "category": "References & endpoints",
+        "title": "Source/target reference missing, repeated, unresolved or of the wrong class",
+        "severity": "minor",
+        "needs": "model",
+        "scope": "all",
+        "drivenBy": null,
+        "implemented": true
+    },
     "MDL-TAG-01": {
         "code": "MDL-TAG-01",
         "layer": "MDL",

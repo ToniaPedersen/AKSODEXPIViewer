@@ -92,7 +92,7 @@ function pathOf(node) {
     return chainOf(node).slice(1).map(n => n.key);
 }
 
-export default function ErrorExplorer({ issues, files, folderName, fileCount, onOpenFile, onClose }) {
+export default function ErrorExplorer({ issues, files, folderName, fileCount, onOpenFile, onClose, onSuggest }) {
     const [sevFilter, setSevFilter] = useState("All");
     const [metric, setMetric] = useState("n"); // n | docs
     const [path, setPath] = useState([]);
@@ -249,6 +249,7 @@ export default function ErrorExplorer({ issues, files, folderName, fileCount, on
                                                 <span style={{ ...X.mono, color: "#0969da", fontWeight: 700 }}>{issue.line != null ? `line ${issue.line}` : "line n/a"}</span>
                                                 {issue.location && <span style={{ ...X.mono, color: "#57606a" }}>{issue.location}</span>}
                                                 {issue.objectId && <span style={{ ...X.mono, color: "#8b949e" }}>{issue.objectId}</span>}
+                                                {onSuggest && <button style={{ ...X.btn, marginLeft: "auto", padding: "1px 6px", fontSize: 11 }} onClick={() => onSuggest(issue)} title="Build a question about this finding to paste into Copilot">Suggest…</button>}
                                             </div>
                                             <div style={{ fontSize: 12, color: "#333" }}>{issue.message}</div>
                                             {issue.line != null && (
