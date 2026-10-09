@@ -785,6 +785,7 @@ export default function App() {
     const mainInputRef = useRef(null);
     const discInputRef = useRef(null);
     const bgInputRef = useRef(null);
+    const bgGenRef = useRef(0); // bumped on each BG load/remove; a stale load is dropped
     const folderInputRef = useRef(null);
     // Picked files kept by path, so a file can be reopened from its row in the Folder tab without re-picking the folder.
     const folderFilesRef = useRef(new Map());
@@ -991,11 +992,14 @@ export default function App() {
 
     const baseName = (name) => name.replace(/\.[^.]+$/, "").toLowerCase();
 
-    // The XML and its same-named .png can be picked together; the .png is loaded as the BG image.
+    // The same-named .png is the BG image: picked together with the XML, or else found in the last validated folder.
     async function handleMainFile(e) {
         const picked = [...(e.target.files || [])];
+        e.target.value = "";
         const file = picked.find(f => !/\.png$/i.test(f.name)); if (!file) return;
-        const png = picked.find(f => /\.png$/i.test(f.name) && baseName(f.name) === baseName(file.name));
+        removeBg();
+        const png = picked.find(f => /\.png$/i.test(f.name) && baseName(f.name) === baseName(file.name))
+            || await folderPngByName(file.name);
         const txt = await file.text(); setMainXmlText(txt); setMainFileLoaded(true);
         setMainFileName(file.name);
         setXsdStatus("idle"); setXsdResult(null); setXsdError("");
@@ -1160,6 +1164,8 @@ export default function App() {
     async function runFolderValidation(files, name, pngs) {
         setLeftTab("folder");
         setFolderName(name || "");
+        // The folder grant covers its .png files too: kept for the BG image of any file opened from it.
+        folderPngsRef.current = pngs || new Map();
         if (!files.length) { setFolderResults([]); setFolderProgress(null); return; }
         // Without a profile the PRF and GEO codes, and every DISC-scoped check,
         // produce nothing - confirm before running the whole folder that way.
@@ -1173,7 +1179,6 @@ export default function App() {
             if (!go) { setFolderProgress(null); return; }
         }
         folderFilesRef.current = new Map(files.map(f => [f.relPath || f.webkitRelativePath || f.name, f]));
-        folderPngsRef.current = pngs || new Map();
         folderCancelRef.current = false;
         setFolderResults(null);
         setFolderProgress({ done: 0, total: files.length, name: files[0].name });
@@ -1190,6 +1195,7 @@ export default function App() {
     async function openFolderFile(path) {
         const file = folderFilesRef.current.get(path);
         if (!file) return;
+        removeBg();
         const txt = await file.text();
         setMainXmlText(txt); setMainFileLoaded(true); setMainFileName(file.name);
         setXsdStatus("idle"); setXsdResult(null); setXsdError("");
@@ -1268,7 +1274,17 @@ export default function App() {
         e.target.value = "";
     }
 
+    // .png of the last validated folder with the same base name, when exactly one matches.
+    async function folderPngByName(fileName) {
+        const want = baseName(fileName);
+        const hits = [...folderPngsRef.current.entries()].filter(([k]) => baseName(k.split("/").pop()) === want);
+        if (hits.length !== 1) return null;
+        const png = hits[0][1];
+        try { return png?.getFile ? await png.getFile() : png; } catch { return null; }
+    }
+
     function removeBg() {
+        bgGenRef.current++;
         if (bgObjectUrlRef.current) { URL.revokeObjectURL(bgObjectUrlRef.current); bgObjectUrlRef.current = null; }
         setBgImage(null); setShowBgControls(false);
     }
@@ -1280,8 +1296,10 @@ export default function App() {
     }
 
     async function loadBgFile(file, { auto = false } = {}) {
+        const gen = ++bgGenRef.current;
         try {
             const bytes = new Uint8Array(await file.arrayBuffer());
+            if (gen !== bgGenRef.current) return false;
             const isPng = isPngBytes(bytes);
             // Looks for a placement embedded in this PNG's metadata and uses it in place of the auto-fit default when present.
             const embedded = isPng ? readPngEmbeddedPlacement(bytes) : null;
@@ -1299,8 +1317,8 @@ export default function App() {
                 // sourceBytes/isPng/fileName/embeddedPlacement support the Clear/Download-default controls; see clearBgDefault()/downloadBgPlacementPng().
                 sourceBytes: bytes, isPng, fileName: file.name, embeddedPlacement: embedded,
             };
-            probe.onload = () => setBgImage({ ...base, naturalWidth: probe.naturalWidth, naturalHeight: probe.naturalHeight });
-            probe.onerror = () => setBgImage({ ...base, naturalWidth: 0, naturalHeight: 0 });
+            probe.onload = () => { if (gen === bgGenRef.current) setBgImage({ ...base, naturalWidth: probe.naturalWidth, naturalHeight: probe.naturalHeight }); };
+            probe.onerror = () => { if (gen === bgGenRef.current) setBgImage({ ...base, naturalWidth: 0, naturalHeight: 0 }); };
             probe.src = src;
             return true;
         } catch (err) {

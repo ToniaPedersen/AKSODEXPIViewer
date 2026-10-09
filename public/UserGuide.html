@@ -71,7 +71,7 @@ footer{margin-top:60px;padding-top:14px;border-top:1px solid var(--line);color:v
 <main>
 <h1 id="dexpi-14-disc-profile-viewer-user-guide">DEXPI 1.4 / DISC Profile Viewer — User Guide</h1>
 <p>A browser-based viewer and validation tool for legacy <strong>DEXPI 1.4 / Proteus 4.1.1</strong> XML files, rendered and checked using <strong>DEXPI 2.x profile</strong> symbols, classes and attributes by way of a loaded <code>DiscProfile.xml</code>.</p>
-<p>Developed by <strong>Tonia Pedersen</strong>. Version <strong>2.4</strong>. See <code>ChangeLog_2.3_to_2.4.md</code> for what changed since 2.3.</p>
+<p>Developed by <strong>Tonia Pedersen</strong>. Version <strong>2.5</strong>. See <code>ChangeLog_2.4_to_2.5.md</code> for what changed since 2.4.</p>
 <hr />
 <hr />
 <h2 id="1-introduction">1. Introduction</h2>
@@ -94,7 +94,7 @@ npm run dev
 <h3 id="22-loading-files">2.2 Loading files</h3>
 <p>In the left panel:</p>
 <ol>
-<li><strong>Load Proteus XML</strong> — the drawing renders immediately and the Topology tree populates. Required. Pick the <code>.xml</code> together with its same-named <code>.png</code> to load that image as the background (see 5.7).</li>
+<li><strong>Load Proteus XML</strong> — the drawing renders immediately and the Topology tree populates. Required. The file dialog accepts <code>.xml</code> and <code>.png</code>: Ctrl+click the <code>.xml</code> and its same-named <code>.png</code> to load that image as the background (see 5.7). Pick only the <code>.xml</code> and the <code>.png</code> is taken from the last folder given to <strong>Validate…</strong>, when it is there.</li>
 <li><strong>Load DiscProfile.xml</strong> — optional, and usually unnecessary, because one is already loaded (see below). Picking a file here replaces the default, which is what you want when checking against a profile revision of your own. A profile resolves symbols, classes and attribute usage and switches on every profile-dependent check; the Proteus file is re-parsed automatically when a profile is added or removed.</li>
 </ol>
 <p>Both buttons show a ✓ and turn blue once loaded, and the file names are listed underneath. The small <strong>x</strong> next to the profile name unloads the profile and returns to plain DEXPI viewing.</p>
@@ -143,6 +143,7 @@ npm run dev
 <li><strong>All / Error / Warning / Info</strong> chips filter the list by type and show the count for each.</li>
 <li>Issues are <strong>grouped by code</strong>. The group header carries the type badge, the code, the code's title and the number of issues in it; click it to fold the group, or use <strong>Expand all / Collapse all</strong>.</li>
 <li>Each row shows the type badge, the code, the source line where one is known, the code's title, the specific message, and the object ID. A row marked ⊕ can be clicked to select that object — the drawing highlights it and the right panel switches to its Issues tab. An object with no graphics is marked <strong>⚠ no symbol</strong> and is not clickable.</li>
+<li><strong>Suggest…</strong>, at the right of each row, builds a question about the finding to paste into Copilot (<a href="#45-suggest-help-on-a-finding">4.5</a>).</li>
 </ul>
 <p>Two notices can appear above the list:</p>
 <ul>
@@ -168,11 +169,13 @@ npm run dev
 <li>The header shows the folder name, the total issue count, how many files were checked, and which profile was used.</li>
 <li><strong>All / Error / Warning / Info</strong> chips filter across every file at once; a file with nothing left after filtering drops out of the list.</li>
 <li>Each file's header shows its finding count, or a green <strong>clean</strong> / red <strong>failed</strong> badge. Click it to fold the file; <strong>Expand all / Collapse all</strong> work on the whole run.</li>
-<li><strong>Open</strong> on any file loads it into the viewer, so a finding can be traced on the drawing.</li>
+<li><strong>Open</strong> on any file loads it into the viewer, with its same-named <code>.png</code> as the background, so a finding can be traced on the drawing.</li>
+<li><strong>Suggest…</strong> on any finding builds a question about it to paste into Copilot (<a href="#45-suggest-help-on-a-finding">4.5</a>).</li>
 <li><strong>Explorer</strong> opens the drill-down view over the whole run — Layer → Category → Code, and from a code into the documents and lines behind it (<a href="#44-error-explorer">4.4</a>).</li>
 <li><strong>CSV</strong> and <strong>Excel</strong> download the whole run as one file — the only file the browser writes, and it goes to your Downloads folder, not back into the folder you picked. Both use the column layout in <a href="#9-csv-and-excel-export">section 9</a>.</li>
 </ul>
 <p>A file that cannot be parsed appears with its error instead of findings, rather than dropping out of the run.</p>
+<p>The folder permission also covers the folder's <code>.png</code> files. They are remembered as soon as access is granted, even if the run is cancelled, so any file later opened from that folder — from the Folder tab, the explorer, or <strong>Load Proteus XML</strong> — gets its same-named <code>.png</code> as the background (5.7).</p>
 <h3 id="44-error-explorer">4.4 Error explorer</h3>
 <p><strong>Explorer</strong>, in the Folder tab's button row, opens a drill-down over the findings of the whole folder run in a panel a little over half the width of the window. <strong>Esc</strong>, <strong>Close</strong> or a click outside it returns to the viewer; the run, the filters and the viewer's state are untouched.</p>
 <p>The explorer answers a different question from the Folder tab. The Folder tab asks <em>what is wrong with this file</em>; the explorer asks <em>what is wrong across the set, and where</em>.</p>
@@ -187,10 +190,28 @@ npm run dev
 <li>the <strong>location</strong> — the element, and the attribute where the message names one;</li>
 <li>the object ID, where the finding carries one;</li>
 <li>the message;</li>
-<li>the <strong>source line itself</strong>, read from the file you picked and shown as it appears in the XML.</li>
+<li>the <strong>source line itself</strong>, read from the file you picked and shown as it appears in the XML;</li>
+<li><strong>Suggest…</strong>, which builds a question about the finding to paste into Copilot (<a href="#45-suggest-help-on-a-finding">4.5</a>).</li>
 </ul>
 <p>Source lines are read once per document, straight from the folder pick — no file is re-read from disk until you expand it, and nothing is re-validated. <strong>Open</strong>, on a document row, loads that file into the viewer and closes the explorer, so a finding can be followed onto the drawing.</p>
 <p><strong>The summary panel</strong> on the right tracks whatever is in focus: occurrences, documents hit, the per-type split, and — for a single code — its severity, what the check needs, its scope, and the documents carrying the most hits.</p>
+<h3 id="45-suggest-help-on-a-finding">4.5 Suggest… — help on a finding</h3>
+<p><strong>Suggest…</strong> appears on every finding: in the Validation tab, the Folder tab and the error explorer. It opens <strong>Suggest a fix</strong>, a ready-made question about that finding that you can edit and paste into Microsoft Copilot or another assistant. The app has no AI built in and sends nothing; the text only leaves the browser when you paste it somewhere.</p>
+<p>The text contains:</p>
+<ul>
+<li>the finding — code and title, category, type, message, object ID with its <code>ComponentClass</code>, file name and line;</li>
+<li>the element's XML (up to 60 lines), or the lines around the reported line when the finding has no object;</li>
+<li>the DEXPI 1.4 model for the element's class — supertypes and up to 40 properties with their multiplicity;</li>
+<li>a short note on how the Proteus XML carries properties, references, piping connections and sub-components.</li>
+</ul>
+<p><strong>Suggested fix.</strong> For an MDL-REF-07 <em>"has no … reference"</em> finding where the missing reference can be worked out from the file, the text gives the corrected XML instead of the XML as it is, and asks the assistant to check it:</p>
+<ul>
+<li>the element with the missing <code>&lt;Association&gt;</code> added;</li>
+<li>the matching reverse association on the other object, when that is missing too;</li>
+<li>why that object was chosen. <strong>ActuatingLocation</strong> is taken from the ActuatingSystem the function is fulfilled by, the valve that system refers to, and the PipingNetworkSegment the valve sits in. <strong>Source</strong>, <strong>Target</strong>, <strong>Systems</strong>, <strong>SensingLocation</strong> and <strong>ActuatingElectricalLocation</strong> are taken from the one object that already carries the reverse association.</li>
+</ul>
+<p>For every other finding the text asks the assistant to explain it and show the corrected XML, staying within the Proteus 4.1.1 schema and the DEXPI 1.4 model, and to say what is missing rather than guess.</p>
+<p>Buttons: <strong>Copy &amp; open Copilot</strong> copies the text and opens Microsoft 365 Copilot Chat in a new tab; <strong>Copy</strong> copies only; <strong>Close</strong> or <strong>Esc</strong> closes the dialog. Check any answer against the file before changing it.</p>
 <h2 id="5-centre-panel-pid-drawing">5. Centre Panel — P&amp;ID Drawing</h2>
 <p>The drawing number, name and subtitle from the file are shown at the top left of the toolbar.</p>
 <h3 id="51-navigation">5.1 Navigation</h3>
@@ -388,7 +409,12 @@ npm run dev
 </tr>
 </tbody>
 </table></div>
-<p>Opening a DEXPI file removes the previous background image and loads the <code>.png</code> with the same name, if there is one, with BG Controls open and Blend at 0.35 (image at 65% opacity). From the Folder tab the <code>.png</code> is taken from the picked folder; with <strong>Load Proteus XML</strong>, pick the <code>.xml</code> and its <code>.png</code> together.</p>
+<p>Opening a DEXPI file first removes the current background image, then loads the <code>.png</code> with the same name, if there is one, with BG Controls open and Blend at 0.35 (image at 65% opacity). The <code>.png</code> is found as follows:</p>
+<ul>
+<li><strong>Load Proteus XML</strong> — the <code>.png</code> picked together with the <code>.xml</code>; if none was picked, the same-named <code>.png</code> in the last folder given to <strong>Validate…</strong> (used only when exactly one matches).</li>
+<li><strong>Open</strong> in the Folder tab or the error explorer — the <code>.png</code> next to the file in the validated folder.</li>
+</ul>
+<p>A browser cannot read a file next to one you picked on its own, so outside a validated folder the <code>.png</code> has to be picked together with the <code>.xml</code>.</p>
 <p>The image sits in the same coordinate space as the drawing, so it pans and zooms in lockstep and stays aligned at any zoom. Only PNG can carry an embedded placement — other image types re-fit each time they are loaded.</p>
 <h3 id="58-draw-order-send-to-back">5.8 Draw order — Send to Back</h3>
 <p>Objects are painted in file order, and whatever paints last sits on top for both display and clicking. When a large symbol covers smaller items, select the covering object and click <strong>⇩ Send to Back</strong> in the right panel's Object tab: its graphics move behind everything else and the items underneath become clickable. The button becomes <strong>↺ Restore order</strong> for that object, and <strong>Reset Z-Order (n)</strong> in the centre toolbar restores all of them at once.</p>
@@ -1468,6 +1494,8 @@ The in-browser schema validator could not hold the file. Its memory limit is siz
 The file may reference profile symbols that are not loaded. Load the matching <code>DiscProfile.xml</code> — the file is re-parsed automatically when a profile is added.</p>
 <p><strong>An item cannot be clicked in the drawing</strong>
 Something is painted over it. Select the covering object and use <strong>⇩ Send to Back</strong> (5.8).</p>
+<p><strong>Background image does not load with the file</strong>
+The <code>.png</code> must have the same name as the <code>.xml</code> (case is ignored). With <strong>Load Proteus XML</strong>, Ctrl+click both files in the dialog, or validate the folder first with <strong>Validate…</strong> so its <code>.png</code> files can be found.</p>
 <p><strong>Background image will not line up, or resets every time</strong>
 Offsets are in drawing units, not pixels; <strong>Reset fit</strong> returns to the auto-fit placement. Only PNG can carry a saved placement, and only the copy downloaded with <strong>⬇ Download PNG with placement</strong> carries it — the original file is never modified.</p>
 <p><strong>Excel shows garbled characters in the CSV</strong>

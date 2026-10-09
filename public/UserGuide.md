@@ -2,7 +2,7 @@
 
 A browser-based viewer and validation tool for legacy **DEXPI 1.4 / Proteus 4.1.1** XML files, rendered and checked using **DEXPI 2.x profile** symbols, classes and attributes by way of a loaded `DiscProfile.xml`.
 
-Developed by **Tonia Pedersen**. Version **2.4**. See `ChangeLog_2.3_to_2.4.md` for what changed since 2.3.
+Developed by **Tonia Pedersen**. Version **2.5**. See `ChangeLog_2.4_to_2.5.md` for what changed since 2.4.
 
 ---
 
@@ -52,7 +52,7 @@ This guide is generated: edit `public/UserGuide.md`, then run `python scripts/bu
 
 In the left panel:
 
-1. **Load Proteus XML** — the drawing renders immediately and the Topology tree populates. Required. Pick the `.xml` together with its same-named `.png` to load that image as the background (see 5.7).
+1. **Load Proteus XML** — the drawing renders immediately and the Topology tree populates. Required. The file dialog accepts `.xml` and `.png`: Ctrl+click the `.xml` and its same-named `.png` to load that image as the background (see 5.7). Pick only the `.xml` and the `.png` is taken from the last folder given to **Validate…**, when it is there.
 2. **Load DiscProfile.xml** — optional, and usually unnecessary, because one is already loaded (see below). Picking a file here replaces the default, which is what you want when checking against a profile revision of your own. A profile resolves symbols, classes and attribute usage and switches on every profile-dependent check; the Proteus file is re-parsed automatically when a profile is added or removed.
 
 Both buttons show a ✓ and turn blue once loaded, and the file names are listed underneath. The small **x** next to the profile name unloads the profile and returns to plain DEXPI viewing.
@@ -99,6 +99,7 @@ Both engines' results merged into one list, populated as soon as a file is opene
 - **All / Error / Warning / Info** chips filter the list by type and show the count for each.
 - Issues are **grouped by code**. The group header carries the type badge, the code, the code's title and the number of issues in it; click it to fold the group, or use **Expand all / Collapse all**.
 - Each row shows the type badge, the code, the source line where one is known, the code's title, the specific message, and the object ID. A row marked ⊕ can be clicked to select that object — the drawing highlights it and the right panel switches to its Issues tab. An object with no graphics is marked **⚠ no symbol** and is not clickable.
+- **Suggest…**, at the right of each row, builds a question about the finding to paste into Copilot ([4.5](#45-suggest-help-on-a-finding)).
 
 Two notices can appear above the list:
 
@@ -128,11 +129,14 @@ Results arrive as one list grouped by file:
 - The header shows the folder name, the total issue count, how many files were checked, and which profile was used.
 - **All / Error / Warning / Info** chips filter across every file at once; a file with nothing left after filtering drops out of the list.
 - Each file's header shows its finding count, or a green **clean** / red **failed** badge. Click it to fold the file; **Expand all / Collapse all** work on the whole run.
-- **Open** on any file loads it into the viewer, so a finding can be traced on the drawing.
+- **Open** on any file loads it into the viewer, with its same-named `.png` as the background, so a finding can be traced on the drawing.
+- **Suggest…** on any finding builds a question about it to paste into Copilot ([4.5](#45-suggest-help-on-a-finding)).
 - **Explorer** opens the drill-down view over the whole run — Layer → Category → Code, and from a code into the documents and lines behind it ([4.4](#44-error-explorer)).
 - **CSV** and **Excel** download the whole run as one file — the only file the browser writes, and it goes to your Downloads folder, not back into the folder you picked. Both use the column layout in [section 9](#9-csv-and-excel-export).
 
 A file that cannot be parsed appears with its error instead of findings, rather than dropping out of the run.
+
+The folder permission also covers the folder's `.png` files. They are remembered as soon as access is granted, even if the run is cancelled, so any file later opened from that folder — from the Folder tab, the explorer, or **Load Proteus XML** — gets its same-named `.png` as the background (5.7).
 
 ### 4.4 Error explorer
 
@@ -151,11 +155,33 @@ The explorer answers a different question from the Folder tab. The Folder tab as
 - the **location** — the element, and the attribute where the message names one;
 - the object ID, where the finding carries one;
 - the message;
-- the **source line itself**, read from the file you picked and shown as it appears in the XML.
+- the **source line itself**, read from the file you picked and shown as it appears in the XML;
+- **Suggest…**, which builds a question about the finding to paste into Copilot ([4.5](#45-suggest-help-on-a-finding)).
 
 Source lines are read once per document, straight from the folder pick — no file is re-read from disk until you expand it, and nothing is re-validated. **Open**, on a document row, loads that file into the viewer and closes the explorer, so a finding can be followed onto the drawing.
 
 **The summary panel** on the right tracks whatever is in focus: occurrences, documents hit, the per-type split, and — for a single code — its severity, what the check needs, its scope, and the documents carrying the most hits.
+
+### 4.5 Suggest… — help on a finding
+
+**Suggest…** appears on every finding: in the Validation tab, the Folder tab and the error explorer. It opens **Suggest a fix**, a ready-made question about that finding that you can edit and paste into Microsoft Copilot or another assistant. The app has no AI built in and sends nothing; the text only leaves the browser when you paste it somewhere.
+
+The text contains:
+
+- the finding — code and title, category, type, message, object ID with its `ComponentClass`, file name and line;
+- the element's XML (up to 60 lines), or the lines around the reported line when the finding has no object;
+- the DEXPI 1.4 model for the element's class — supertypes and up to 40 properties with their multiplicity;
+- a short note on how the Proteus XML carries properties, references, piping connections and sub-components.
+
+**Suggested fix.** For an MDL-REF-07 *"has no … reference"* finding where the missing reference can be worked out from the file, the text gives the corrected XML instead of the XML as it is, and asks the assistant to check it:
+
+- the element with the missing `<Association>` added;
+- the matching reverse association on the other object, when that is missing too;
+- why that object was chosen. **ActuatingLocation** is taken from the ActuatingSystem the function is fulfilled by, the valve that system refers to, and the PipingNetworkSegment the valve sits in. **Source**, **Target**, **Systems**, **SensingLocation** and **ActuatingElectricalLocation** are taken from the one object that already carries the reverse association.
+
+For every other finding the text asks the assistant to explain it and show the corrected XML, staying within the Proteus 4.1.1 schema and the DEXPI 1.4 model, and to say what is missing rather than guess.
+
+Buttons: **Copy & open Copilot** copies the text and opens Microsoft 365 Copilot Chat in a new tab; **Copy** copies only; **Close** or **Esc** closes the dialog. Check any answer against the file before changing it.
 
 ## 5. Centre Panel — P&ID Drawing
 
@@ -237,7 +263,12 @@ With a profile loaded, a **Profile labels** checkbox appears.
 | Clear Default | Shown once a loaded PNG carries an embedded placement; downloads a copy with it removed. |
 | Remove | Unloads the image. |
 
-Opening a DEXPI file removes the previous background image and loads the `.png` with the same name, if there is one, with BG Controls open and Blend at 0.35 (image at 65% opacity). From the Folder tab the `.png` is taken from the picked folder; with **Load Proteus XML**, pick the `.xml` and its `.png` together.
+Opening a DEXPI file first removes the current background image, then loads the `.png` with the same name, if there is one, with BG Controls open and Blend at 0.35 (image at 65% opacity). The `.png` is found as follows:
+
+- **Load Proteus XML** — the `.png` picked together with the `.xml`; if none was picked, the same-named `.png` in the last folder given to **Validate…** (used only when exactly one matches).
+- **Open** in the Folder tab or the error explorer — the `.png` next to the file in the validated folder.
+
+A browser cannot read a file next to one you picked on its own, so outside a validated folder the `.png` has to be picked together with the `.xml`.
 
 The image sits in the same coordinate space as the drawing, so it pans and zooms in lockstep and stays aligned at any zoom. Only PNG can carry an embedded placement — other image types re-fit each time they are loaded.
 
@@ -493,6 +524,9 @@ The file may reference profile symbols that are not loaded. Load the matching `D
 
 **An item cannot be clicked in the drawing**
 Something is painted over it. Select the covering object and use **⇩ Send to Back** (5.8).
+
+**Background image does not load with the file**
+The `.png` must have the same name as the `.xml` (case is ignored). With **Load Proteus XML**, Ctrl+click both files in the dialog, or validate the folder first with **Validate…** so its `.png` files can be found.
 
 **Background image will not line up, or resets every time**
 Offsets are in drawing units, not pixels; **Reset fit** returns to the auto-fit placement. Only PNG can carry a saved placement, and only the copy downloaded with **⬇ Download PNG with placement** carries it — the original file is never modified.
