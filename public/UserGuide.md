@@ -2,7 +2,7 @@
 
 A browser-based viewer and validation tool for legacy **DEXPI 1.4 / Proteus 4.1.1** XML files, rendered and checked using **DEXPI 2.x profile** symbols, classes and attributes by way of a loaded `DiscProfile.xml`.
 
-Developed by **Tonia Pedersen**. Version **2.5**. See `ChangeLog_2.4_to_2.5.md` for what changed since 2.4.
+Developed by **Tonia Pedersen**. Version **2.6**. See `ChangeLog_2.5_to_2.6.md` for what changed since 2.5.
 
 ---
 
@@ -164,24 +164,15 @@ Source lines are read once per document, straight from the folder pick — no fi
 
 ### 4.5 Suggest… — help on a finding
 
-**Suggest…** appears on every finding: in the Validation tab, the Folder tab and the error explorer. It opens **Suggest a fix**, a ready-made question about that finding that you can edit and paste into Microsoft Copilot or another assistant. The app has no AI built in and sends nothing; the text only leaves the browser when you paste it somewhere.
+**Suggest…** appears on every finding: in the Validation tab, the Folder tab and the error explorer. It opens **Suggest a fix**. The app has no AI built in and sends nothing; text only leaves the browser when you paste it somewhere.
 
-The text contains:
+The dialog shows:
 
-- the finding — code and title, category, type, message, object ID with its `ComponentClass`, file name and line;
-- the element's XML (up to 60 lines), or the lines around the reported line when the finding has no object;
-- the DEXPI 1.4 model for the element's class — supertypes and up to 40 properties with their multiplicity;
-- a short note on how the Proteus XML carries properties, references, piping connections and sub-components.
+- **In the file** — the element the finding is about, with line numbers. The lines the finding refers to are marked **red**; long stretches in between are folded.
+- **Suggested fix** or **Expected syntax** — the change as a diff: **red “−”** lines are removed or replaced, **green “+”** lines are added, plain lines are context. When the fix can be worked out from the file (a missing reference that the other object already carries, a CenterLine to split or a small gap to close, a coordinate off the grid, a class/URI pair, a symbol registration to move to the ShapeCatalogue, the segment or instrument an element belongs to) the values are filled in; otherwise the rows show the syntax with `{placeholders}` to fill in. Notes below the rows explain the rule.
+- **Question for Copilot** (folded) — an editable question with the finding, the XML (related lines marked `>>`), the suggested change as a `diff` block, the DEXPI 1.4 model of the class, the Proteus conventions and links to the reference sources (DEXPI 1.4 XMI, DiscProfile.xml, the Proteus 4.1.1 schema, the ProteusXML repository).
 
-**Suggested fix.** For an MDL-REF-07 *"has no … reference"* finding where the missing reference can be worked out from the file, the text gives the corrected XML instead of the XML as it is, and asks the assistant to check it:
-
-- the element with the missing `<Association>` added;
-- the matching reverse association on the other object, when that is missing too;
-- why that object was chosen. **ActuatingLocation** is taken from the ActuatingSystem the function is fulfilled by, the valve that system refers to, and the PipingNetworkSegment the valve sits in. **Source**, **Target**, **Systems**, **SensingLocation** and **ActuatingElectricalLocation** are taken from the one object that already carries the reverse association.
-
-For every other finding the text asks the assistant to explain it and show the corrected XML, staying within the Proteus 4.1.1 schema and the DEXPI 1.4 model, and to say what is missing rather than guess.
-
-Buttons: **Copy & open Copilot** copies the text and opens Microsoft 365 Copilot Chat in a new tab; **Copy** copies only; **Close** or **Esc** closes the dialog. Check any answer against the file before changing it.
+Buttons: **Copy & open Copilot** copies the question and opens Microsoft 365 Copilot Chat in a new tab; **Copy** copies only; **Close** or **Esc** closes the dialog. Check any suggestion against the file before changing it.
 
 ## 5. Centre Panel — P&ID Drawing
 

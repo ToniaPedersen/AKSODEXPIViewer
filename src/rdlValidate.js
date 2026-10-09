@@ -392,15 +392,18 @@ function resolveSymbolReference(el, registrationIndex, profileFacts) {
 //   class      - the referenced object's ComponentClass does not descend
 //                from the property's value type
 // SignalConveyingFunction Source/Target only get missing/multiple here;
-// unresolved/class are already MDL-REF-04/MDL-REF-03 above.
-// Systems is only checked for ActuatingFunction; the
-// ProcessSignalGeneratingFunction and ActuatingElectricalFunction Systems
-// references are not used.
+// unresolved/class are already MDL-REF-04/MDL-REF-03 above. A
+// SignalConveyingFunction with PortStatus set never has a Target, so the
+// Target check is skipped for it.
+// ActuatingFunction.ActuatingLocation is not checked: the location is always
+// the ControlledActuator (see GEO-MDL-01). Systems is only checked for
+// ActuatingFunction; the ProcessSignalGeneratingFunction and
+// ActuatingElectricalFunction Systems references are not used.
+const PORT_STATUS_URI = "http://sandbox.dexpi.org/rdl/PortStatusSpecialization";
 const MODEL_ASSOCIATION_REFERENCES = [
     { owner: "SignalConveyingFunction", prop: "Source", assoc: "has logical start", role: null },
-    { owner: "SignalConveyingFunction", prop: "Target", assoc: "has logical end", role: null },
+    { owner: "SignalConveyingFunction", prop: "Target", assoc: "has logical end", role: null, skipIfPortStatus: true },
     { owner: "ProcessSignalGeneratingFunction", prop: "SensingLocation", assoc: "is located in", role: "SensingLocation" },
-    { owner: "ActuatingFunction", prop: "ActuatingLocation", assoc: "is located in", role: "PipingNetworkSegment" },
     { owner: "ActuatingFunction", prop: "Systems", assoc: "is fulfilled by", role: "ActuatingSystem" },
     { owner: "ActuatingElectricalFunction", prop: "ActuatingElectricalLocation", assoc: "is located in", role: "ActuatingElectricalLocation" },
 ];
@@ -1515,6 +1518,10 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
         .map(a => a.getAttribute("ItemID") || "")
         .filter(Boolean);
 
+    const hasPortStatus = el => directChildrenByTag(el, "GenericAttributes")
+        .filter(g => DEXPI_ATTRIBUTE_SETS.has(g.getAttribute("Set") || ""))
+        .flatMap(g => directChildrenByTag(g, "GenericAttribute"))
+        .some(ga => ga.getAttribute("AttributeURI") === PORT_STATUS_URI && (ga.getAttribute("Value") || "") !== "" && ga.getAttribute("Value") !== "NULL");
     const referenceOwners = new Set(els);
     collectInformationFlowElements(mainDoc).forEach(el => referenceOwners.add(el));
     referenceOwners.forEach(el => {
@@ -1526,6 +1533,7 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
                 ? el.tagName === "InformationFlow"
                 : classDescendsFrom(componentClass, rule.owner);
             if (!applies) return;
+            if (rule.skipIfPortStatus && hasPortStatus(el)) return;
             modelReferenceCheckedCount++;
             checkReferenceTargets(objectId, ownerClass, rule.prop, associationIds(el, rule.assoc), rule.role, false);
         });

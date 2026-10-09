@@ -15,7 +15,7 @@ import { buildLineResolver } from "./lineResolve.js";
 import ErrorExplorer from "./errorExplorer.jsx";
 import { version as APP_VERSION } from "../package.json";
 import SuggestDialog from "./suggestDialog.jsx";
-import { buildSuggestPrompt } from "./suggestPrompt.js";
+import { buildSuggestion } from "./suggestPrompt.js";
 import { jsPDF } from "jspdf";
 
 // Issue classification codes reported here come from issueCodes.js, shared by xsdValidate.js and rdlValidate.js.
@@ -774,7 +774,7 @@ export default function App() {
     const [collapsedFolderFiles, setCollapsedFolderFiles] = useState(new Set());
     // Drill-down overlay over the folder run: Layer -> Category -> Code -> documents -> lines.
     const [explorerOpen, setExplorerOpen] = useState(false);
-    const [suggest, setSuggest] = useState(null); // { title, text } for the Suggest... dialog
+    const [suggest, setSuggest] = useState(null); // { title, suggestion } for the Suggest... dialog
     // Startup fetch of DEFAULT_PROFILE_URL: "loading" | "loaded" | "error".
     const [defaultProfileState, setDefaultProfileState] = useState("loading");
 
@@ -856,7 +856,7 @@ export default function App() {
     function openSuggest(issue, xmlText, fileName) {
         setSuggest({
             title: `${issue.code || ""}${issue.objectId ? ` · ${issue.objectId}` : ""}${fileName ? ` · ${fileName}` : ""}`,
-            text: buildSuggestPrompt({ issue, xmlText, fileName }),
+            suggestion: buildSuggestion({ issue, xmlText, fileName }),
         });
     }
     async function openFolderSuggest(issue) {
@@ -2574,7 +2574,7 @@ export default function App() {
                 />
             )}
 
-            {suggest && <SuggestDialog title={suggest.title} text={suggest.text} onClose={() => setSuggest(null)} />}
+            {suggest && <SuggestDialog title={suggest.title} suggestion={suggest.suggestion} onClose={() => setSuggest(null)} />}
         </div>
     );
 }
