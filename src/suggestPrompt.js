@@ -25,7 +25,7 @@ const REFERENCE_SOURCES = [
 
 // PowerShell fix scripts (DexpiFix folder) that repair a code automatically.
 const FIX_SCRIPTS = {
-    "MDL-REF-07": "09-Add-SegmentConnections.ps1 (segment SourceItem/TargetItem; CNV-09-Add-PipeOffPageConnectors.ps1 first for raw COMOS files), 10-Link-ActuatingSystems.ps1 / 11-Retarget-InstrumentSignals.ps1 (ActuatingFunction Systems)",
+    "MDL-REF-07": "09-Add-SegmentConnections.ps1 (segment SourceItem/TargetItem; CNV-09-Add-PipeOffPageConnectors.ps1 first for raw COMOS files), CNV-11-Add-ValveActuators.ps1, 10-Link-ActuatingSystems.ps1, 11-Retarget-InstrumentSignals.ps1, 12-Add-ActuatingSystems.ps1 (ActuatingFunction Systems)",
     "GEO-ALN-01": "01-Remove-SlopeSymbolConnectionPoints.ps1, 02-Move-MisplacedPipingComponents.ps1, 04-Split-CenterLinesAtInlineItems.ps1, 05-Close-PipingGaps.ps1, 06-Split-DisconnectedSegments.ps1",
     "SER-STR-01": "03-Move-SystemLevelSegmentItems.ps1, 07-Move-SignalOffPageConnectors.ps1, 08-Convert-SignalLineSymbols.ps1, 02-Move-MisplacedPipingComponents.ps1",
     "MDL-CLS-05": "CNV-03-Convert-AnnotationEquipment.ps1 (notes, revision clouds, text boxes), CNV-04-Complete-ComponentClasses.ps1, CNV-05-Set-SignalClasses.ps1, 02-Move-MisplacedPipingComponents.ps1 (orphan containers)",
@@ -38,10 +38,13 @@ const FIX_SCRIPTS = {
     "GEO-GRD-01": "CNV-10-Snap-ToGrid.ps1",
     "GEO-GRD-02": "CNV-10-Snap-ToGrid.ps1",
     "SER-FMT-04": "CNV-01-Set-ApplicationVersion.ps1",
-    "MDL-REF-03": "CNV-06-Add-SignalEndFunctions.ps1",
+    "MDL-REF-03": "CNV-11-Add-ValveActuators.ps1, CNV-06-Add-SignalEndFunctions.ps1",
     "PRF-LBL-02": "CNV-09-Add-PipeOffPageConnectors.ps1 (OffPageReference labels), CNV-03-Convert-AnnotationEquipment.ps1 (notes)",
     "SER-IDN-03": "CNV-02-Convert-ConnectionNodeReferences.ps1 (Connection pointing at a Node ID)",
-    "GEO-MDL-01": "10-Link-ActuatingSystems.ps1, 11-Retarget-InstrumentSignals.ps1",
+    "GEO-MDL-01": "CNV-11-Add-ValveActuators.ps1, 10-Link-ActuatingSystems.ps1, 11-Retarget-InstrumentSignals.ps1, 12-Add-ActuatingSystems.ps1",
+    "MDL-CMP-03": "00-Add-MissingPipingNodes.ps1",
+    "SER-REQ-02": "13-Fix-GenericAttributeSets.ps1 (empty GenericAttributes; -ReferencePath fills it from the Raw_ file)",
+    "SER-CNT-01": "13-Fix-GenericAttributeSets.ps1 (-ReferencePath copies missing attributes from the Raw_ file)",
 };
 
 // Where an element that is "not expected" belongs (SER-STR-01).
@@ -737,6 +740,61 @@ function fixMissingNodes(text, el) {
     };
 }
 
+// MDL-MUL-03 on a 0..1 reference: which link to keep, and the Association lines to remove on each side.
+// Links come in two forms: on the holder ('"has logical end"') or reverse-only on the other
+// object ('"is logical end of" on XMP_578').
+function fixMultiplicity(text, issue, el) {
+    const m = /^(\w+)\.(\w+) allows at most 1 \w+, but \d+ objects are linked: (.+)\.$/.exec(issue.message || "");
+    if (!m) return null;
+    const [, owner, prop, rest] = m;
+    const links = [...rest.matchAll(/([\w.-]+) \("([^"]+)"(?: on ([\w.-]+))?\)/g)].map(x => ({ id: x[1], type: x[2], on: x[3] || null }));
+    if (links.length < 2) return null;
+    const holder = issue.objectId;
+    const lines = splitLines(el.raw);
+    // The drawn end of a signal line tells which object it really connects to.
+    const conn = lines.find(l => /<Connection\b/.test(l));
+    const side = /Target/.test(prop) ? "To" : /Source/.test(prop) ? "From" : null;
+    const drawn = conn && side ? (new RegExp(`\\b${side}ID="([^"]+)"`).exec(conn) || [])[1] : null;
+    const drawnEl = drawn ? findElement(text, drawn) : null;
+    const keep = links.find(l => l.id === drawn)
+        || (drawnEl && links.find(l => { const c = findElement(text, l.id); return c && drawnEl.offset > c.offset && drawnEl.offset < c.offset + c.raw.length; }))
+        || null;
+    const assocLine = (raw, type, itemId) => splitLines(raw).find(l => l.includes(`Type="${type}"`) && l.includes(`ItemID="${itemId}"`));
+    const rows = [], notes = [], holderRows = [];
+    links.forEach(l => {
+        const drop = !keep || l !== keep;
+        if (!l.on) {
+            const line = assocLine(el.raw, l.type, l.id);
+            if (line) holderRows.push(drop ? del(line) : ctx(line));
+            const back = REVERSE_TYPES[l.type];
+            const other = drop && back ? findElement(text, l.id) : null;
+            const ol = other && assocLine(other.raw, back, holder);
+            if (ol) rows.push(ctx(""), ctx(splitLines(other.raw)[0]), del(ol), ctx(splitLines(other.raw).pop()));
+            return;
+        }
+        const where = findElement(text, l.on);
+        const line = where && assocLine(where.raw, l.type, holder);
+        if (line) rows.push(ctx(""), ctx(splitLines(where.raw)[0]), drop ? del(line) : ctx(line), ctx(splitLines(where.raw).pop()));
+    });
+    if (keep && keep.on) holderRows.push(add(`${childIndent(el.raw, lines[0])}<Association Type="${REVERSE_TYPES[keep.type]}" ItemID="${keep.id}"/>`));
+    rows.unshift(ctx(lines[0]), ctx(`${childIndent(el.raw, lines[0])}...`), ...holderRows, ctx(lines[lines.length - 1]));
+    if (keep) {
+        notes.push(`Keep ${keep.id}: the line's <Connection> ${side}ID is ${drawn}${drawn !== keep.id ? `, inside ${keep.id}` : ""}, so that is what it is drawn to. Remove the other link(s) (red) on both sides.`);
+        links.filter(l => l !== keep && /Function-\d+$/.test(l.id)).forEach(l =>
+            notes.push(`${l.id} looks like a converter-added function: if nothing else refers to it after this change, delete it and every Association pointing at it.`));
+    } else {
+        notes.push(`${owner}.${prop} is 0..1: keep the one link that is right and remove the others on both sides (red).${drawn ? ` The line's <Connection> ${side}ID is ${drawn}, which matches none of them - check the drawing.` : ""}`);
+    }
+    if (/Target/.test(prop) && links.some(l => /^ActuatingFunction/.test(l.id))) notes.push("An ActuatingFunction Target is right only when the line actuates a valve (ActuatingFunction -> ActuatingSystem). A line between two instruments ends at the ProcessInstrumentationFunction.");
+    return { heading: keep ? "Suggested fix" : "Expected syntax", rows, notes };
+}
+const REVERSE_TYPES = {
+    "has logical start": "is logical start of", "is logical start of": "has logical start",
+    "has logical end": "is logical end of", "is logical end of": "has logical end",
+    "is located in": "is the location of", "is the location of": "is located in",
+    "is fulfilled by": "fulfills", "fulfills": "is fulfilled by",
+};
+
 function fixStartTag(el, issue) {
     const lines = splitLines(el.raw);
     const start = lines[0];
@@ -1203,6 +1261,7 @@ function buildFixRows(text, issue, el, marked, fileName) {
     if (code === "SER-REQ-02" && el.tag === "GenericAttributes" && !/<GenericAttribute\b/.test(el.raw)) return fixEmptyAttributes(text, el, fileName);
     if (code === "SER-CNT-01") return fixAttributeCount(text, issue, el, fileName);
     if (code === "MDL-CMP-03" && /no ConnectionPoints\/Node/.test(issue.message || "")) return fixMissingNodes(text, el);
+    if (code === "MDL-MUL-03") { const f = fixMultiplicity(text, issue, el); if (f) return f; }
     if (/^Orphan/.test(el.cls || "") && ["MDL-CLS-05", "MDL-CLS-01", "PRF-SCP-01"].includes(code)) return fixOrphanContainer(text, el);
     return fixStartTag(el, issue) || fixLines(el, issue, marked);
 }

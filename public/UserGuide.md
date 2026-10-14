@@ -238,20 +238,22 @@ When a profile is loaded, heat-traced items are detected from the `HeatTracingTy
 With a profile loaded, a **Profile labels** checkbox appears.
 
 - **Checked** — every catalogued symbol placement shows the value built from the profile symbol's own `Profile/LabelTemplate`, as an overlay, even for symbols that carry no `<Label>` of their own in the file.
+  - Alarm templates (`HH`, `H`, `L`, `LL` with `SignalConveyingFunction:<AlarmValue>`) are shown only when one of the object's SignalConveyingFunctions has the matching `PortStatusSpecialization` (`StatusHighHighPort`, `StatusHighPort`, `StatusLowPort`, `StatusLowLowPort`). The text follows the profile's template: with the current profile each shows `<level>=<AlarmValue><UoM>`, e.g. `HH=272Bar`; a template with just `'H'` shows `H`.
 - **Unchecked** — the profile's attribute-resolved value replaces the symbol's own literal label text.
 
 ### 5.7 Background image
 
-**BG Image** loads a reference image behind the drawing; **BG Controls** then exposes:
+**BG Image** loads a reference image behind the drawing (pick a `.xml` together with its `.png` to load both); **BG Controls** then exposes:
 
 | Control | Description |
 |---|---|
 | Blend | −1 to 1. Centre (0) shows both fully; right fades the image out, left fades the drawing out. |
-| Scale | Uniform factor on the auto-fit size; the native aspect ratio is always preserved. |
-| X / Y | Offset from the auto-fit (centred) position, **in drawing units** — not screen pixels. |
-| Reset fit | Back to scale 1 and offset 0, i.e. the auto-fit placement. |
-| ⬇ Download PNG with placement | PNG only. Writes the current Scale / X / Y into a copy of the PNG's own metadata and downloads it; the original file is untouched. Loading that copy later starts pre-aligned, on any machine or browser. |
-| Clear Default | Shown once a loaded PNG carries an embedded placement; downloads a copy with it removed. |
+| Scale | Uniform factor on the default (centred) size; the native aspect ratio is always preserved. |
+| X / Y | Offset from the default (centred) position, **in drawing units** — not screen pixels. |
+| Reset fit | Back to scale 1 and offset 0, i.e. the default placement. |
+| ⤢ Auto-fit to drawing | Finds the Scale / X / Y that lays the drawn lines and symbols over the image's ink and applies it. The % shown after it is the share of the drawing's line samples that land on image ink. |
+| 💾 Save placement | PNG only. Writes the current Scale / X / Y into the PNG's own metadata and saves it under the same file name. When the PNG came from a validated folder or the **BG Image** dialog it is written straight back into that file (the browser asks once for permission); otherwise a Save dialog opens with the same name. Loading the PNG later starts at that placement. |
+| Clear Default | Shown once a loaded PNG carries an embedded placement; removes it and saves the PNG under the same name. |
 | Remove | Unloads the image. |
 
 Opening a DEXPI file first removes the current background image, then loads the `.png` with the same name, if there is one, with BG Controls open and Blend at 0.35 (image at 65% opacity). The `.png` is found as follows:
@@ -261,7 +263,7 @@ Opening a DEXPI file first removes the current background image, then loads the 
 
 A browser cannot read a file next to one you picked on its own, so outside a validated folder the `.png` has to be picked together with the `.xml`.
 
-The image sits in the same coordinate space as the drawing, so it pans and zooms in lockstep and stays aligned at any zoom. Only PNG can carry an embedded placement — other image types re-fit each time they are loaded.
+The image sits in the same coordinate space as the drawing, so it pans and zooms in lockstep and stays aligned at any zoom. Only PNG can carry an embedded placement — other image types start at the default placement each time they are loaded.
 
 ### 5.8 Draw order — Send to Back
 
@@ -285,7 +287,8 @@ Objects are painted in file order, and whatever paints last sits on top for both
 | Symbol Reference | The `SymbolRegistrationNumberAssignmentClass` and the raw `Axis` / `Reference` / `Scale` of the Position block that placed the symbol. |
 | Label Symbol Reference | The same, for any symbol placed by a nested `<Label>` of this object (e.g. an actuator or special-item marker). |
 | Notes | Note ItemIDs referenced by this object's text templates; click to navigate. |
-| References / Associations | Outgoing references — blue when the target resolves, red when it does not. |
+| References / Associations | Outgoing references — blue when the target resolves, red when it does not. A reference whose object does not carry the matching reverse Association is marked *no "…" on <ID>*. |
+| Referenced by (reverse Associations) | Associations written on other objects that point at this one (e.g. `is logical end of` on an instrument). Marked *no matching "…" here* when this object lacks the forward Association - a one-sided link, often behind MDL-MUL-03 or MDL-REF-07. |
 | Parent Component | The containing object; click to navigate. |
 | Sub-Components | Children, with their type suffix and child count; click to navigate. |
 
@@ -520,7 +523,7 @@ Something is painted over it. Select the covering object and use **⇩ Send to B
 The `.png` must have the same name as the `.xml` (case is ignored). With **Load Proteus XML**, Ctrl+click both files in the dialog, or validate the folder first with **Validate…** so its `.png` files can be found.
 
 **Background image will not line up, or resets every time**
-Offsets are in drawing units, not pixels; **Reset fit** returns to the auto-fit placement. Only PNG can carry a saved placement, and only the copy downloaded with **⬇ Download PNG with placement** carries it — the original file is never modified.
+Use **⤢ Auto-fit to drawing**, then **💾 Save placement** to keep it in the PNG. Offsets are in drawing units, not pixels; **Reset fit** returns to the default placement. Only PNG can carry a saved placement.
 
 **Excel shows garbled characters in the CSV**
 Open it with **Data → From Text/CSV** in Excel and select UTF-8.

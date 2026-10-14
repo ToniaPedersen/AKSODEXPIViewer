@@ -17,6 +17,7 @@ import { version as APP_VERSION } from "../package.json";
 import SuggestDialog from "./suggestDialog.jsx";
 import { buildSuggestion } from "./suggestPrompt.js";
 import { jsPDF } from "jspdf";
+import { buildCompareGeometry, placementToBgParams } from "./imageCompare.js";
 
 // Issue classification codes reported here come from issueCodes.js, shared by xsdValidate.js and rdlValidate.js.
 
@@ -56,6 +57,19 @@ const CONNECTION_TYPE_LABELS = {
     "has logical end": "Has Logical End",
     "is logical start of": "Is Logical Start Of",
     "is logical end of": "Is Logical End Of",
+};
+
+// Refs the parser derives from geometry/containment (not <Association> elements in the file).
+const DERIVED_REF_PROPERTIES = new Set([
+    "upstream (CenterLine)", "downstream (CenterLine)", "upstream (Connection)", "downstream (Connection)",
+    "direct item of Segment", "segment item (direct)", "indirect item of System", "system item (indirect)", "adjacent (Piping)",
+]);
+// Association Type -> the Type the other object carries back.
+const REVERSE_ASSOCIATION = {
+    "has logical start": "is logical start of", "is logical start of": "has logical start",
+    "has logical end": "is logical end of", "is logical end of": "has logical end",
+    "is located in": "is the location of", "is the location of": "is located in",
+    "is fulfilled by": "fulfills", "fulfills": "is fulfilled by",
 };
 
 // GenericAttributes/@Set values treated as DEXPI-modeled attributes; others are hidden from the Data panel by default.
@@ -739,6 +753,10 @@ export default function App() {
     const [panStart, setPanStart] = useState(null);
     const [bgImage, setBgImage] = useState(null);
     const [showBgControls, setShowBgControls] = useState(false);
+    // Running auto-fit: { phase, done, total } or null; fitStatus: { score } after an auto-fit.
+    const [fitBusy, setFitBusy] = useState(null);
+    const [fitStatus, setFitStatus] = useState(null);
+    const fitWorkerRef = useRef(null);
     // Draw-order override ("Send to Back"): view-only, session-scoped set of represented-object ids moved to the front of the paint order.
     // Reset when a file is (re)loaded. Never written to the parsed model or source XML.
     const [zOrderOverrides, setZOrderOverrides] = useState(new Set());
@@ -993,13 +1011,13 @@ export default function App() {
     const baseName = (name) => name.replace(/\.[^.]+$/, "").toLowerCase();
 
     // The same-named .png is the BG image: picked together with the XML, or else found in the last validated folder.
-    async function handleMainFile(e) {
+    async function handleMainFile(e, handleByFile = null) {
         const picked = [...(e.target.files || [])];
         e.target.value = "";
         const file = picked.find(f => !/\.png$/i.test(f.name)); if (!file) return;
         removeBg();
-        const png = picked.find(f => /\.png$/i.test(f.name) && baseName(f.name) === baseName(file.name))
-            || await folderPngByName(file.name);
+        const pickedPng = picked.find(f => /\.png$/i.test(f.name) && baseName(f.name) === baseName(file.name));
+        const png = (pickedPng && (handleByFile?.get(pickedPng) || pickedPng)) || await folderPngByName(file.name);
         const txt = await file.text(); setMainXmlText(txt); setMainFileLoaded(true);
         setMainFileName(file.name);
         setXsdStatus("idle"); setXsdResult(null); setXsdError("");
@@ -1201,8 +1219,7 @@ export default function App() {
         setXsdStatus("idle"); setXsdResult(null); setXsdError("");
         rebuild(txt, discXmlText);
         setLeftTab("topology");
-        const png = folderPngsRef.current.get(pngPathFor(path).toLowerCase());
-        applyAutoBg(png?.getFile ? await png.getFile() : png);
+        applyAutoBg(folderPngsRef.current.get(pngPathFor(path).toLowerCase()));
     }
 
     // Report rows for the loaded file, in the same layout as the folder run.
@@ -1268,10 +1285,40 @@ export default function App() {
         if (discInputRef.current) discInputRef.current.value = "";
         rebuild(mainXmlText, "");
     }
+    // BG Image button: an image on its own, or a Proteus XML picked together with its .png - then both are loaded.
+    // Where the browser has a file picker API the PNG's file handle is kept, so Save placement can write straight back into that file.
+    async function handleBgButton() {
+        if (typeof window.showOpenFilePicker !== "function") { bgInputRef.current?.click(); return; }
+        let handles;
+        try {
+            handles = await window.showOpenFilePicker({
+                multiple: true,
+                types: [{
+                    description: "Proteus XML and/or background image",
+                    accept: {
+                        "image/png": [".png"], "image/jpeg": [".jpg", ".jpeg"], "image/gif": [".gif"],
+                        "image/bmp": [".bmp"], "image/webp": [".webp"], "image/svg+xml": [".svg"], "text/xml": [".xml"],
+                    },
+                }],
+            });
+        } catch (err) {
+            if (err?.name !== "AbortError") bgInputRef.current?.click();
+            return;
+        }
+        const files = await Promise.all(handles.map(h => h.getFile()));
+        const handleByFile = new Map(files.map((file, i) => [file, handles[i]]));
+        await routeBgFiles(files, handleByFile);
+    }
     async function handleBgFile(e) {
-        const file = e.target.files?.[0]; if (!file) return;
-        await loadBgFile(file);
+        const picked = [...(e.target.files || [])];
         e.target.value = "";
+        await routeBgFiles(picked, null);
+    }
+    async function routeBgFiles(picked, handleByFile) {
+        const xml = picked.find(f => /\.xml$/i.test(f.name));
+        if (xml) { await handleMainFile({ target: { files: picked, set value(_v) { /* already cleared */ } } }, handleByFile); return; }
+        const file = picked.find(f => f.type.startsWith("image/") || /\.(png|jpe?g|gif|bmp|webp|svg)$/i.test(f.name));
+        if (file) await loadBgFile(file, { fileHandle: handleByFile?.get(file) || null });
     }
 
     // .png of the last validated folder with the same base name, when exactly one matches.
@@ -1279,8 +1326,7 @@ export default function App() {
         const want = baseName(fileName);
         const hits = [...folderPngsRef.current.entries()].filter(([k]) => baseName(k.split("/").pop()) === want);
         if (hits.length !== 1) return null;
-        const png = hits[0][1];
-        try { return png?.getFile ? await png.getFile() : png; } catch { return null; }
+        return hits[0][1];
     }
 
     function removeBg() {
@@ -1290,12 +1336,16 @@ export default function App() {
     }
 
     // Opening a DEXPI file removes the previous BG image and loads its same-named .png, if any (Blend 0.35 = 65% BG opacity, controls shown).
-    async function applyAutoBg(pngFile) {
+    // png: a File, or a FileSystemFileHandle (kept so Save placement can write back into it).
+    async function applyAutoBg(png) {
         removeBg();
-        if (pngFile && await loadBgFile(pngFile, { auto: true })) setShowBgControls(true);
+        if (!png) return;
+        let file = png, fileHandle = null;
+        if (png.getFile) { fileHandle = png; try { file = await png.getFile(); } catch { return; } }
+        if (await loadBgFile(file, { auto: true, fileHandle })) setShowBgControls(true);
     }
 
-    async function loadBgFile(file, { auto = false } = {}) {
+    async function loadBgFile(file, { auto = false, fileHandle = null } = {}) {
         const gen = ++bgGenRef.current;
         try {
             const bytes = new Uint8Array(await file.arrayBuffer());
@@ -1314,9 +1364,11 @@ export default function App() {
             const base = {
                 // BG Image Default Placement: a hand-picked BG image starts centered (blend 0); an auto-loaded one at 0.35 (65% BG opacity).
                 src, blend: auto ? 0.35 : 0, auto, scale: placement.scale, offsetX: placement.offsetX, offsetY: placement.offsetY, visible: true,
-                // sourceBytes/isPng/fileName/embeddedPlacement support the Clear/Download-default controls; see clearBgDefault()/downloadBgPlacementPng().
+                // sourceBytes/isPng/fileName/embeddedPlacement/fileHandle support Save placement / Clear Default; see saveBgPlacementPng().
                 sourceBytes: bytes, isPng, fileName: file.name, embeddedPlacement: embedded,
+                fileHandle: fileHandle && typeof fileHandle.createWritable === "function" ? fileHandle : null,
             };
+            setFitStatus(null);
             probe.onload = () => { if (gen === bgGenRef.current) setBgImage({ ...base, naturalWidth: probe.naturalWidth, naturalHeight: probe.naturalHeight }); };
             probe.onerror = () => { if (gen === bgGenRef.current) setBgImage({ ...base, naturalWidth: 0, naturalHeight: 0 }); };
             probe.src = src;
@@ -1327,32 +1379,86 @@ export default function App() {
         }
     }
 
-    // Embeds the current Scale/X/Y into a copy of the loaded PNG's bytes and downloads it. The original file is never modified.
-    function downloadBgPlacementPng() {
+    // Writes PNG bytes back under the loaded image's own file name: into the opened file when its handle is known
+    // (Chrome/Edge ask once for write permission), otherwise via a Save dialog pre-filled with the same name, or as a download of that name.
+    // Returns the handle written to (so later saves go straight in), or null.
+    async function writeBgPngSameName(bytes) {
+        const name = bgImage?.fileName || "background.png";
+        const blob = new Blob([bytes], { type: "image/png" });
+        const writeTo = async (handle) => { const w = await handle.createWritable(); await w.write(blob); await w.close(); return handle; };
+        if (bgImage?.fileHandle) return writeTo(bgImage.fileHandle);
+        if (typeof window.showSaveFilePicker === "function") {
+            const handle = await window.showSaveFilePicker({ suggestedName: name, types: [{ description: "PNG image", accept: { "image/png": [".png"] } }] });
+            return writeTo(handle);
+        }
+        downloadBlob(blob, name);
+        return null;
+    }
+
+    // Embeds the current Scale/X/Y into the PNG's own metadata and saves it under the same file name, so the next load starts at this placement.
+    async function saveBgPlacementPng() {
         if (!bgImage?.isPng || !bgImage.sourceBytes) return;
         try {
             const placement = { scale: bgImage.scale, offsetX: bgImage.offsetX, offsetY: bgImage.offsetY };
             const updated = writePngEmbeddedPlacement(bgImage.sourceBytes, placement);
-            const blob = new Blob([updated], { type: "image/png" });
-            const base = (bgImage.fileName || "background").replace(/\.png$/i, "");
-            downloadBlob(blob, `${base}-placement.png`);
-            setBgImage(b => b && ({ ...b, sourceBytes: updated, embeddedPlacement: placement }));
+            const handle = await writeBgPngSameName(updated);
+            setBgImage(b => b && ({ ...b, sourceBytes: updated, embeddedPlacement: placement, fileHandle: handle || b.fileHandle }));
         } catch (err) {
+            if (err?.name === "AbortError") return;
             alert("Could not save the placement into the PNG: " + (err.message || String(err)));
         }
     }
 
-    // Removes the embedded placement from the in-memory PNG bytes and downloads the result. Does not change the currently displayed placement.
-    function clearBgDefault() {
+    // Removes the embedded placement and saves the PNG under the same file name. Does not change the currently displayed placement.
+    async function clearBgDefault() {
         if (!bgImage?.isPng || !bgImage.sourceBytes) return;
         try {
             const updated = png_stripPlacementChunk(bgImage.sourceBytes);
-            const blob = new Blob([updated], { type: "image/png" });
-            const base = (bgImage.fileName || "background").replace(/\.png$/i, "");
-            downloadBlob(blob, `${base}-placement.png`);
-            setBgImage(b => b && ({ ...b, sourceBytes: updated, embeddedPlacement: null }));
+            const handle = await writeBgPngSameName(updated);
+            setBgImage(b => b && ({ ...b, sourceBytes: updated, embeddedPlacement: null, fileHandle: handle || b.fileHandle }));
         } catch (err) {
+            if (err?.name === "AbortError") return;
             alert("Could not clear the embedded placement: " + (err.message || String(err)));
+        }
+    }
+
+    // Auto-fit runs in a module worker (imageCompare.worker.js), which keeps the last decoded image cached.
+    function runFitWorker(payload, onProgress) {
+        return new Promise((resolve, reject) => {
+            if (!fitWorkerRef.current) {
+                fitWorkerRef.current = new Worker(new URL("./imageCompare.worker.js", import.meta.url), { type: "module" });
+            }
+            const w = fitWorkerRef.current;
+            const id = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+            const cleanup = () => { w.removeEventListener("message", onMsg); w.removeEventListener("error", onErr); };
+            const onMsg = (e) => {
+                const m = e.data;
+                if (!m || m.id !== id) return;
+                if (m.type === "progress") { onProgress?.(m); return; }
+                cleanup();
+                if (m.type === "done") resolve(m.result); else reject(new Error(m.message || "Auto-fit failed."));
+            };
+            const onErr = (e) => { cleanup(); fitWorkerRef.current = null; reject(new Error(e.message || "The auto-fit worker could not start.")); };
+            w.addEventListener("message", onMsg);
+            w.addEventListener("error", onErr);
+            w.postMessage({ id, type: "autofit", blob: new Blob([bgImage.sourceBytes]), cacheKey: bgImage.src, ...payload });
+        });
+    }
+
+    // Auto-fit: finds the Scale/X/Y that lays the image over the drawing (uniform scale + offset), then applies it - Save placement stores it.
+    async function autoFitBg() {
+        if (!bgImage?.sourceBytes || !compareGeometry || !bgPlacement || !bgImage.naturalWidth || fitBusy) return;
+        const src = bgImage.src, natW = bgImage.naturalWidth, natH = bgImage.naturalHeight;
+        setFitBusy({ phase: "Starting", done: 0, total: 1 });
+        try {
+            const res = await runFitWorker({ geometry: compareGeometry, initial: bgPlacement }, m => setFitBusy(m));
+            const p = placementToBgParams(fullBounds, natW, natH, res.placement);
+            setBgImage(b => (b && b.src === src ? { ...b, scale: p.scale, offsetX: p.offsetX, offsetY: p.offsetY } : b));
+            setFitStatus({ score: res.score });
+        } catch (err) {
+            alert("Auto-fit failed: " + (err.message || String(err)));
+        } finally {
+            setFitBusy(null);
         }
     }
 
@@ -1496,6 +1602,19 @@ export default function App() {
     }, [parsed, search]);
 
     const selectedNode = useMemo(() => parsed?.treeMap?.get(selectedId) || null, [parsed, selectedId]);
+    // Associations on other objects that point at an object: id -> [{ from, property }].
+    const reverseRefs = useMemo(() => {
+        const map = new Map();
+        (parsed?.flatTree || []).forEach(n => (n.refs || []).forEach(r => {
+            if (r.derived || DERIVED_REF_PROPERTIES.has(r.property)) return;
+            r.objects.forEach(oid => {
+                if (!oid || oid === n.objectId) return;
+                if (!map.has(oid)) map.set(oid, []);
+                map.get(oid).push({ from: n.objectId, property: r.property });
+            });
+        }));
+        return map;
+    }, [parsed]);
     const selectedRepresentedIds = useMemo(() => {
         if (!selectedNode) return new Set();
         // Sub-components checkbox gates highlighting beyond the selected object. Off: only the selected node is highlighted.
@@ -1619,6 +1738,9 @@ export default function App() {
             height: baseH * bgImage.scale,
         };
     }, [bgImage, fullBounds, boundsW, boundsH]);
+    // Sampled drawing graphics for the auto-fit (imageCompare.js).
+    const compareGeometry = useMemo(() => (parsed ? buildCompareGeometry(parsed) : null), [parsed]);
+    useEffect(() => () => { fitWorkerRef.current?.terminate(); fitWorkerRef.current = null; }, []);
     // Tints the overlay a mid-dark blue while preserving the image's luminance (mix-blend-mode "color").
     const BG_TINT_COLOR = "#1e3a5f";
 
@@ -2125,9 +2247,9 @@ export default function App() {
                                 Profile labels
                             </label>
                         )}
-                        <button style={S.btn} onClick={() => bgInputRef.current?.click()} title="Overlay an image behind the drawing">BG Image</button>
+                        <button style={S.btn} onClick={handleBgButton} title="Overlay an image behind the drawing. Pick a Proteus XML together with its .png to load both.">BG Image</button>
                         {bgImage && <button style={{ ...S.btn, background: showBgControls ? "#eaf2ff" : "white" }} onClick={() => setShowBgControls(p => !p)}>BG Controls</button>}
-                        <input ref={bgInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleBgFile} />
+                        <input ref={bgInputRef} type="file" accept="image/*,.xml" multiple style={{ display: "none" }} onChange={handleBgFile} />
                         <span style={{ fontSize: 11, color: "#888", marginLeft: 4 }}>Scroll to zoom · Space+drag to pan</span>
                     </div>
                 </div>
@@ -2154,19 +2276,29 @@ export default function App() {
                             <input type="number" step={Math.max(0.01, boundsH / 500)} value={bgImage.offsetY} onChange={e => { const v = parseFloat(e.target.value); if (!Number.isNaN(v)) setBgImage(b => ({ ...b, offsetY: v })); }} style={S.numBoxWide} title="Y offset, in drawing units, from the auto-fit position" />
                         </label>
                         <button style={S.btnSmall} onClick={() => setBgImage(b => ({ ...b, scale: 1, offsetX: 0, offsetY: 0 }))} title="Reset to the auto-fit (centered, aspect-correct) placement">Reset fit</button>
-                        {/* Embeds this PNG's current placement into a downloaded copy so a future load starts pre-aligned. Only PNG files support an embedded default. */}
+                        <button
+                            style={{ ...S.btnSmall, borderColor: "#1a7f37", color: "#1a7f37" }}
+                            disabled={!!fitBusy || !parsed || !bgImage.naturalWidth}
+                            onClick={autoFitBg}
+                            title="Match the image to the drawing: finds the Scale / X / Y that lays the drawn lines and symbols over the image's ink. Then use Save placement to keep it in the PNG."
+                        >
+                            {fitBusy ? "Fitting…" : "⤢ Auto-fit to drawing"}
+                        </button>
+                        {fitStatus && !fitBusy && <span style={{ color: fitStatus.score >= 0.9 ? "#1a7f37" : fitStatus.score >= 0.7 ? "#9a6700" : "#cf222e" }} title="Share of the drawing's line samples that land on image ink after the fit">{Math.round(fitStatus.score * 100)}% match</span>}
+                        {fitBusy && <span style={{ color: "#57606a" }}>{fitBusy.phase}{fitBusy.total > 1 ? ` ${Math.round(100 * fitBusy.done / fitBusy.total)}%` : ""}</span>}
+                        {/* Embeds the current placement into the PNG's own metadata and saves it under the same file name. PNG only. */}
                         <button
                             style={{ ...S.btnSmall, borderColor: "#0969da", color: "#0969da" }}
                             disabled={!bgImage.isPng}
-                            onClick={downloadBgPlacementPng}
+                            onClick={saveBgPlacementPng}
                             title={bgImage.isPng
-                                ? "Embed the current Scale / X / Y into a copy of this PNG and download it, so the next time this image is loaded it starts at this placement instead of the auto-fit - the original file you selected is left untouched"
+                                ? `Embed the current Scale / X / Y into ${bgImage.fileName || "the PNG"} and save it under the same name, so the next time this image is loaded it starts at this placement`
                                 : "Only PNG images support an embedded placement default - this file isn't a PNG"}
                         >
-                            ⬇ Download PNG with placement
+                            💾 Save placement
                         </button>
                         {bgImage.isPng && bgImage.embeddedPlacement && (
-                            <button style={S.btnSmall} onClick={clearBgDefault} title="Download a copy of this PNG with the saved placement default removed">
+                            <button style={S.btnSmall} onClick={clearBgDefault} title={`Remove the saved placement from ${bgImage.fileName || "the PNG"} (saved under the same name)`}>
                                 Clear Default
                             </button>
                         )}
@@ -2432,13 +2564,52 @@ export default function App() {
                                         <div key={i} style={{ marginBottom: 5 }}>
                                             <div style={{ fontSize: 11, color: "#888" }}>{r.property}</div>
                                             <div style={{ fontSize: 12 }}>
-                                                {r.objects.map((oid, j) => (
-                                                    <span key={j} style={{ cursor: parsed?.treeMap?.has(oid) ? "pointer" : "default", color: parsed?.treeMap?.has(oid) ? "#0969da" : "#cf222e", marginRight: 5 }} onClick={() => parsed?.treeMap?.has(oid) && handleSelect(oid)}>{oid}</span>
-                                                ))}
+                                                {r.objects.map((oid, j) => {
+                                                    const expect = !r.derived && REVERSE_ASSOCIATION[r.property];
+                                                    const matched = !expect || !parsed?.treeMap?.has(oid) || (reverseRefs.get(selectedId) || []).some(b => b.from === oid && b.property === expect);
+                                                    return (
+                                                        <span key={j} style={{ marginRight: 8, whiteSpace: "nowrap" }}>
+                                                            <span style={{ cursor: parsed?.treeMap?.has(oid) ? "pointer" : "default", color: parsed?.treeMap?.has(oid) ? "#0969da" : "#cf222e" }} onClick={() => parsed?.treeMap?.has(oid) && handleSelect(oid)}>{oid}</span>
+                                                            {!matched && <span style={{ fontSize: 10, color: "#9a6700", marginLeft: 4 }} title={`${oid} has no <Association Type="${expect}" ItemID="${selectedId}"/>`}>no "{expect}" on {oid}</span>}
+                                                        </span>
+                                                    );
+                                                })}
                                             </div>
                                         </div>
                                     )) : <div style={{ color: "#888", fontSize: 12 }}>No references.</div>}
                                 </div>
+                                {(() => {
+                                    // Reverse: Associations written on other objects that point at this one.
+                                    const back = reverseRefs.get(selectedId) || [];
+                                    if (!back.length) return null;
+                                    const own = (selectedNode?.refs || []).filter(r => !r.derived);
+                                    const byProp = new Map();
+                                    back.forEach(b => { if (!byProp.has(b.property)) byProp.set(b.property, []); byProp.get(b.property).push(b.from); });
+                                    return (
+                                        <div style={S.section}>
+                                            <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6 }}>Referenced by (reverse Associations)</div>
+                                            {[...byProp.entries()].map(([property, froms]) => {
+                                                const expect = REVERSE_ASSOCIATION[property];
+                                                return (
+                                                    <div key={property} style={{ marginBottom: 5 }}>
+                                                        <div style={{ fontSize: 11, color: "#888" }}>{property} <span style={{ color: "#aaa" }}>(on the other object)</span></div>
+                                                        <div style={{ fontSize: 12 }}>
+                                                            {froms.map((oid, j) => {
+                                                                const matched = !expect || own.some(r => r.property === expect && r.objects.includes(oid));
+                                                                return (
+                                                                    <span key={j} style={{ marginRight: 8, whiteSpace: "nowrap" }}>
+                                                                        <span style={{ cursor: parsed?.treeMap?.has(oid) ? "pointer" : "default", color: parsed?.treeMap?.has(oid) ? "#0969da" : "#cf222e" }} onClick={() => parsed?.treeMap?.has(oid) && handleSelect(oid)}>{oid}</span>
+                                                                        {!matched && <span style={{ fontSize: 10, color: "#9a6700", marginLeft: 4 }} title={`This object has no <Association Type="${expect}" ItemID="${oid}"/>`}>no matching "{expect}" here</span>}
+                                                                    </span>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    );
+                                })()}
                                 {(() => {
                                     if (!selectedNode?.objectId || !parsed?.flatTree) return null;
                                     const parent = parsed.flatTree.find(n =>

@@ -712,7 +712,7 @@ function deriveProteusFlowConnectivity(mainDoc, nodesById) {
             if (!reverseLabel) return;
             const targetId = a.getAttribute("ItemID");
             const targetNode = targetId ? nodesById.get(targetId) : null;
-            if (targetNode) targetNode.refs.push({ property: reverseLabel, objects: [ifId] });
+            if (targetNode) targetNode.refs.push({ property: reverseLabel, objects: [ifId], derived: true });
         });
     });
 }
@@ -961,8 +961,54 @@ const OFF_PAGE_CONNECTOR_REFERENCE_CHILD_TAGS = ["PipeOffPageConnectorReference"
 //
 // Also reports whether the template contained any token (hasToken) and
 // whether at least one resolved to a non-empty value (hasValue).
+// Alarm LabelTemplates ("'HH=' & SignalConveyingFunction:<AlarmValue>", "'H'" ...): shown only when one of the
+// object's SignalConveyingFunctions has the matching PortStatusSpecialization. The text follows the profile's own
+// template: quoted literals joined with &, and SignalConveyingFunction:<AlarmValue> read from that function as <value><UoM>.
+const ALARM_LEVEL_RE = /^\s*'?(HH|LL|H|L)(?=\s*(=|'|$))/;
+const ALARM_PORT_STATUS = { HH: "HighHighPort", LL: "LowLowPort", H: "HighPort", L: "LowPort" };
+
+function alarmLevelOf(rawText) {
+    const m = rawText.match(ALARM_LEVEL_RE);
+    if (!m) return null;
+    const levelOnly = /^\s*'?(HH|LL|H|L)'?\s*$/.test(rawText);
+    return levelOnly || rawText.includes("SignalConveyingFunction:") ? m[1] : null;
+}
+
+function resolveAlarmLabelTemplate(rawText, level, el, elementById, dataByObjectId) {
+    const ids = new Set(directChildrenByTag(el, "Association").map(a => a.getAttribute("ItemID")).filter(Boolean));
+    directChildrenByTag(el, "InformationFlow").forEach(f => { if (f.getAttribute("ID")) ids.add(f.getAttribute("ID")); });
+    const scfId = [...ids].find(id => {
+        if (elementById.get(id)?.getAttribute("ComponentClass") !== "SignalConveyingFunction") return false;
+        const status = lookupAttributeText(dataByObjectId.get(id), "PortStatusSpecialization").split(/[./#]/).pop().replace(/^(Port)?Status/, "");
+        return status === ALARM_PORT_STATUS[level];
+    });
+    if (!scfId) return { text: "", hasToken: true, hasValue: false };
+    const scfData = dataByObjectId.get(scfId);
+    const scfEl = elementById.get(scfId);
+    const unitsOf = (attrName) => directChildrenByTag(scfEl, "GenericAttributes")
+        .flatMap(g => directChildrenByTag(g, "GenericAttribute"))
+        .find(a => a.getAttribute("Name") === attrName)?.getAttribute("Units") || "";
+    let hasToken = false, hasValue = true;
+    const text = rawText.split(/&(?=(?:[^']*'[^']*')*[^']*$)/).map(part => {
+        const t = part.trim();
+        const lit = t.match(/^'(.*)'$/);
+        if (lit) return lit[1];
+        const tok = t.match(/^SignalConveyingFunction:<([^<>]+)>$/);
+        if (tok) {
+            hasToken = true;
+            const v = lookupAttributeText(scfData, tok[1]);
+            if (!v) { hasValue = false; return ""; }
+            return v + unitsOf(tok[1]);
+        }
+        return t.replace(/'/g, "");
+    }).join("");
+    return { text, hasToken: true, hasValue: hasToken ? hasValue : true };
+}
+
 function resolveLabelTemplateText(rawText, el, ownData, elementById, dataByObjectId) {
     if (!rawText) return { text: "", hasToken: false, hasValue: false };
+    const alarmLevel = alarmLevelOf(rawText);
+    if (alarmLevel) return resolveAlarmLabelTemplate(rawText, alarmLevel, el, elementById, dataByObjectId);
     let hasToken = false;
     let hasValue = false;
     const resolveToken = (relatedClass, attrName) => {

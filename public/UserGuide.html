@@ -359,10 +359,11 @@ npm run dev
 <p>With a profile loaded, a <strong>Profile labels</strong> checkbox appears.</p>
 <ul>
 <li><strong>Checked</strong> — every catalogued symbol placement shows the value built from the profile symbol's own <code>Profile/LabelTemplate</code>, as an overlay, even for symbols that carry no <code>&lt;Label&gt;</code> of their own in the file.</li>
+<li>Alarm templates (<code>HH</code>, <code>H</code>, <code>L</code>, <code>LL</code> with <code>SignalConveyingFunction:&lt;AlarmValue&gt;</code>) are shown only when one of the object's SignalConveyingFunctions has the matching <code>PortStatusSpecialization</code> (<code>StatusHighHighPort</code>, <code>StatusHighPort</code>, <code>StatusLowPort</code>, <code>StatusLowLowPort</code>). The text follows the profile's template: with the current profile each shows <code>&lt;level&gt;=&lt;AlarmValue&gt;&lt;UoM&gt;</code>, e.g. <code>HH=272Bar</code>; a template with just <code>'H'</code> shows <code>H</code>.</li>
 <li><strong>Unchecked</strong> — the profile's attribute-resolved value replaces the symbol's own literal label text.</li>
 </ul>
 <h3 id="57-background-image">5.7 Background image</h3>
-<p><strong>BG Image</strong> loads a reference image behind the drawing; <strong>BG Controls</strong> then exposes:</p>
+<p><strong>BG Image</strong> loads a reference image behind the drawing (pick a <code>.xml</code> together with its <code>.png</code> to load both); <strong>BG Controls</strong> then exposes:</p>
 <div class="tablewrap"><table>
 <thead>
 <tr>
@@ -377,23 +378,27 @@ npm run dev
 </tr>
 <tr>
 <td>Scale</td>
-<td>Uniform factor on the auto-fit size; the native aspect ratio is always preserved.</td>
+<td>Uniform factor on the default (centred) size; the native aspect ratio is always preserved.</td>
 </tr>
 <tr>
 <td>X / Y</td>
-<td>Offset from the auto-fit (centred) position, <strong>in drawing units</strong> — not screen pixels.</td>
+<td>Offset from the default (centred) position, <strong>in drawing units</strong> — not screen pixels.</td>
 </tr>
 <tr>
 <td>Reset fit</td>
-<td>Back to scale 1 and offset 0, i.e. the auto-fit placement.</td>
+<td>Back to scale 1 and offset 0, i.e. the default placement.</td>
 </tr>
 <tr>
-<td>⬇ Download PNG with placement</td>
-<td>PNG only. Writes the current Scale / X / Y into a copy of the PNG's own metadata and downloads it; the original file is untouched. Loading that copy later starts pre-aligned, on any machine or browser.</td>
+<td>⤢ Auto-fit to drawing</td>
+<td>Finds the Scale / X / Y that lays the drawn lines and symbols over the image's ink and applies it. The % shown after it is the share of the drawing's line samples that land on image ink.</td>
+</tr>
+<tr>
+<td>💾 Save placement</td>
+<td>PNG only. Writes the current Scale / X / Y into the PNG's own metadata and saves it under the same file name. When the PNG came from a validated folder or the <strong>BG Image</strong> dialog it is written straight back into that file (the browser asks once for permission); otherwise a Save dialog opens with the same name. Loading the PNG later starts at that placement.</td>
 </tr>
 <tr>
 <td>Clear Default</td>
-<td>Shown once a loaded PNG carries an embedded placement; downloads a copy with it removed.</td>
+<td>Shown once a loaded PNG carries an embedded placement; removes it and saves the PNG under the same name.</td>
 </tr>
 <tr>
 <td>Remove</td>
@@ -407,7 +412,7 @@ npm run dev
 <li><strong>Open</strong> in the Folder tab or the error explorer — the <code>.png</code> next to the file in the validated folder.</li>
 </ul>
 <p>A browser cannot read a file next to one you picked on its own, so outside a validated folder the <code>.png</code> has to be picked together with the <code>.xml</code>.</p>
-<p>The image sits in the same coordinate space as the drawing, so it pans and zooms in lockstep and stays aligned at any zoom. Only PNG can carry an embedded placement — other image types re-fit each time they are loaded.</p>
+<p>The image sits in the same coordinate space as the drawing, so it pans and zooms in lockstep and stays aligned at any zoom. Only PNG can carry an embedded placement — other image types start at the default placement each time they are loaded.</p>
 <h3 id="58-draw-order-send-to-back">5.8 Draw order — Send to Back</h3>
 <p>Objects are painted in file order, and whatever paints last sits on top for both display and clicking. When a large symbol covers smaller items, select the covering object and click <strong>⇩ Send to Back</strong> in the right panel's Object tab: its graphics move behind everything else and the items underneath become clickable. The button becomes <strong>↺ Restore order</strong> for that object, and <strong>Reset Z-Order (n)</strong> in the centre toolbar restores all of them at once.</p>
 <blockquote>
@@ -458,7 +463,11 @@ npm run dev
 </tr>
 <tr>
 <td>References / Associations</td>
-<td>Outgoing references — blue when the target resolves, red when it does not.</td>
+<td>Outgoing references — blue when the target resolves, red when it does not. A reference whose object does not carry the matching reverse Association is marked <em>no "…" on <ID></em>.</td>
+</tr>
+<tr>
+<td>Referenced by (reverse Associations)</td>
+<td>Associations written on other objects that point at this one (e.g. <code>is logical end of</code> on an instrument). Marked <em>no matching "…" here</em> when this object lacks the forward Association - a one-sided link, often behind MDL-MUL-03 or MDL-REF-07.</td>
 </tr>
 <tr>
 <td>Parent Component</td>
@@ -1489,7 +1498,7 @@ Something is painted over it. Select the covering object and use <strong>⇩ Sen
 <p><strong>Background image does not load with the file</strong>
 The <code>.png</code> must have the same name as the <code>.xml</code> (case is ignored). With <strong>Load Proteus XML</strong>, Ctrl+click both files in the dialog, or validate the folder first with <strong>Validate…</strong> so its <code>.png</code> files can be found.</p>
 <p><strong>Background image will not line up, or resets every time</strong>
-Offsets are in drawing units, not pixels; <strong>Reset fit</strong> returns to the auto-fit placement. Only PNG can carry a saved placement, and only the copy downloaded with <strong>⬇ Download PNG with placement</strong> carries it — the original file is never modified.</p>
+Use <strong>⤢ Auto-fit to drawing</strong>, then <strong>💾 Save placement</strong> to keep it in the PNG. Offsets are in drawing units, not pixels; <strong>Reset fit</strong> returns to the default placement. Only PNG can carry a saved placement.</p>
 <p><strong>Excel shows garbled characters in the CSV</strong>
 Open it with <strong>Data → From Text/CSV</strong> in Excel and select UTF-8.</p>
 <footer>DEXPI 1.4 / DISC Profile Viewer — Tonia Pedersen. Generated from <code>UserGuide.md</code>.</footer>
