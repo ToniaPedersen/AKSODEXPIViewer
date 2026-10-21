@@ -71,7 +71,7 @@ footer{margin-top:60px;padding-top:14px;border-top:1px solid var(--line);color:v
 <main>
 <h1 id="dexpi-14-disc-profile-viewer-user-guide">DEXPI 1.4 / DISC Profile Viewer — User Guide</h1>
 <p>A browser-based viewer and validation tool for legacy <strong>DEXPI 1.4 / Proteus 4.1.1</strong> XML files, rendered and checked using <strong>DEXPI 2.x profile</strong> symbols, classes and attributes by way of a loaded <code>DiscProfile.xml</code>.</p>
-<p>Developed by <strong>Tonia Pedersen</strong>. Version <strong>2.6</strong>. See <code>ChangeLog_2.5_to_2.6.md</code> for what changed since 2.5.</p>
+<p>Developed by <strong>Tonia Pedersen</strong>. Version <strong>2.8</strong>. See <code>ChangeLog_2.7_to_2.8.md</code> for what changed since 2.7.</p>
 <hr />
 <hr />
 <h2 id="1-introduction">1. Introduction</h2>
@@ -361,6 +361,24 @@ npm run dev
 <li><strong>Checked</strong> — every catalogued symbol placement shows the value built from the profile symbol's own <code>Profile/LabelTemplate</code>, as an overlay, even for symbols that carry no <code>&lt;Label&gt;</code> of their own in the file.</li>
 <li>Alarm templates (<code>HH</code>, <code>H</code>, <code>L</code>, <code>LL</code> with <code>SignalConveyingFunction:&lt;AlarmValue&gt;</code>) are shown only when one of the object's SignalConveyingFunctions has the matching <code>PortStatusSpecialization</code> (<code>StatusHighHighPort</code>, <code>StatusHighPort</code>, <code>StatusLowPort</code>, <code>StatusLowLowPort</code>). The text follows the profile's template: with the current profile each shows <code>&lt;level&gt;=&lt;AlarmValue&gt;&lt;UoM&gt;</code>, e.g. <code>HH=272Bar</code>; a template with just <code>'H'</code> shows <code>H</code>.</li>
 <li><strong>Unchecked</strong> — the profile's attribute-resolved value replaces the symbol's own literal label text.</li>
+</ul>
+<p>A numeric attribute with a unit is shown with its unit symbol (<code>Bar</code> on a gauge pressure → <code>barg</code>, <code>DegreeCelsius</code> → <code>°C</code>). Set point labels (<code>SP =</code>) always show the value with its unit, e.g. <code>SP = 6 barg</code>; alarm labels follow the alarm rule above. A pressure at full vacuum (−1.01325 barg, or 0 in an absolute unit) is shown as <code>FV</code>. Whether a pressure is gauge or absolute is taken from the GenericAttribute's <code>Type</code> / <code>TypeURI</code>, else from the attribute's definition in the loaded DiscProfile.xml, else from the DEXPI 1.4 model.</p>
+<h4 id="rotation-and-mirroring">Rotation and mirroring</h4>
+<p>A profile label template describes the label for the symbol in its upright, unmirrored position. When the symbol is placed rotated or mirrored, the <strong>Profile labels</strong> overlay is placed by DISC DEXPI rule 'B' (requirements document, ANNEX B <em>Profile Label Text under Rotation and Mirroring</em>), for every symbol:</p>
+<ul>
+<li>the text stays readable — left to right when the symbol is at 0° or 180°, bottom to top at 90° or 270°, never upside down or right to left;</li>
+<li>a label <strong>above or below</strong> the symbol follows the symbol's rotation: text above a symbol at 0° is below its origin at 180° (still on the symbol body) and beside it at 90° and 270°;</li>
+<li>a label <strong>left or right</strong> of the symbol follows the reading direction of the text: text left of a symbol at 0° is still left of it at 180°, and below it at 90°;</li>
+<li>a mirrored symbol has its labels mirrored with it;</li>
+<li>the alignment is adjusted so the text always grows away from the symbol: Left/Right swap for a mirrored symbol, Top/Bottom swap when the text had to be turned over (at 90° and 180°).</li>
+</ul>
+<p>Character-stacked templates (<code>&lt;NonSasFunction&gt;</code>) keep one upright character per line. The same rule is used by DEXPIViewer and by the label update script.</p>
+<h4 id="equipment-boxes">Equipment boxes</h4>
+<p>An equipment box (DiscProfile 0.6.6, ND0300–ND0310) has an 'A' part (<code>ND03xxA</code>, the frame with the captions) and a 'B' part (<code>ND03xxB</code>, the value column) that belongs to the equipment. The value column shows:</p>
+<ul>
+<li>values the equipment does not carry itself, read from its <strong>Chambers</strong> (nested <code>&lt;Equipment ComponentClass="Chamber"&gt;</code>). In a box that repeats a line per side (ND0309B heat exchanger), the first occurrence shows the hot side — the Chamber whose <code>ChamberFunction</code> is <strong>Cooling</strong> — and the second the cold side — <strong>Heating</strong>. When no Chamber carries the expected function, the Chambers are used in file order;</li>
+<li>numbers with <strong>1 decimal</strong> (<code>130</code> → <code>130.0</code>, <code>56.55</code> → <code>56.6</code>), both in the overlay and in the box's own label texts; text values such as a material code are never rounded;</li>
+<li>the separators of the template between the values: <code>&lt;LowerLimitDesignPressure&gt; &amp; &lt;UpperLimitDesignPressure&gt; / &lt;NormalOperatingPressure&gt;</code> is shown as <code>FV &amp; 130.0 / 90.0</code>. Only quoted text (<code>'SP = ' &amp; &lt;SetPoint&gt;</code>) is read as a formula.</li>
 </ul>
 <h3 id="57-background-image">5.7 Background image</h3>
 <p><strong>BG Image</strong> loads a reference image behind the drawing (pick a <code>.xml</code> together with its <code>.png</code> to load both); <strong>BG Controls</strong> then exposes:</p>

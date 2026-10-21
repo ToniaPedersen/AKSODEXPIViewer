@@ -15,6 +15,12 @@ import {
     qsa, directChildrenByTag, parseSymbolCatalogue, flattenTree,
     buildConnectivityMap, buildHeatTraceSet, inferBoundsFromPrimitives,
 } from "./dexpiParser.js";
+// DEXPI 1.4 model (also used by rdlValidate.js): which plant attributes are
+// gauge vs absolute pressures (valueType NullablePressureGauge/-Absolute).
+import dexpiRdl from "./dexpi14Rdl.json";
+// Core.xml unit symbols per PhysicalQuantities enumeration literal (same file
+// as DEXPIViewer's), e.g. "PressureGaugeUnit.Bar" -> "barg".
+import { UNIT_SYMBOLS } from "./unitSymbols.js";
 
 // ---------------------------------------------------------------------------
 // Format detection
@@ -432,7 +438,15 @@ function resolveObjectData(el, dataPropIndex) {
             const format = ga.getAttribute("Format") || "";
             const value = coerceValue(rawValue, format);
             const mappedProp = attrUri ? dataPropIndex.get(attrUri) : null;
-            out.push({ property: mappedProp || `Proteus/${name}`, value, set });
+            const units = ga.getAttribute("Units") || null;
+            const unitType = gaUnitType(ga);
+            // A number with a unit of measure is carried as a PhysicalQuantity
+            // (as in DEXPIViewer), so the Details panel shows its unit and
+            // labels can append it.
+            const shown = (typeof value === "number" && units)
+                ? { kind: "PhysicalQuantity", value, unit: unitSymbolFor(units, unitType), unitRef: unitType ? `${unitType}.${units}` : (ga.getAttribute("UnitsURI") || units) }
+                : value;
+            out.push({ property: mappedProp || `Proteus/${name}`, value: shown, set, units, unitsUri: ga.getAttribute("UnitsURI") || null, unitType });
         });
     });
     return out;
@@ -882,6 +896,46 @@ function readableLabelOrientation(deg, horizontal, vertical) {
 // applied for these; each line follows the symbol's own placement rotation.
 const CHARACTER_STACKED_LABEL_TEMPLATE_TEXTS = new Set(["<NonSasFunction>"]);
 
+// Where a profile LabelTemplate is drawn on a placed symbol - DISC DEXPI rule
+// 'B' (requirements document ANNEX B: Profile Label Text under Rotation and
+// Mirroring), for EVERY symbol. The template defines the label for the symbol
+// at rotation 0, not mirrored, and the text is always kept readable (left to
+// right at 0/180, bottom to top at 90/270):
+//   * the template's y offset (above / below) follows the symbol's full
+//     rotation - a label above the symbol at 0 is below its origin at 180;
+//   * the template's x offset (left / right) follows the readable text
+//     direction: mirrored with the symbol, and flipped whenever the text had
+//     to be turned over to stay readable - a label left of the symbol at 0 is
+//     still left of it at 180 and below it at 90;
+//   * Left/Right and Top/Bottom are chosen so the text grows away from the
+//     symbol, as the template intends: Left/Right swap for a mirrored symbol,
+//     Top/Bottom swap when the text is turned over.
+// pos: readPosition() of the placement (y down, rotation clockwise degrees),
+// scale: readScale(). Returns the world anchor point, the readable text
+// rotation and the alignment to draw the text with.
+function profileLabelPlacement(lt, pos, scale, stacked = false) {
+    const deg = Math.PI / 180;
+    const R = pos.rotation || 0;
+    const turnedOver = Math.abs(((((readableLabelRotation(R) - R) % 360) + 360) % 360) - 180) < 0.01;
+    const rx = turnedOver ? -1 : 1;
+    const mirror = pos.isMirrored ? -1 : 1;
+    const sx = Math.sign((scale.x || 1) * mirror) || 1;
+    const sy = Math.sign(scale.y || 1) || 1;
+    const rot = (x, y, a) => [x * Math.cos(a * deg) - y * Math.sin(a * deg), x * Math.sin(a * deg) + y * Math.cos(a * deg)];
+    const dot = (p, q) => p[0] * q[0] + p[1] * q[1];
+    const [wx, wy] = rot(lt.position.x * scale.x * mirror * rx, lt.position.y * scale.y, R);
+    // character-stacked templates skip their own Rotation
+    const t = stacked ? 0 : (lt.rotation || 0);
+    const rotation = readableLabelRotation(R + t);
+    const D = rot(1, 0, rotation), Dn = rot(0, 1, rotation);   // text reading / text down directions
+    const L = ([x, y]) => rot(x * sx * rx, y * sy, R);        // template frame -> world
+    const ex = L(rot(1, 0, t)), ey = L(rot(0, 1, t));
+    let horizontal = lt.alignment.horizontal, vertical = lt.alignment.vertical;
+    if ((horizontal === "Left" || horizontal === "Right") && dot(ex, D) < 0) horizontal = horizontal === "Left" ? "Right" : "Left";
+    if ((vertical === "Top" || vertical === "Bottom") && dot(ey, Dn) < 0) vertical = vertical === "Top" ? "Bottom" : "Top";
+    return { x: pos.x + wx, y: pos.y + wy, rotation, horizontal, vertical };
+}
+
 function isCharacterStackedLabelTemplate(lt) {
     return CHARACTER_STACKED_LABEL_TEMPLATE_TEXTS.has((lt.text || "").trim());
 }
@@ -924,14 +978,166 @@ const LABEL_TEMPLATE_TOKEN_RE = /(?:([A-Za-z]\w*):)?<([^<>]+)>/g;
 // matching "DiscProfile/<name>" first, then "Proteus/<name>", then
 // "Proteus/<name>AssignmentClass". Reduces PhysicalQuantity/DataReference/
 // scalar value shapes to a plain display string.
-function lookupAttributeText(dataArr, attrName) {
+// decimals (optional): numeric values (numbers and PhysicalQuantity values)
+// are shown with exactly this many decimals - the equipment box value
+// columns (ND0300B..ND0310B) use 1, e.g. 130 -> "130.0". Text values such as
+// a material code ("1.4306") are never rounded.
+function formatLabelNumber(v, decimals) {
+    if (decimals === null || decimals === undefined || typeof v !== "number" || !Number.isFinite(v)) return String(v);
+    // round half away from zero on the decimal value (56.55 -> 56.6), not on
+    // its binary approximation as toFixed() alone does (-> 56.5)
+    const r = Math.sign(v) * Number(Math.round(Number(Math.abs(v) + "e" + decimals)) + "e-" + decimals);
+    return r.toFixed(decimals);
+}
+
+// Full vacuum: a pressure label shows the literal "FV" (the P&ID / data
+// sheet convention) instead of the number - a gauge pressure of -1 atm
+// (-1.01325 barg, also accepting the usual rounded -1.0 / -1.013 barg, i.e.
+// within 1.5%) or an absolute pressure of 0. Proteus carries the unit as
+// free text (Units="Bar" - the DEXPI PressureGaugeUnit literal -, "barg",
+// "kPa", "psig", "bara", ...) and/or a UnitsURI, so the unit is matched by
+// name; only attributes whose name contains "Pressure" are considered.
+const FULL_VACUUM_GAUGE = [
+    { re: /^(bar|barg|bar\s*\(?g\)?|bargauge)$/i, uri: "RDS1314539", fv: -1.01325 },
+    { re: /^(mbar|mbarg|millibar)$/i, uri: "RDS11617875", fv: -1013.25 },
+    { re: /^(kpa|kpag|kilopascal)$/i, uri: "RDS1330559", fv: -101.325 },
+    { re: /^(mpa|mpag|megapascal)$/i, uri: "RDS1332404", fv: -0.101325 },
+    { re: /^(pa|pag|pascal)$/i, uri: "RDS1338749", fv: -101325 },
+    { re: /^(psi|psig|lbf\/in²|poundforceperinchsquared)$/i, uri: "RDS1341809", fv: -14.6959 },
+];
+// Pressure unit type of a GenericAttribute: its own Type / TypeURI (the AKSO
+// convention, e.g. Type="PressureGaugeUnit" TypeURI=".../RDS7345161"), else
+// the attribute's definition - the loaded DiscProfile.xml DataProperty's
+// Core/PhysicalQuantities.Pressure*Unit type (by AttributeURI or name), then
+// the DEXPI plant model (dexpi14Rdl.json). null when none says (e.g. the
+// profile's SetPoint is a plain PhysicalQuantity).
+const PRESSURE_GAUGE_TYPE_URIS = new Set(["http://data.posccaesar.org/rdl/RDS7345161"]);
+const PLANT_PRESSURE_UNIT_TYPES = (() => {
+    const byName = new Map();
+    for (const [key, prop] of Object.entries(dexpiRdl?.properties || {})) {
+        const t = prop?.valueType === "NullablePressureGauge" ? "PressureGaugeUnit"
+            : prop?.valueType === "NullablePressureAbsolute" ? "PressureAbsoluteUnit" : null;
+        if (!t) continue;
+        const name = key.split(".").pop();
+        byName.set(name, byName.has(name) && byName.get(name) !== t ? "ambiguous" : t);
+    }
+    return byName;
+})();
+let profilePressureUnitTypes = new Map(); // set per parse - see buildProfilePressureUnitTypes()
+export function buildProfilePressureUnitTypes(discDoc) {
+    const map = new Map();
+    if (!discDoc?.documentElement) return map;
+    qsa(discDoc, "DataProperty").forEach(dp => {
+        const types = qsa(dp, "DataTypeReference").map(r => r.getAttribute("type") || "");
+        const t = types.some(x => /PressureGaugeUnit$/.test(x)) ? "PressureGaugeUnit"
+            : types.some(x => /PressureAbsoluteUnit$/.test(x)) ? "PressureAbsoluteUnit" : null;
+        if (!t) return;
+        const name = dp.getAttribute("name");
+        const uri = directDataText(dp, "MetaData/rdl_uri");
+        if (name) map.set(name, t);
+        if (uri) map.set(uri, t);
+    });
+    return map;
+}
+function gaUnitType(ga) {
+    const type = ga.getAttribute("Type") || "";
+    const typeUri = ga.getAttribute("TypeURI") || "";
+    if (/^PressureGaugeUnit$/i.test(type)) return "PressureGaugeUnit";
+    if (/^PressureAbsoluteUnit$/i.test(type)) return "PressureAbsoluteUnit";
+    if (PRESSURE_GAUGE_TYPE_URIS.has(typeUri)) return "PressureGaugeUnit";
+    const bare = (ga.getAttribute("Name") || "").replace(/(AssignmentClass|Specialization)$/, "");
+    const fromProfile = profilePressureUnitTypes.get(ga.getAttribute("AttributeURI") || "") || profilePressureUnitTypes.get(bare);
+    if (fromProfile) return fromProfile;
+    const fromPlant = PLANT_PRESSURE_UNIT_TYPES.get(bare);
+    return fromPlant && fromPlant !== "ambiguous" ? fromPlant : null;
+}
+
+// Display symbol of a GenericAttribute's Units: a Core.xml unit literal name
+// ("Bar", "DegreeCelsius", "Millimetre") becomes its symbol - for a pressure
+// via its unit type, so a gauge "Bar" shows "barg" and an absolute one "bar".
+// Free-text units (COMOS "barg", "kg/h", "°C") are shown as written.
+function unitSymbolFor(units, unitType = null) {
+    const u = (units || "").trim();
+    if (!u) return null;
+    if (unitType && UNIT_SYMBOLS[`${unitType}.${u}`]) return UNIT_SYMBOLS[`${unitType}.${u}`];
+    const symbols = new Set(Object.entries(UNIT_SYMBOLS).filter(([k]) => k.endsWith(`.${u}`)).map(([, v]) => v));
+    return symbols.size === 1 ? [...symbols][0] : u;
+}
+
+// Set point (SP = ) and alarm (H/HH/L/LL=) labels always show the value's
+// unit of measure, e.g. "SP = 6 barg" (same rule as DEXPIViewer).
+const UNIT_LABEL_ATTRIBUTES = new Set(["SetPoint", "AlarmValue"]);
+
+const ABSOLUTE_PRESSURE_UNIT_RE = /^(bara|bar\s*\(?a\)?|kpaa|kpa\s*\(?a\)?|mpaa|psia|mbara)$/i;
+function isFullVacuum(value, units, unitsUri, attrName, unitType = null) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return false;
+    const u = (units || "").trim();
+    // known unit type (GenericAttribute Type, or the attribute's definition)
+    if (unitType === "PressureAbsoluteUnit") return value === 0;
+    if (unitType === "PressureGaugeUnit") {
+        const unit = FULL_VACUUM_GAUGE.find(x => (u && x.re.test(u)) || (unitsUri && unitsUri.endsWith(x.uri))) || FULL_VACUUM_GAUGE[0]; // default bar(g)
+        return Math.abs(value - unit.fv) <= Math.abs(unit.fv) * 0.015;
+    }
+    // unknown: judge by the attribute name and unit text
+    if (!/pressure/i.test(attrName || "")) return false;
+    if (ABSOLUTE_PRESSURE_UNIT_RE.test(u)) return value === 0;
+    const unit = FULL_VACUUM_GAUGE.find(x => (u && x.re.test(u)) || (!u && unitsUri && unitsUri.endsWith(x.uri)));
+    return !!unit && Math.abs(value - unit.fv) <= Math.abs(unit.fv) * 0.015;
+}
+
+function lookupAttributeText(dataArr, attrName, decimals = null) {
     const found = (dataArr || []).find(d => d.property === `DiscProfile/${attrName}` || d.property === `Proteus/${attrName}` || d.property === `Proteus/${attrName}AssignmentClass`);
     if (!found || found.value === null || found.value === undefined) return "";
     const v = found.value;
-    if (v && typeof v === "object" && v.kind === "PhysicalQuantity") return v.value !== null && v.value !== undefined ? String(v.value) : "";
+    if (isFullVacuum(typeof v === "object" && v?.kind === "PhysicalQuantity" ? v.value : v, found.units, found.unitsUri, attrName, found.unitType)) return "FV";
+    if (UNIT_LABEL_ATTRIBUTES.has(attrName) && v && typeof v === "object" && v.kind === "PhysicalQuantity" && v.value !== null && v.value !== undefined) {
+        return [formatLabelNumber(v.value, decimals), v.unit].filter(Boolean).join(" ");
+    }
+    if (typeof v === "number") return formatLabelNumber(v, decimals);
+    if (v && typeof v === "object" && v.kind === "PhysicalQuantity") return v.value !== null && v.value !== undefined ? formatLabelNumber(v.value, decimals) : "";
     if (v && typeof v === "object" && v.kind === "DataReference") return v.value.split(".").pop().split("/").pop();
     if (typeof v === "boolean") return v ? "true" : "false";
     return String(v);
+}
+
+// Equipment box value columns (ND0300B..ND0310B, DiscProfile 0.6.6).
+const EQUIPMENT_BOX_SYMBOL_RE = /^ND03(0\d|10)B$/;
+
+// An equipment's Chambers: nested <Equipment ComponentClass="Chamber">
+// children carrying the design / operating pressures and temperatures an
+// equipment box label shows (e.g. the hot and cold side of a heat exchanger).
+function chamberElementsOf(ownerEl) {
+    return ownerEl ? directChildrenByTag(ownerEl, "Equipment").filter(c => c.getAttribute("ComponentClass") === "Chamber") : [];
+}
+
+// A Chamber's ChamberFunction (GenericAttribute ChamberFunction /
+// ChamberFunctionSpecialization, as a name or an RDL URI), normalized to
+// "Cooling" / "Heating" / other literal name; "" when absent.
+function proteusChamberFunction(chamberEl) {
+    for (const group of directChildrenByTag(chamberEl, "GenericAttributes")) {
+        for (const ga of directChildrenByTag(group, "GenericAttribute")) {
+            if (!/^ChamberFunction(?!Representation)/i.test(ga.getAttribute("Name") || "")) continue;
+            const raw = ga.getAttribute("Value") || ga.getAttribute("ValueURI") || "";
+            const last = raw.split(/[/#.:]/).filter(Boolean).pop() || "";
+            if (/cooling/i.test(last)) return "Cooling";
+            if (/heating/i.test(last)) return "Heating";
+            return last;
+        }
+    }
+    return "";
+}
+
+// Hot / cold side of an equipment box (ND0309B heat exchanger: the 1st
+// occurrence of a repeated template is the hot side, the 2nd the cold
+// side) is picked by ChamberFunction, not document order:
+//   hot side  -> ChamberFunction Cooling
+//   cold side -> ChamberFunction Heating
+// Falls back to the Nth Chamber when none carries the expected function.
+const CHAMBER_SIDE_FUNCTIONS = ["Cooling", "Heating"];
+function chamberForSide(ownerEl, side) {
+    const chambers = chamberElementsOf(ownerEl);
+    const want = CHAMBER_SIDE_FUNCTIONS[side];
+    return (want && chambers.find(c => proteusChamberFunction(c) === want)) || chambers[side] || null;
 }
 
 // Plain LabelTemplate tokens that live on the owning PlantStructureItem
@@ -1005,16 +1211,64 @@ function resolveAlarmLabelTemplate(rawText, level, el, elementById, dataByObject
     return { text, hasToken: true, hasValue: hasToken ? hasValue : true };
 }
 
-function resolveLabelTemplateText(rawText, el, ownData, elementById, dataByObjectId) {
+// options.chamberSide (0 = hot side, 1 = cold side, null = any): for a
+// token the object itself doesn't carry, which of its Chambers to read -
+// see chamberForSide(). With chamberSide null the first Chamber that has a
+// value is used. options.decimals rounds numeric values (see
+// lookupAttributeText()).
+// A LabelTemplate Text may be a VB-style formula: quoted literals joined by
+// "&" ("'SP = ' & <SetPoint>", "'HH=' & SignalConveyingFunction:<AlarmValue>",
+// "'H'"). The quotes and "&" operators are formula syntax, not label text:
+// parts are concatenated, a quoted part keeps its inner text verbatim (spaces
+// included), unquoted parts are trimmed. Unbalanced edge quotes from older
+// profiles ("H=' & ...") are dropped. Text without quotes is plain text, its
+// "&" shown as is (the equipment box "<A> & <B> / <C>" lines). Same rule as
+// DEXPIViewer's unwrapLabelFormula().
+function unwrapLabelFormula(text) {
+    if (!/'/.test(text)) return text;
+    if ((text.match(/'/g) || []).length % 2) return text.replace(/'\s*&\s*/g, "").replace(/^'|'$/g, "");
+    const parts = [];
+    let cur = "", inQuote = false;
+    for (const ch of text) {
+        if (ch === "'") { inQuote = !inQuote; cur += ch; }
+        else if (ch === "&" && !inQuote) { parts.push(cur); cur = ""; }
+        else cur += ch;
+    }
+    parts.push(cur);
+    return parts.map(part => {
+        const t = part.trim();
+        const m = /^'([^']*)'$/.exec(t);
+        if (m) return m[1];
+        return t.replace(/^'|'$/g, "");
+    }).join("");
+}
+
+function resolveLabelTemplateText(rawText, el, ownData, elementById, dataByObjectId, options = {}) {
     if (!rawText) return { text: "", hasToken: false, hasValue: false };
     const alarmLevel = alarmLevelOf(rawText);
     if (alarmLevel) return resolveAlarmLabelTemplate(rawText, alarmLevel, el, elementById, dataByObjectId);
+    rawText = String(rawText).split(/\r?\n/).map(unwrapLabelFormula).join("\n");
+    const { chamberSide = null, decimals = null } = options;
     let hasToken = false;
     let hasValue = false;
     const resolveToken = (relatedClass, attrName) => {
         if (!relatedClass) {
-            const own = lookupAttributeText(ownData, attrName);
+            const own = lookupAttributeText(ownData, attrName, decimals);
             if (own) return own;
+            const chambers = chamberElementsOf(el);
+            if (chambers.length) {
+                const chamberData = c => dataByObjectId.get(c.getAttribute("ID"));
+                if (chamberSide !== null) {
+                    // a repeated (per-side) template reads only its own side's
+                    // Chamber, blank rather than another chamber's value
+                    const ch = chamberForSide(el, chamberSide);
+                    return ch ? lookupAttributeText(chamberData(ch), attrName, decimals) : "";
+                }
+                for (const c of chambers) {
+                    const v = lookupAttributeText(chamberData(c), attrName, decimals);
+                    if (v) return v;
+                }
+            }
             const fallback = PLANT_STRUCTURE_ATTRIBUTE_FALLBACKS[attrName];
             if (fallback) {
                 const structureId = directChildrenByTag(el, "Association")
@@ -1097,7 +1351,27 @@ const NOTE_COMPONENT_CLASS = "Note";
 // ItemID points to, scanning all GenericAttributes groups. Matches by exact
 // name first, then by "<attributeName>AssignmentClass". Returns null when
 // the ItemID doesn't resolve or no attribute matches either form.
-function resolveDependantAttributeValue(itemId, attributeName, elementById) {
+// decimals (optional): a numeric GenericAttribute (Format double / float /
+// integer types) is shown with exactly this many decimals - the same rule
+// the equipment box value columns' LabelTemplate overlays use (see
+// formatLabelNumber()), so a box's own label text and its "Profile labels"
+// overlay show the same "91.0". Text values are never rounded.
+const NUMERIC_GA_FORMATS = new Set(["double", "float", "integer", "long", "short", "byte", "ulong"]);
+function gaDisplayValue(ga, decimals) {
+    const raw = ga.getAttribute("Value");
+    if (raw !== null && raw.trim() !== "" && NUMERIC_GA_FORMATS.has(ga.getAttribute("Format") || "")
+        && isFullVacuum(Number(raw), ga.getAttribute("Units"), ga.getAttribute("UnitsURI"), (ga.getAttribute("Name") || "").replace(/AssignmentClass$/, ""), gaUnitType(ga))) return "FV";
+    if (raw !== null && UNIT_LABEL_ATTRIBUTES.has((ga.getAttribute("Name") || "").replace(/AssignmentClass$/, "")) && ga.getAttribute("Units")) {
+        const n = Number(raw);
+        const val = NUMERIC_GA_FORMATS.has(ga.getAttribute("Format") || "") && raw.trim() !== "" && Number.isFinite(n) ? formatLabelNumber(n, decimals) : raw;
+        return `${val} ${unitSymbolFor(ga.getAttribute("Units"), gaUnitType(ga))}`;
+    }
+    if (decimals === null || decimals === undefined || raw === null) return raw;
+    if (!NUMERIC_GA_FORMATS.has(ga.getAttribute("Format") || "")) return raw;
+    const n = Number(raw);
+    return raw.trim() !== "" && Number.isFinite(n) ? formatLabelNumber(n, decimals) : raw;
+}
+function resolveDependantAttributeValue(itemId, attributeName, elementById, decimals = null) {
     const target = itemId ? elementById?.get(itemId) : null;
     if (!target) return null;
     const suffixedName = `${attributeName}AssignmentClass`;
@@ -1105,8 +1379,8 @@ function resolveDependantAttributeValue(itemId, attributeName, elementById) {
     for (const group of directChildrenByTag(target, "GenericAttributes")) {
         for (const ga of directChildrenByTag(group, "GenericAttribute")) {
             const name = ga.getAttribute("Name");
-            if (name === attributeName) return ga.getAttribute("Value");
-            if (suffixedValue === null && name === suffixedName) suffixedValue = ga.getAttribute("Value");
+            if (name === attributeName) return gaDisplayValue(ga, decimals);
+            if (suffixedValue === null && name === suffixedName) suffixedValue = gaDisplayValue(ga, decimals);
         }
     }
     return suffixedValue;
@@ -1121,7 +1395,7 @@ function resolveDependantAttributeValue(itemId, attributeName, elementById) {
 // DependantAttribute is in the resolved symbol's declared label attributes.
 // Returns null when there is no TextStringFormatSpecification, no
 // ItemID-bearing reference, or any reference fails to validate or resolve.
-export function resolveTextTemplateValue(textEl, allowedAttrNames, elementById) {
+export function resolveTextTemplateValue(textEl, allowedAttrNames, elementById, decimals = null) {
     const refs = readTextTemplateReferences(textEl);
     if (!refs || refs.length === 0) return null;
     const parts = [];
@@ -1134,7 +1408,7 @@ export function resolveTextTemplateValue(textEl, allowedAttrNames, elementById) 
         hasItemIdRef = true;
         const isNoteRef = elementById?.get(ref.itemId)?.getAttribute("ComponentClass") === NOTE_COMPONENT_CLASS;
         if (!isNoteRef && !(allowedAttrNames && allowedAttrNames.has(ref.attribute))) return null;
-        const value = resolveDependantAttributeValue(ref.itemId, ref.attribute, elementById);
+        const value = resolveDependantAttributeValue(ref.itemId, ref.attribute, elementById, decimals);
         if (value === null) return null;
         parts.push(value);
     }
@@ -1287,7 +1561,10 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, embeddedSh
                 // TextStringFormatSpecification reference validates (or is
                 // Note-exempt); when drawn, it shows the live resolved value from
                 // resolveTextTemplateValue(), not the exported literal String.
-                const resolvedTemplateValue = discProfileLoaded ? resolveTextTemplateValue(textEl, allowedLabelAttrNames, elementById) : null;
+                // equipment box value columns (ND0300B..ND0310B) round numbers to 1
+                // decimal, like their LabelTemplate overlays below
+                const textDecimals = EQUIPMENT_BOX_SYMBOL_RE.test(placedProfileSymbol?.name || "") ? 1 : null;
+                const resolvedTemplateValue = discProfileLoaded ? resolveTextTemplateValue(textEl, allowedLabelAttrNames, elementById, textDecimals) : null;
                 if (discProfileLoaded && resolvedTemplateValue === null) return;
                 // hasOwnValidatedTemplate: true when this Text's own
                 // TextStringFormatSpecification reference validated, independent of
@@ -1344,26 +1621,29 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, embeddedSh
         // symbol resolves tokens against the object it decorates.
         if (placedVariant && placedVariant.labelTemplates?.length) {
             const scale = readScale(el);
-            const mirror = pos.isMirrored ? -1 : 1;
-            const rad = pos.rotation * Math.PI / 180;
-            const cos = Math.cos(rad), sin = Math.sin(rad);
+            // Equipment boxes repeat the same template once per chamber (ND0309B:
+            // hot side, then cold side) - the 1st occurrence reads the Cooling
+            // (hot side) Chamber, the 2nd the Heating (cold side) Chamber. Their
+            // value columns (ND0300B..ND0310B) round numeric values to 1 decimal.
+            const decimals = EQUIPMENT_BOX_SYMBOL_RE.test(placedProfileSymbol?.name || "") ? 1 : null;
+            const textCounts = new Map();
+            placedVariant.labelTemplates.forEach(lt => textCounts.set(lt.text, (textCounts.get(lt.text) || 0) + 1));
+            const textSeen = new Map();
             placedVariant.labelTemplates.forEach((lt, li) => {
-                const { text, hasToken, hasValue } = resolveLabelTemplateText(lt.text, ownerEl, ownData, elementById, dataByObjectId);
+                const occurrence = textSeen.get(lt.text) || 0;
+                textSeen.set(lt.text, occurrence + 1);
+                const chamberSide = textCounts.get(lt.text) > 1 ? occurrence : null;
+                const { text, hasToken, hasValue } = resolveLabelTemplateText(lt.text, ownerEl, ownData, elementById, dataByObjectId, { chamberSide, decimals });
                 if (!text.trim()) return;
                 // Skips a template whose only content is unresolved token(s) with
                 // non-empty literal decoration around the missing value.
                 if (hasToken && !hasValue) return;
-                const lx = lt.position.x * scale.x * mirror;
-                const ly = lt.position.y * scale.y;
-                const wx = pos.x + (lx * cos - ly * sin);
-                const wy = pos.y + (lx * sin + ly * cos);
-                // readableLabelOrientation() folds pos.rotation + lt.rotation into a
-                // readable angle and swaps the template's Left/Right/Top/Bottom
-                // alignment to match, keeping the label on the same side of its anchor.
-                // Character-stacked templates skip their own Rotation and draw one
-                // upright character per line.
+                // Position, readable rotation and alignment per DISC DEXPI rule 'B' -
+                // see profileLabelPlacement(). Character-stacked templates skip their
+                // own Rotation and draw one upright character per line.
                 const stacked = isCharacterStackedLabelTemplate(lt);
-                const orient = readableLabelOrientation(pos.rotation + (stacked ? 0 : lt.rotation), lt.alignment.horizontal, lt.alignment.vertical);
+                const orient = profileLabelPlacement(lt, pos, scale, stacked);
+                const wx = orient.x, wy = orient.y;
                 const displayText = stacked ? Array.from(text).join("\n") : text;
                 elements.push({
                     kind: "primitive", key: `lbltpl_${id}_${li}`, representedId: ownerId, elementRole: "label",
@@ -1438,6 +1718,7 @@ export function parseProteusPackage(mainXml, discProfileXml) {
 
     const classIndex = buildClassRdlUriIndex(discDoc);
     const dataPropIndex = buildDataPropertyRdlUriIndex(discDoc);
+    profilePressureUnitTypes = buildProfilePressureUnitTypes(discDoc);
     const proteusShapeCatalogue = buildProteusShapeCatalogue(mainDoc);
     const symbolMap = parseSymbolCatalogue(discDoc);
     // Fallback symbol geometry source, built from the main document's own
