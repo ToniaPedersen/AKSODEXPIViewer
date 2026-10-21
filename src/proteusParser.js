@@ -1169,7 +1169,7 @@ const OFF_PAGE_CONNECTOR_REFERENCE_CHILD_TAGS = ["PipeOffPageConnectorReference"
 // whether at least one resolved to a non-empty value (hasValue).
 // Alarm LabelTemplates ("'HH=' & SignalConveyingFunction:<AlarmValue>", "'H'" ...): shown only when one of the
 // object's SignalConveyingFunctions has the matching PortStatusSpecialization. The text follows the profile's own
-// template: quoted literals joined with &, and SignalConveyingFunction:<AlarmValue> read from that function as <value><UoM>.
+// template: quoted literals joined with &, and SignalConveyingFunction:<AlarmValue> read from that function as <value> <unit symbol>.
 const ALARM_LEVEL_RE = /^\s*'?(HH|LL|H|L)(?=\s*(=|'|$))/;
 const ALARM_PORT_STATUS = { HH: "HighHighPort", LL: "LowLowPort", H: "HighPort", L: "LowPort" };
 
@@ -1191,9 +1191,10 @@ function resolveAlarmLabelTemplate(rawText, level, el, elementById, dataByObject
     if (!scfId) return { text: "", hasToken: true, hasValue: false };
     const scfData = dataByObjectId.get(scfId);
     const scfEl = elementById.get(scfId);
-    const unitsOf = (attrName) => directChildrenByTag(scfEl, "GenericAttributes")
+    // Unit shown as its symbol, like SP = labels: gauge "Bar" -> "barg" (unitSymbolFor / gaUnitType).
+    const gaOf = (attrName) => directChildrenByTag(scfEl, "GenericAttributes")
         .flatMap(g => directChildrenByTag(g, "GenericAttribute"))
-        .find(a => a.getAttribute("Name") === attrName)?.getAttribute("Units") || "";
+        .find(a => a.getAttribute("Name") === attrName);
     let hasToken = false, hasValue = true;
     const text = rawText.split(/&(?=(?:[^']*'[^']*')*[^']*$)/).map(part => {
         const t = part.trim();
@@ -1204,7 +1205,16 @@ function resolveAlarmLabelTemplate(rawText, level, el, elementById, dataByObject
             hasToken = true;
             const v = lookupAttributeText(scfData, tok[1]);
             if (!v) { hasValue = false; return ""; }
-            return v + unitsOf(tok[1]);
+            if (v === "FV") return v;
+            const ga = gaOf(tok[1]);
+            const units = (ga?.getAttribute("Units") || "").trim();
+            if (!units) return v;
+            // lookupAttributeText may already have appended the unit; take the number only.
+            const shownUnit = unitSymbolFor(units, gaUnitType(ga));
+            const num = shownUnit && v.endsWith(` ${shownUnit}`) ? v.slice(0, -shownUnit.length - 1) : v;
+            // An alarm pressure with no gauge/absolute type is a gauge pressure (P&ID convention): "Bar" -> "barg".
+            const type = gaUnitType(ga) || (UNIT_SYMBOLS[`PressureGaugeUnit.${units}`] ? "PressureGaugeUnit" : null);
+            return `${num} ${unitSymbolFor(units, type)}`;
         }
         return t.replace(/'/g, "");
     }).join("");

@@ -238,10 +238,10 @@ When a profile is loaded, heat-traced items are detected from the `HeatTracingTy
 With a profile loaded, a **Profile labels** checkbox appears.
 
 - **Checked** — every catalogued symbol placement shows the value built from the profile symbol's own `Profile/LabelTemplate`, as an overlay, even for symbols that carry no `<Label>` of their own in the file.
-  - Alarm templates (`HH`, `H`, `L`, `LL` with `SignalConveyingFunction:<AlarmValue>`) are shown only when one of the object's SignalConveyingFunctions has the matching `PortStatusSpecialization` (`StatusHighHighPort`, `StatusHighPort`, `StatusLowPort`, `StatusLowLowPort`). The text follows the profile's template: with the current profile each shows `<level>=<AlarmValue><UoM>`, e.g. `HH=272Bar`; a template with just `'H'` shows `H`.
+  - Alarm templates (`HH`, `H`, `L`, `LL` with `SignalConveyingFunction:<AlarmValue>`) are shown only when one of the object's SignalConveyingFunctions has the matching `PortStatusSpecialization` (`StatusHighHighPort`, `StatusHighPort`, `StatusLowPort`, `StatusLowLowPort`). The text follows the profile's template: with the current profile each shows `<level>=<AlarmValue> <unit>`, e.g. `HH=272 barg`; a template with just `'H'` shows `H`.
 - **Unchecked** — the profile's attribute-resolved value replaces the symbol's own literal label text.
 
-A numeric attribute with a unit is shown with its unit symbol (`Bar` on a gauge pressure → `barg`, `DegreeCelsius` → `°C`). Set point labels (`SP = `) always show the value with its unit, e.g. `SP = 6 barg`; alarm labels follow the alarm rule above. A pressure at full vacuum (−1.01325 barg, or 0 in an absolute unit) is shown as `FV`. Whether a pressure is gauge or absolute is taken from the GenericAttribute's `Type` / `TypeURI`, else from the attribute's definition in the loaded DiscProfile.xml, else from the DEXPI 1.4 model.
+A numeric attribute with a unit is shown with its unit symbol (`Bar` on a gauge pressure → `barg`, `DegreeCelsius` → `°C`). Set point and alarm labels (`SP = `, `HH=`, `H=`, `L=`, `LL=`) always show the value with its unit, e.g. `SP = 6 barg`, `HH=272 barg`. An alarm pressure whose unit is not marked gauge or absolute is shown as gauge. A pressure at full vacuum (−1.01325 barg, or 0 in an absolute unit) is shown as `FV`. Whether a pressure is gauge or absolute is taken from the GenericAttribute's `Type` / `TypeURI`, else from the attribute's definition in the loaded DiscProfile.xml, else from the DEXPI 1.4 model.
 
 #### Rotation and mirroring
 
