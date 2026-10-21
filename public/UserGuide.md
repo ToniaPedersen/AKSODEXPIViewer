@@ -2,7 +2,7 @@
 
 A browser-based viewer and validation tool for legacy **DEXPI 1.4 / Proteus 4.1.1** XML files, rendered and checked using **DEXPI 2.x profile** symbols, classes and attributes by way of a loaded `DiscProfile.xml`.
 
-Developed by **Tonia Pedersen**. Version **2.4**. See `ChangeLog_2.3_to_2.4.md` for what changed since 2.3.
+Developed by **Tonia Pedersen**. Version **2.5**. See `ChangeLog_2.4_to_2.5.md` for what changed since 2.4.
 
 ---
 
@@ -222,6 +222,28 @@ With a profile loaded, a **Profile labels** checkbox appears.
 
 - **Checked** — every catalogued symbol placement shows the value built from the profile symbol's own `Profile/LabelTemplate`, as an overlay, even for symbols that carry no `<Label>` of their own in the file.
 - **Unchecked** — the profile's attribute-resolved value replaces the symbol's own literal label text.
+
+A numeric attribute with a unit is shown with its unit symbol (`Bar` on a gauge pressure → `barg`, `DegreeCelsius` → `°C`). Set point and alarm labels (`SP = `, `HH=`, `H=`, `L=`, `LL=`) always show the value with its unit, e.g. `SP = 6 barg`. A pressure at full vacuum (−1.01325 barg, or 0 in an absolute unit) is shown as `FV`. Whether a pressure is gauge or absolute is taken from the GenericAttribute's `Type` / `TypeURI`, else from the attribute's definition in the loaded DiscProfile.xml, else from the DEXPI 1.4 model.
+
+#### Rotation and mirroring
+
+A profile label template describes the label for the symbol in its upright, unmirrored position. When the symbol is placed rotated or mirrored, the **Profile labels** overlay is placed by DISC DEXPI rule 'B' (requirements document, ANNEX B *Profile Label Text under Rotation and Mirroring*), for every symbol:
+
+- the text stays readable — left to right when the symbol is at 0° or 180°, bottom to top at 90° or 270°, never upside down or right to left;
+- a label **above or below** the symbol follows the symbol's rotation: text above a symbol at 0° is below its origin at 180° (still on the symbol body) and beside it at 90° and 270°;
+- a label **left or right** of the symbol follows the reading direction of the text: text left of a symbol at 0° is still left of it at 180°, and below it at 90°;
+- a mirrored symbol has its labels mirrored with it;
+- the alignment is adjusted so the text always grows away from the symbol: Left/Right swap for a mirrored symbol, Top/Bottom swap when the text had to be turned over (at 90° and 180°).
+
+Character-stacked templates (`<NonSasFunction>`) keep one upright character per line. The same rule is used by DEXPIViewer and by the label update script.
+
+#### Equipment boxes
+
+An equipment box (DiscProfile 0.6.6, ND0300–ND0310) has an 'A' part (`ND03xxA`, the frame with the captions) and a 'B' part (`ND03xxB`, the value column) that belongs to the equipment. The value column shows:
+
+- values the equipment does not carry itself, read from its **Chambers** (nested `<Equipment ComponentClass="Chamber">`). In a box that repeats a line per side (ND0309B heat exchanger), the first occurrence shows the hot side — the Chamber whose `ChamberFunction` is **Cooling** — and the second the cold side — **Heating**. When no Chamber carries the expected function, the Chambers are used in file order;
+- numbers with **1 decimal** (`130` → `130.0`, `56.55` → `56.6`), both in the overlay and in the box's own label texts; text values such as a material code are never rounded;
+- the separators of the template between the values: `<LowerLimitDesignPressure> & <UpperLimitDesignPressure> / <NormalOperatingPressure>` is shown as `FV & 130.0 / 90.0`. Only quoted text (`'SP = ' & <SetPoint>`) is read as a formula.
 
 ### 5.7 Background image
 
