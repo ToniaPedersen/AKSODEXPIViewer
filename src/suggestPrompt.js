@@ -269,6 +269,9 @@ function markLines(lines, issue, firstLine) {
     } else if (code === "SER-CNT-01") {
         const m = /Set="([^"]*)" declares Number="(\d+)"/.exec(msg);
         if (m) lines.forEach((l, i) => { if (/<GenericAttributes\b/.test(l) && l.includes(`Set="${m[1]}"`) && l.includes(`Number="${m[2]}"`)) marks.add(i); });
+    } else if (code === "MDL-PRP-02") {
+        const name = (/^(\S+) is a PhysicalQuantity/.exec(msg) || [])[1];
+        if (name) hit(l => /<GenericAttribute\b/.test(l) && l.includes(`Name="${name}"`));
     } else if (code === "SER-STR-01" || /^XSD|^SER-VAL/.test(code)) {
         marks.add(0);
     } else {
@@ -1139,6 +1142,7 @@ const NOTE_ONLY = {
     "MDL-CLS-01": ["Use a class of the DEXPI 1.4 model or of the DiscProfile.xml. A vendor class becomes Custom<BaseClass> (e.g. CustomOperatedValve) with TypeNameAssignmentClass / TypeURIAssignmentClass saying what it really is."],
     "PRF-SCP-01": ["The class is not in the DISC profile's AllowedClasses: change ComponentClass (and ComponentClassURI) to a class the profile allows - the DEXPI class it really is, or a Custom<BaseClass> with TypeName/TypeURI saying what it is."],
     "SER-VAL-04": ["Use one of the values of the profile list named in the message, or an empty string."],
+    "MDL-PRP-02": ["The attribute is declared as a PhysicalQuantity: Format=\"double\", a numeric Value, Units, and Type (and/or TypeURI) naming the unit type, e.g. Type=\"PressureGaugeUnit\" or \"PressureAbsoluteUnit\"."],
 };
 
 // ---- GenericAttributes sets --------------------------------------------------
@@ -1212,6 +1216,51 @@ function fixEmptyAttributes(text, el, fileName) {
     };
 }
 
+// MDL-PRP-02: a PhysicalQuantity written as text ("303barg") becomes
+// Value="303" Format="double" Units="barg" Type="PressureGaugeUnit".
+const UNIT_QUANTITIES = [
+    [/^(barg|bar\s*\(g\)|mbarg|kpag|mpag|psig)$/i, "PressureGauge"],
+    [/^(bara|bar\s*\(a\)|mbara|kpaa|mpaa|psia)$/i, "PressureAbsolute"],
+    [/^(°c|degc|°f|degf|k)$/i, "Temperature"],
+    [/^(mm|cm|m|in|ft)$/i, "Length"],
+    [/^(w|kw|mw|hp)$/i, "Power"],
+    [/^(m3\/h|m³\/h|l\/min|l\/s|m3\/s|m³\/s)$/i, "VolumeFlowRate"],
+    [/^(kg\/h|kg\/s|t\/h)$/i, "MassFlowRate"],
+];
+const quantityForUnit = u => (UNIT_QUANTITIES.find(([re]) => re.test(u)) || [])[1] || null;
+const DATATYPE_NAME = /^(string|double|float|decimal|integer|int|long|short|byte|boolean|bool|datetime|date|time|anyuri|uri)$/i;
+
+function fixPhysicalQuantity(issue, el) {
+    const msg = issue.message || "";
+    const name = (/^(\S+) is a PhysicalQuantity/.exec(msg) || [])[1];
+    if (!name) return null;
+    const line = splitLines(el.raw).find(l => /<GenericAttribute\b/.test(l) && l.includes(`Name="${name}"`));
+    if (!line) return null;
+    const get = a => (new RegExp(`\\b${a}="([^"]*)"`).exec(line) || [])[1];
+    const raw = (get("Value") || "").trim();
+    const m = /^([-+]?\d+(?:[.,]\d+)?(?:[eE][-+]?\d+)?)\s*(.*)$/.exec(raw);
+    const units = (get("Units") || "").trim() || (m ? m[2].trim() : "");
+    const declared = (/is a PhysicalQuantity \((\w+)\)/.exec(msg) || [])[1];
+    const type = (get("Type") || "").trim();
+    const typeUri = (get("TypeURI") || "").trim();
+    const quantity = declared || quantityForUnit(units);
+    let fixed = withAttr(line, "Value", m ? m[1].replace(",", ".") : "<number>");
+    fixed = withAttr(fixed, "Format", "double");
+    fixed = withAttr(fixed, "Units", units || "<unit>");
+    if (!type || DATATYPE_NAME.test(type) || !/Unit$/.test(type) || declared) fixed = withAttr(fixed, "Type", quantity ? `${quantity}Unit` : "<unit type>");
+    if (typeUri && DATATYPE_NAME.test(typeUri.split(/[/#]/).pop())) fixed = fixed.replace(/\s*\bTypeURI="[^"]*"/, "");
+    return {
+        heading: "Suggested fix",
+        rows: [del(line), add(fixed)],
+        notes: [
+            `${name} is declared as a PhysicalQuantity: the number goes in Value with Format="double", the unit in Units, and Type names the unit type${quantity ? ` (${quantity}Unit${declared ? "" : `, from the unit "${units}"`})` : ""}.`,
+            ...(m && m[2].trim() && !get("Units") ? [`"${raw}" is split into Value="${m[1]}" and Units="${m[2].trim()}".`] : []),
+            ...(!m ? [`"${raw}" is not a number: replace <number> with the value.`] : []),
+            "Type and TypeURI on <GenericAttribute> are DISC Proteus 4.1.1 attributes (proteus-4.1.1-disc.xsd).",
+        ],
+    };
+}
+
 function fixAttributeCount(text, issue, el, fileName) {
     const m = /Set="([^"]*)" declares Number="(\d+)" but actually contains (\d+)/.exec(issue.message || "");
     if (!m) return null;
@@ -1260,6 +1309,7 @@ function buildFixRows(text, issue, el, marked, fileName) {
     if (code === "MDL-REF-03") return fixSignalEnd(text, issue, el);
     if (code === "SER-REQ-02" && el.tag === "GenericAttributes" && !/<GenericAttribute\b/.test(el.raw)) return fixEmptyAttributes(text, el, fileName);
     if (code === "SER-CNT-01") return fixAttributeCount(text, issue, el, fileName);
+    if (code === "MDL-PRP-02") { const f = fixPhysicalQuantity(issue, el); if (f) return f; }
     if (code === "MDL-CMP-03" && /no ConnectionPoints\/Node/.test(issue.message || "")) return fixMissingNodes(text, el);
     if (code === "MDL-MUL-03") { const f = fixMultiplicity(text, issue, el); if (f) return f; }
     if (/^Orphan/.test(el.cls || "") && ["MDL-CLS-05", "MDL-CLS-01", "PRF-SCP-01"].includes(code)) return fixOrphanContainer(text, el);

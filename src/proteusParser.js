@@ -1554,6 +1554,13 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, embeddedSh
             // representedId is the object this label is annotating (see
             // resolveLabelOwnerId()); a nested Label represents its owner directly.
             const representedId = labelEl === el ? resolveLabelOwnerId(el, id, elementById) : id;
+            // A nested Label that places its own profile symbol (e.g. ND0048
+            // SpecialItemLabel) is checked against that symbol's LabelTemplates,
+            // not the owner's.
+            const labelRegNum = labelEl !== el && discProfileLoaded ? shapeCatalogue.get(labelEl.getAttribute("ComponentName") || "") : null;
+            const labelProfileSymbol = labelRegNum ? symbolMap.get(`DiscProfile/${labelRegNum}`) || null : null;
+            const labelAllowedAttrNames = labelProfileSymbol ? symbolLabelAttributeNames(labelProfileSymbol) : allowedLabelAttrNames;
+            const labelSymbolName = (labelProfileSymbol || placedProfileSymbol)?.name || "";
 
             directChildrenByTag(labelEl, "Text").forEach((textEl, ti) => {
                 const str = textEl.getAttribute("String");
@@ -1573,8 +1580,8 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, embeddedSh
                 // resolveTextTemplateValue(), not the exported literal String.
                 // equipment box value columns (ND0300B..ND0310B) round numbers to 1
                 // decimal, like their LabelTemplate overlays below
-                const textDecimals = EQUIPMENT_BOX_SYMBOL_RE.test(placedProfileSymbol?.name || "") ? 1 : null;
-                const resolvedTemplateValue = discProfileLoaded ? resolveTextTemplateValue(textEl, allowedLabelAttrNames, elementById, textDecimals) : null;
+                const textDecimals = EQUIPMENT_BOX_SYMBOL_RE.test(labelSymbolName) ? 1 : null;
+                const resolvedTemplateValue = discProfileLoaded ? resolveTextTemplateValue(textEl, labelAllowedAttrNames, elementById, textDecimals) : null;
                 if (discProfileLoaded && resolvedTemplateValue === null) return;
                 // hasOwnValidatedTemplate: true when this Text's own
                 // TextStringFormatSpecification reference validated, independent of

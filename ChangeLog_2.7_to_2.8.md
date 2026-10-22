@@ -33,11 +33,25 @@ New `profileLabelPlacement(lt, pos, scale, stacked)` in `src/proteusParser.js` r
 - A pressure at full vacuum is shown as `FV`: a gauge pressure of -1 atm (-1.01325 barg and the usual rounded -1.0 / -1.013 barg, within 1.5 %, in bar, mbar, kPa, MPa, Pa or psi) or an absolute pressure of 0.
 - Gauge or absolute is taken from the GenericAttribute's `Type` (`PressureGaugeUnit` / `PressureAbsoluteUnit`) or `TypeURI` (`RDS7345161` = gauge), else from the loaded DiscProfile.xml DataProperty's `Core/PhysicalQuantities.Pressure*Unit` type (by `rdl_uri` or name, `buildProfilePressureUnitTypes()`), else from the DEXPI 1.4 model (`NullablePressureGauge` / `NullablePressureAbsolute` in `dexpi14Rdl.json`). When none says, the attribute name (`...Pressure...`) and unit text decide.
 
+### Label symbols with their own LabelTemplate
+
+- A nested `<Label>` that places its own profile symbol (e.g. `ND0048` special item label, LabelTemplate `<SpecialItemNumber>`) has its `<Text>` reference checked against that symbol's LabelTemplate attributes, not the owner's symbol. A Text referencing an attribute the label symbol does not define (`ObjectDisplayName` on `SpecialItemLabel-*`) is no longer drawn; the label shows the owner's `SpecialItemNumber`, or nothing when the owner has none.
+
+### MDL-PRP-02: PhysicalQuantity attributes (error)
+
+- MDL-PRP-02 is now implemented. An attribute whose definition is a physical quantity (a DiscProfile.xml DataProperty of type `Core/PhysicalQuantities.*`, e.g. `SetPoint`, or a DEXPI 1.4 `Nullable<Quantity>` property) must be `Format="double"` with a numeric `Value`, `Units`, and a `Type` naming the unit type (`PressureGaugeUnit`, `PressureAbsoluteUnit`, ...) or a `TypeURI`. Anything else is an error. An empty Value is not checked.
+- Suggest… shows the corrected line, splitting a value such as `303barg` into `Value="303" Units="barg"` and choosing `Type` (e.g. `PressureGaugeUnit`) from the unit.
+
 ### User Guide
 
 - `public/UserGuide.md`: version 2.8; section 5.6 *Profile labels* gets the units / `FV` paragraph and the new subsections *Rotation and mirroring* (rule 'B') and *Equipment boxes*.
 - `public/UserGuide.html` regenerated with `scripts/build-guide.py`.
 
+### BG image with the XML
+
+- **Load Proteus XML** accepts the XML and a .png picked together; the .png is loaded as the BG image (the same-named one when several are picked) and the BG Controls bar is shown. Where the browser has a file picker API the PNG's file handle is kept, so Save placement writes back into it.
+- **Open** on the Folder tab (and in the error explorer) loads the matching .png from the same folder: `<name>.png`, else the name with its further dotted parts removed (`a.enhanced.xml.Dexpi_2.0.xml` → `a.enhanced.xml.Dexpi_2.0.png`, …, `a.png`).
+
 ### Files changed
 
-`package.json`, `package-lock.json`, `README.md`, `ChangeLog_2.7_to_2.8.md` (new), `public/UserGuide.md`, `public/UserGuide.html`, `src/proteusParser.js`, `src/unitSymbols.js` (new).
+`package.json`, `package-lock.json`, `README.md`, `ChangeLog_2.7_to_2.8.md` (new), `public/UserGuide.md`, `public/UserGuide.html`, `src/App.jsx`, `src/proteusParser.js`, `src/rdlValidate.js`, `src/issueCodes.js`, `src/suggestPrompt.js`, `src/unitSymbols.js` (new).

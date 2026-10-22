@@ -64,6 +64,72 @@ function lastSegment(name) {
     return name.split(/[./]/).pop();
 }
 
+// ---- MDL-PRP-02: PhysicalQuantity-typed attributes --------------------------
+//
+// A property declared as a physical quantity (DiscProfile.xml DataProperty of
+// type Core/PhysicalQuantities.*, or a DEXPI 1.4 Nullable<Quantity>) must be
+// written as Format="double", a numeric Value, Units, and a Type naming the
+// Core/PhysicalQuantities unit type (e.g. Type="PressureGaugeUnit"), or a
+// TypeURI. An empty Value is not checked. Declared type: "PhysicalQuantity"
+// (any quantity) or a specific one ("PressureGauge"; a profile
+// "PressureGaugeUnit" counts as that).
+const NON_QUANTITY_NULLABLES = new Set(["NullableString", "NullableInteger", "NullableAnyURI", "NullableDateTime", "NullableBoolean", "NullableDouble"]);
+function modelQuantityType(valueType) {
+    return valueType && valueType.startsWith("Nullable") && !NON_QUANTITY_NULLABLES.has(valueType) ? valueType.slice("Nullable".length) : null;
+}
+
+export function buildProfileQuantityIndex(discDoc) {
+    const map = new Map();
+    if (!discDoc) return map;
+    qsa(discDoc, "DataProperty").forEach(dp => {
+        const q = qsa(dp, "DataTypeReference").map(r => r.getAttribute("type") || "").find(t => t.startsWith("Core/PhysicalQuantities."));
+        if (!q) return;
+        directChildrenByTag(dp, "Data")
+            .filter(d => d.getAttribute("property") === "MetaData/rdl_uri")
+            .forEach(d => {
+                const uri = directChildrenByTag(d, "String")[0]?.textContent?.trim();
+                if (uri) map.set(uri, lastSegment(q).replace(/Unit$/, ""));
+            });
+    });
+    return map;
+}
+
+const DATATYPE_NAME_RE = /^(string|double|float|decimal|integer|int|long|short|byte|boolean|bool|datetime|date|time|anyuri|uri)$/i;
+const isDatatypeName = s => DATATYPE_NAME_RE.test(s.split(/[/#]/).pop());
+
+function physicalQuantityProblems(ga, declared) {
+    const value = (ga.getAttribute("Value") || "").trim();
+    if (!value) return [];
+    const problems = [];
+    const format = ga.getAttribute("Format") || "";
+    if (format !== "double") problems.push(format ? `Format="${format}" (expected "double")` : `no Format (expected "double")`);
+    if (!Number.isFinite(Number(value))) problems.push(`Value "${value}" is not a number`);
+    if (!(ga.getAttribute("Units") || "").trim()) problems.push("no Units");
+    const type = (ga.getAttribute("Type") || "").trim();
+    const typeUri = (ga.getAttribute("TypeURI") || "").trim();
+    const quantityType = type && !isDatatypeName(type) ? type : null;
+    if (!quantityType && !(typeUri && !isDatatypeName(typeUri))) {
+        problems.push(type ? `Type="${type}" is a datatype, not a physical quantity unit type` : "no Type/TypeURI naming the quantity");
+    } else if (quantityType && !/Unit$/.test(quantityType)) {
+        problems.push(`Type="${type}" is not a unit type (expected ${declared !== "PhysicalQuantity" ? `"${declared}Unit"` : `e.g. "${quantityType}Unit"`})`);
+    } else if (quantityType && declared !== "PhysicalQuantity" && quantityType.replace(/Unit$/, "") !== declared) {
+        problems.push(`Type="${type}" but the property is a ${declared} (expected "${declared}Unit")`);
+    }
+    return problems;
+}
+
+function physicalQuantityFinding(ga, declared, source, objectId, componentClass) {
+    const problems = physicalQuantityProblems(ga, declared);
+    if (!problems.length) return null;
+    const name = (ga.getAttribute("Name") || "").trim();
+    const what = declared === "PhysicalQuantity" ? "a PhysicalQuantity" : `a PhysicalQuantity (${declared})`;
+    const example = declared === "PhysicalQuantity" ? "e.g. PressureGaugeUnit" : `${declared}Unit`;
+    return {
+        severity: "error", code: "MDL-PRP-02", category: "physical-quantity-type", objectId, componentClass,
+        message: `${name} is ${what} in the ${source}: write it as Format="double" with a numeric Value, Units and a Type naming the unit type (${example}) - ${problems.join("; ")}.`,
+    };
+}
+
 // All superTypes of a profile class, following superTypes that name another
 // profile class (e.g. AreaBreak -> /InformationModel.LogicalBreak ->
 // Core/ConceptualObject).
@@ -1008,6 +1074,8 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
     const symbolUsageIndex = buildSymbolUsageIndex(discDoc);
     // Class-scoped DiscProfile.xml DataProperties, for the attribute-name check below.
     const profileAttrIndex = buildProfileAttributeIndex(discDoc);
+    // rdl_uri -> physical quantity type of profile DataProperties (MDL-PRP-02).
+    const profileQuantityIndex = buildProfileQuantityIndex(discDoc);
     const dexpi1x = isDexpi1x(mainDoc);
     // DiscProfile.xml's own Profile/Symbol catalogue (keyed "DiscProfile/<name>"),
     // used by checkLabelTextTemplates() below. Empty when no DiscProfile.xml
@@ -1843,6 +1911,9 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
                     }
                     if (attributeInScope(scope, rawName.trim(), attrUri, dexpi1x)) {
                         profileExtensionAttrCount++;
+                        const declared = attrUri ? profileQuantityIndex.get(attrUri) : null;
+                        const pq = declared ? physicalQuantityFinding(ga, declared, "DiscProfile.xml", objectId, componentClass) : null;
+                        if (pq) findings.push(pq);
                         return;
                     }
                     unknownAttrCount++;
@@ -1865,6 +1936,10 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
                     });
                     return;
                 }
+
+                const declaredQuantity = modelQuantityType(propInfo.valueType);
+                const pq = declaredQuantity ? physicalQuantityFinding(ga, declaredQuantity, "DEXPI 1.4 model", objectId, componentClass) : null;
+                if (pq) findings.push(pq);
 
                 const seen = occurrenceCounts.get(attrUri) || { propInfo, count: 0 };
                 seen.count++;

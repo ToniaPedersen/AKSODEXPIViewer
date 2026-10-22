@@ -377,7 +377,7 @@ export const ISSUE_CODES = {
         "needs": "model+profileForDisc",
         "scope": "all",
         "drivenBy": null,
-        "implemented": false
+        "implemented": true
     },
     "MDL-PRP-03": {
         "code": "MDL-PRP-03",

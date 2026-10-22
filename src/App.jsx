@@ -1016,7 +1016,8 @@ export default function App() {
         e.target.value = "";
         const file = picked.find(f => !/\.png$/i.test(f.name)); if (!file) return;
         removeBg();
-        const pickedPng = picked.find(f => /\.png$/i.test(f.name) && baseName(f.name) === baseName(file.name));
+        const pngs = picked.filter(f => /\.png$/i.test(f.name));
+        const pickedPng = pngs.find(f => baseName(f.name) === baseName(file.name)) || pngs[0];
         const png = (pickedPng && (handleByFile?.get(pickedPng) || pickedPng)) || await folderPngByName(file.name);
         const txt = await file.text(); setMainXmlText(txt); setMainFileLoaded(true);
         setMainFileName(file.name);
@@ -1219,7 +1220,7 @@ export default function App() {
         setXsdStatus("idle"); setXsdResult(null); setXsdError("");
         rebuild(txt, discXmlText);
         setLeftTab("topology");
-        applyAutoBg(folderPngsRef.current.get(pngPathFor(path).toLowerCase()));
+        applyAutoBg(folderPngFor(path));
     }
 
     // Report rows for the loaded file, in the same layout as the folder run.
@@ -1285,6 +1286,24 @@ export default function App() {
         if (discInputRef.current) discInputRef.current.value = "";
         rebuild(mainXmlText, "");
     }
+    // Load Proteus XML: the XML, optionally with a .png picked at the same time as its BG image.
+    // The PNG's file handle is kept where the browser allows, so Save placement can write back into it.
+    async function handleMainButton() {
+        if (typeof window.showOpenFilePicker !== "function") { mainInputRef.current?.click(); return; }
+        let handles;
+        try {
+            handles = await window.showOpenFilePicker({
+                multiple: true,
+                types: [{ description: "Proteus XML and optional PNG background", accept: { "text/xml": [".xml"], "image/png": [".png"] } }],
+            });
+        } catch (err) {
+            if (err?.name !== "AbortError") mainInputRef.current?.click();
+            return;
+        }
+        const files = await Promise.all(handles.map(h => h.getFile()));
+        const handleByFile = new Map(files.map((file, i) => [file, handles[i]]));
+        await handleMainFile({ target: { files, set value(_v) { /* picker, nothing to clear */ } } }, handleByFile);
+    }
     // BG Image button: an image on its own, or a Proteus XML picked together with its .png - then both are loaded.
     // Where the browser has a file picker API the PNG's file handle is kept, so Save placement can write straight back into that file.
     async function handleBgButton() {
@@ -1327,6 +1346,21 @@ export default function App() {
         const hits = [...folderPngsRef.current.entries()].filter(([k]) => baseName(k.split("/").pop()) === want);
         if (hits.length !== 1) return null;
         return hits[0][1];
+    }
+
+    // .png in the same folder as a folder file: <name>.png, else <name without its further dotted parts>.png
+    // ("a.enhanced.xml.Dexpi_2.0.xml" -> "a.enhanced.xml.Dexpi_2.0.png", ..., "a.png").
+    function folderPngFor(path) {
+        const lower = path.toLowerCase().replace(/\.xml$/, "");
+        const dir = lower.includes("/") ? lower.slice(0, lower.lastIndexOf("/") + 1) : "";
+        let stem = lower.slice(dir.length);
+        for (;;) {
+            const hit = folderPngsRef.current.get(dir + stem + ".png");
+            if (hit) return hit;
+            const dot = stem.lastIndexOf(".");
+            if (dot <= 0) return null;
+            stem = stem.slice(0, dot);
+        }
     }
 
     function removeBg() {
@@ -1787,7 +1821,7 @@ export default function App() {
                             <button style={S.collapseBtn} onClick={() => setLeftCollapsed(true)}>{"<"}</button>
                         </div>
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                            <button style={{ ...S.btn, background: mainFileLoaded ? "#eaf2ff" : "white" }} onClick={() => mainInputRef.current?.click()} title="Pick the XML, optionally with its same-named .png to load it as the BG image">{mainFileLoaded ? "✓ " : ""}Load Proteus XML</button>
+                            <button style={{ ...S.btn, background: mainFileLoaded ? "#eaf2ff" : "white" }} onClick={handleMainButton} title="Pick the XML, optionally together with a .png to load as the BG image (the same-named one when several are picked)">{mainFileLoaded ? "✓ " : ""}Load Proteus XML</button>
                             <button style={{ ...S.btn, background: discFileLoaded ? "#eaf2ff" : "white" }} onClick={() => discInputRef.current?.click()}>{discFileLoaded ? "✓ " : ""}Load DiscProfile.xml</button>
                         </div>
                         <input ref={mainInputRef} type="file" accept=".xml,.png" multiple style={{ display: "none" }} onChange={handleMainFile} />
