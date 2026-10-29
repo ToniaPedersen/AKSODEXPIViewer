@@ -2,7 +2,7 @@
 
 A browser-based viewer and validation tool for legacy **DEXPI 1.4 / Proteus 4.1.1** XML files, rendered and checked using **DEXPI 2.x profile** symbols, classes and attributes by way of a loaded `DiscProfile.xml`.
 
-Developed by **Tonia Pedersen**. Version **2.8**. See `ChangeLog_2.7_to_2.8.md` for what changed since 2.7.
+Developed by **Tonia Pedersen**. Version **2.8.2**. See `ChangeLog_2.7_to_2.8.md` for what changed since 2.7.
 
 ---
 
@@ -235,11 +235,18 @@ When a profile is loaded, heat-traced items are detected from the `HeatTracingTy
 
 ### 5.6 Profile labels
 
+**Linked text only.** Every text drawn on the P&ID must be linked, because the drawing is meant to be imported into an intelligent CAD tool that rebuilds each label from the attribute database. A `<Label>`'s `<Text>` is drawn only from its own `TextStringFormatSpecification` / `ObjectAttributesReference` links:
+
+- a reference with an `ItemID` shows the current GenericAttribute value named by `DependantAttribute` on that target object;
+- a reference without an `ItemID` contributes its `DependantAttribute` text as a literal separator.
+
+The `String` stored on the `<Text>` is **never shown**, with or without a profile and whatever the state of **Profile labels**. It is a cached export result, not a link. A `<Text>` with no `ItemID` reference, or with a reference that does not resolve, is not drawn. With a profile loaded, every referenced attribute must also be one the placed profile symbol's label templates use, or the reference must point at a Note (see `PRF-LBL-01` / `PRF-LBL-02`). Without a profile, any attribute that resolves on its target is accepted. Literal text that is part of a symbol's own graphics, and the profile's `Profile/LabelTemplate` overlays, are still drawn.
+
 With a profile loaded, a **Profile labels** checkbox appears.
 
-- **Checked** — every catalogued symbol placement shows the value built from the profile symbol's own `Profile/LabelTemplate`, as an overlay, even for symbols that carry no `<Label>` of their own in the file.
+- **Unchecked** — the file's own `<Label>` texts are drawn where the file puts them, with the text built from their links as described above.
+- **Checked** — in addition, every catalogued symbol placement shows the value built from the profile symbol's own `Profile/LabelTemplate`, as an overlay, even for symbols that carry no `<Label>` of their own in the file.
   - Alarm templates (`HH`, `H`, `L`, `LL` with `SignalConveyingFunction:<AlarmValue>`) are shown only when one of the object's SignalConveyingFunctions has the matching `PortStatusSpecialization` (`StatusHighHighPort`, `StatusHighPort`, `StatusLowPort`, `StatusLowLowPort`). The text follows the profile's template: with the current profile each shows `<level>=<AlarmValue> <unit>`, e.g. `HH=272 barg`; a template with just `'H'` shows `H`.
-- **Unchecked** — the profile's attribute-resolved value replaces the symbol's own literal label text.
 
 A numeric attribute with a unit is shown with its unit symbol (`Bar` on a gauge pressure → `barg`, `DegreeCelsius` → `°C`). Set point and alarm labels (`SP = `, `HH=`, `H=`, `L=`, `LL=`) always show the value with its unit, e.g. `SP = 6 barg`, `HH=272 barg`. An alarm pressure whose unit is not marked gauge or absolute is shown as gauge. A pressure at full vacuum (−1.01325 barg, or 0 in an absolute unit) is shown as `FV`. Whether a pressure is gauge or absolute is taken from the GenericAttribute's `Type` / `TypeURI`, else from the attribute's definition in the loaded DiscProfile.xml, else from the DEXPI 1.4 model.
 

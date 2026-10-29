@@ -302,16 +302,14 @@ function renderPrimitive(primitive, key, textColorOverride = null, strokeMult = 
         const anchor = primitive.style.horizontal.toLowerCase().includes("left") ? "start" : primitive.style.horizontal.toLowerCase().includes("right") ? "end" : "middle";
         const baseline = primitive.style.vertical.toLowerCase().includes("bottom") ? "baseline" : primitive.style.vertical.toLowerCase().includes("top") ? "hanging" : "middle";
         const textFill = textColorOverride || parseColor(primitive.style.color);
-        // Text display value: a validated own-reference (hasOwnValidatedTemplate) always uses resolvedTemplateValue.
-        // With showProfileLabels on, a DiscProfile-catalogued label is blanked (its catalog overlay is drawn separately); other text shows its own literal value.
-        // With showProfileLabels off, a DiscProfile-catalogued label shows the profile's resolved value when available, else nothing; other text shows its own literal value.
+        // NO Text@String RULE: every drawn instance <Label> Text carries
+        // hasOwnValidatedTemplate and shows only its resolved attribute references
+        // (resolvedTemplateValue) - never its exported String. The literal `value`
+        // is used only for text that is not instance Text: symbol catalogue
+        // primitives (SymbolGraphic) and "lbltpl_" LabelTemplate overlays.
         const displayText = primitive.hasOwnValidatedTemplate
             ? (primitive.resolvedTemplateValue ?? "")
-            : showProfileLabels
-                ? (primitive.isDiscProfileLabel ? "" : (primitive.value ?? ""))
-                : (primitive.isDiscProfileLabel
-                    ? (primitive.hasProfileAttributeBacking && primitive.hasProfileAttributeValue ? primitive.validRawProfileText : "")
-                    : (primitive.value ?? ""));
+            : (primitive.value ?? "");
         // Text values can contain embedded line breaks; each line is rendered as its own <tspan>, with the block anchored around position.y.
         const lines = String(displayText ?? "").split(/\r\n|\r|\n/);
         const lineHeight = primitive.style.size * 1.2;

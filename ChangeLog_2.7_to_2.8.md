@@ -1,5 +1,48 @@
 # Changelog
 
+## 2.8.2
+
+Changes from version 2.8.1 (commit `9ee1d03` "version 2.8.1", 2026-10-22).
+
+### Version
+
+- The app is versioned as **2.8.2** (`package.json` / `package-lock.json` 2.8.2, `README.md`, User Guide).
+
+### Linked text only - the Text `String` is never drawn
+
+The drawings are imported into an intelligent CAD tool that rebuilds every label from the attribute database. The viewer therefore draws only text that tool can rebuild: a **link**, never a cached string. This is the same rule as DEXPIViewer 2.2.1, applied to Proteus.
+
+A `<Label>`'s `<Text>` is drawn only from its `TextStringFormatSpecification` / `ObjectAttributesReference` links (`DependantAttribute` + `ItemID`). The `<Text String="...">` value is never drawn.
+
+| Case | 2.8.1 | 2.8.2 |
+|---|---|---|
+| No profile loaded, `<Text>` with valid references | stored `String` shown | resolved references shown |
+| No profile loaded, `<Text>` without references, or whose references do not resolve | stored `String` shown | not drawn |
+| Profile loaded, `<Text>` with references valid for the placed profile symbol | resolved references | unchanged |
+| Profile loaded, `<Text>` with an empty or missing `String` but valid references | not drawn | resolved references shown |
+| Profile loaded, `<Text>` without valid references | not drawn | unchanged |
+| Symbol catalogue text and `lbltpl_` LabelTemplate overlays | drawn | unchanged |
+
+Implementation:
+
+- `src/proteusParser.js` (`buildProteusGraphics()`): `resolveTextTemplateValue()` now runs with or without a profile. Without one, the new `ANY_LABEL_ATTRIBUTE` set accepts any attribute that resolves on its `ItemID` target. A `<Text>` whose resolution is `null` is not drawn. Every drawn instance `<Text>` has `hasOwnValidatedTemplate = true`. An empty `String` no longer skips the `<Text>`.
+- `src/App.jsx`: `renderPrimitive()` draws `resolvedTemplateValue` for every instance `<Text>`. The literal `value` is used only for symbol catalogue primitives and `lbltpl_` overlays. The unreachable `isDiscProfileLabel` / `validRawProfileText` branches are removed.
+
+Visible effect on FPQ-AKSO-P-XB-20030-01: every drawn label shows its live linked value. Values can differ from the exported strings, e.g. full vacuum as `FV` instead of `-1.0`, a Note reference as `11.` instead of `NOTE 11`, and without a profile `91` instead of `91.0`.
+
+### User Guide
+
+- `public/UserGuide.md`: version 2.8.2; section 5.6 *Profile labels* gains the *Linked text only* rule and describes the Unchecked state (the file's own `<Label>` texts, built from their links); Checked now reads "in addition" to that.
+- `public/UserGuide.html`: rebuilt with `scripts/build-guide.py`.
+
+### Files changed
+
+`package.json`, `package-lock.json`, `README.md`, `ChangeLog_2.7_to_2.8.md`, `public/UserGuide.md`, `public/UserGuide.html`, `src/App.jsx`, `src/proteusParser.js`.
+
+## 2.8.1
+
+Commit `9ee1d03` "version 2.8.1" (2026-10-22) added these sections, described under 2.8 below: *Label symbols with their own LabelTemplate*, *MDL-PRP-02: PhysicalQuantity attributes (error)* and *BG image with the XML*.
+
 ## 2.8
 
 Changes from version 2.7 (see `ChangeLog_2.6_to_2.7.md`). This work was started on 2.4 (commit `75c766f`) in parallel with 2.5-2.7 and merged on top of 2.7.

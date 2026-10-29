@@ -71,7 +71,7 @@ footer{margin-top:60px;padding-top:14px;border-top:1px solid var(--line);color:v
 <main>
 <h1 id="dexpi-14-disc-profile-viewer-user-guide">DEXPI 1.4 / DISC Profile Viewer — User Guide</h1>
 <p>A browser-based viewer and validation tool for legacy <strong>DEXPI 1.4 / Proteus 4.1.1</strong> XML files, rendered and checked using <strong>DEXPI 2.x profile</strong> symbols, classes and attributes by way of a loaded <code>DiscProfile.xml</code>.</p>
-<p>Developed by <strong>Tonia Pedersen</strong>. Version <strong>2.8</strong>. See <code>ChangeLog_2.7_to_2.8.md</code> for what changed since 2.7.</p>
+<p>Developed by <strong>Tonia Pedersen</strong>. Version <strong>2.8.2</strong>. See <code>ChangeLog_2.7_to_2.8.md</code> for what changed since 2.7.</p>
 <hr />
 <hr />
 <h2 id="1-introduction">1. Introduction</h2>
@@ -356,11 +356,17 @@ npm run dev
 <h3 id="55-heat-trace-overlay">5.5 Heat trace overlay</h3>
 <p>When a profile is loaded, heat-traced items are detected from the <code>HeatTracingType</code> property and drawn with dashed overlays on top of the drawing — along piping centerlines, as a dashed box around inline components and nozzles, and as a dashed rectangle around instrument symbols. No toggle: an item is overlaid when its resolved heat-tracing type is an actual tracing system rather than <code>NoHeatTracingSystem</code>.</p>
 <h3 id="56-profile-labels">5.6 Profile labels</h3>
+<p><strong>Linked text only.</strong> Every text drawn on the P&amp;ID must be linked, because the drawing is meant to be imported into an intelligent CAD tool that rebuilds each label from the attribute database. A <code>&lt;Label&gt;</code>'s <code>&lt;Text&gt;</code> is drawn only from its own <code>TextStringFormatSpecification</code> / <code>ObjectAttributesReference</code> links:</p>
+<ul>
+<li>a reference with an <code>ItemID</code> shows the current GenericAttribute value named by <code>DependantAttribute</code> on that target object;</li>
+<li>a reference without an <code>ItemID</code> contributes its <code>DependantAttribute</code> text as a literal separator.</li>
+</ul>
+<p>The <code>String</code> stored on the <code>&lt;Text&gt;</code> is <strong>never shown</strong>, with or without a profile and whatever the state of <strong>Profile labels</strong>. It is a cached export result, not a link. A <code>&lt;Text&gt;</code> with no <code>ItemID</code> reference, or with a reference that does not resolve, is not drawn. With a profile loaded, every referenced attribute must also be one the placed profile symbol's label templates use, or the reference must point at a Note (see <code>PRF-LBL-01</code> / <code>PRF-LBL-02</code>). Without a profile, any attribute that resolves on its target is accepted. Literal text that is part of a symbol's own graphics, and the profile's <code>Profile/LabelTemplate</code> overlays, are still drawn.</p>
 <p>With a profile loaded, a <strong>Profile labels</strong> checkbox appears.</p>
 <ul>
-<li><strong>Checked</strong> — every catalogued symbol placement shows the value built from the profile symbol's own <code>Profile/LabelTemplate</code>, as an overlay, even for symbols that carry no <code>&lt;Label&gt;</code> of their own in the file.</li>
+<li><strong>Unchecked</strong> — the file's own <code>&lt;Label&gt;</code> texts are drawn where the file puts them, with the text built from their links as described above.</li>
+<li><strong>Checked</strong> — in addition, every catalogued symbol placement shows the value built from the profile symbol's own <code>Profile/LabelTemplate</code>, as an overlay, even for symbols that carry no <code>&lt;Label&gt;</code> of their own in the file.</li>
 <li>Alarm templates (<code>HH</code>, <code>H</code>, <code>L</code>, <code>LL</code> with <code>SignalConveyingFunction:&lt;AlarmValue&gt;</code>) are shown only when one of the object's SignalConveyingFunctions has the matching <code>PortStatusSpecialization</code> (<code>StatusHighHighPort</code>, <code>StatusHighPort</code>, <code>StatusLowPort</code>, <code>StatusLowLowPort</code>). The text follows the profile's template: with the current profile each shows <code>&lt;level&gt;=&lt;AlarmValue&gt; &lt;unit&gt;</code>, e.g. <code>HH=272 barg</code>; a template with just <code>'H'</code> shows <code>H</code>.</li>
-<li><strong>Unchecked</strong> — the profile's attribute-resolved value replaces the symbol's own literal label text.</li>
 </ul>
 <p>A numeric attribute with a unit is shown with its unit symbol (<code>Bar</code> on a gauge pressure → <code>barg</code>, <code>DegreeCelsius</code> → <code>°C</code>). Set point and alarm labels (<code>SP =</code>, <code>HH=</code>, <code>H=</code>, <code>L=</code>, <code>LL=</code>) always show the value with its unit, e.g. <code>SP = 6 barg</code>, <code>HH=272 barg</code>. An alarm pressure whose unit is not marked gauge or absolute is shown as gauge. A pressure at full vacuum (−1.01325 barg, or 0 in an absolute unit) is shown as <code>FV</code>. Whether a pressure is gauge or absolute is taken from the GenericAttribute's <code>Type</code> / <code>TypeURI</code>, else from the attribute's definition in the loaded DiscProfile.xml, else from the DEXPI 1.4 model.</p>
 <h4 id="rotation-and-mirroring">Rotation and mirroring</h4>

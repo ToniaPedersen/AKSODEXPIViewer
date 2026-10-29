@@ -1357,6 +1357,11 @@ export function readTextTemplateDependantAttributes(textEl) {
 // or whether a DiscProfile.xml is loaded.
 const NOTE_COMPONENT_CLASS = "Note";
 
+// Used as the allowed-attribute set when no DiscProfile.xml is loaded: there
+// is no symbol LabelTemplate to check against, so any attribute that resolves
+// on its ItemID target is accepted.
+const ANY_LABEL_ATTRIBUTE = { has: () => true };
+
 // Looks up one GenericAttribute's raw Value off the object a reference's
 // ItemID points to, scanning all GenericAttributes groups. Matches by exact
 // name first, then by "<attributeName>AssignmentClass". Returns null when
@@ -1563,8 +1568,11 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, embeddedSh
             const labelSymbolName = (labelProfileSymbol || placedProfileSymbol)?.name || "";
 
             directChildrenByTag(labelEl, "Text").forEach((textEl, ti) => {
-                const str = textEl.getAttribute("String");
-                if (!str) return;
+                // NO Text@String RULE: the exported String is a cached result that
+                // an intelligent CAD import regenerates from the attribute database,
+                // so it is never drawn (and an empty String no longer hides a Text
+                // that carries valid references). See resolvedTemplateValue below.
+                const str = textEl.getAttribute("String") || "";
                 // "Notes" Details-pane section support: runs unconditionally, before
                 // the validity gate below.
                 readTextTemplateReferences(textEl)?.forEach(ref => {
@@ -1581,12 +1589,20 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, embeddedSh
                 // equipment box value columns (ND0300B..ND0310B) round numbers to 1
                 // decimal, like their LabelTemplate overlays below
                 const textDecimals = EQUIPMENT_BOX_SYMBOL_RE.test(labelSymbolName) ? 1 : null;
-                const resolvedTemplateValue = discProfileLoaded ? resolveTextTemplateValue(textEl, labelAllowedAttrNames, elementById, textDecimals) : null;
-                if (discProfileLoaded && resolvedTemplateValue === null) return;
-                // hasOwnValidatedTemplate: true when this Text's own
-                // TextStringFormatSpecification reference validated, independent of
-                // the owner's isDiscProfileLabel/hasProfileAttributeBacking.
-                const hasOwnValidatedTemplate = discProfileLoaded;
+                // A real <Label> Text is drawn ONLY from its own
+                // TextStringFormatSpecification/ObjectAttributesReference links, with
+                // or without a DiscProfile.xml loaded - never from its String. With a
+                // profile, each referenced DependantAttribute must be one of the placed
+                // symbol's LabelTemplate attributes (or target a Note); without one, any
+                // attribute that resolves on its ItemID target is accepted. A Text with
+                // no ItemID-bearing reference, or one that fails to validate/resolve,
+                // is not drawn.
+                const allowedAttrNames = discProfileLoaded ? labelAllowedAttrNames : ANY_LABEL_ATTRIBUTE;
+                const resolvedTemplateValue = resolveTextTemplateValue(textEl, allowedAttrNames, elementById, textDecimals);
+                if (resolvedTemplateValue === null) return;
+                // hasOwnValidatedTemplate: always true for a drawn instance Text - it
+                // is shown as resolvedTemplateValue in every "Profile labels" state.
+                const hasOwnValidatedTemplate = true;
                 const tPos = readPosition(textEl) || (labelEl === el ? pos : null);
                 const j = parseJustification(textEl.getAttribute("Justification"));
                 // A Text's own <Position> is read like a symbol placement (readPosition()
