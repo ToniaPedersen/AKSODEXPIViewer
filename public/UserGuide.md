@@ -2,7 +2,7 @@
 
 A browser-based viewer and validation tool for legacy **DEXPI 1.4 / Proteus 4.1.1** XML files, rendered and checked using **DEXPI 2.x profile** symbols, classes and attributes by way of a loaded `DiscProfile.xml`.
 
-Developed by **Tonia Pedersen**. Version **2.8.2**. See `ChangeLog_2.7_to_2.8.md` for what changed since 2.7.
+Developed by **Tonia Pedersen**. Version **2.8.3**. See `ChangeLog_2.7_to_2.8.md` for what changed since 2.7.
 
 ---
 
@@ -231,7 +231,16 @@ Selecting a decorated line, or highlighting it through Connectivity mode, recolo
 
 ### 5.5 Heat trace overlay
 
-When a profile is loaded, heat-traced items are detected from the `HeatTracingType` property and drawn with dashed overlays on top of the drawing — along piping centerlines, as a dashed box around inline components and nozzles, and as a dashed rectangle around instrument symbols. No toggle: an item is overlaid when its resolved heat-tracing type is an actual tracing system rather than `NoHeatTracingSystem`.
+When a profile is loaded, heat-traced items are detected from the `HeatTracingType` property and drawn with dashed overlays on top of the drawing. No toggle: an item is overlaid when its resolved heat-tracing type is an actual tracing system rather than `NoHeatTracingSystem`.
+
+Every overlay sits **1G** from the line or symbol outline, where G is the DISC grid unit (the profile's `Profile/Grid` unit, default 1):
+
+- **Piping centerlines** — a dashed line 1G below a horizontal run and 1G to the right of a vertical run.
+- **Inline components and nozzles** — a dashed line 1G beside the symbol: below it on a horizontal pipe, to the right of it on a vertical pipe.
+- **Instruments** (e.g. ND0248A) — a dashed ring 1G outside the symbol's own circle or ellipse.
+- **Tag bubbles** (ND0248B) — when the object the bubble tags is heat traced (e.g. a heat-traced valve), the bubble gets the same dashed ring 1G outside its circle as an ND0248A instrument. A bubble placed by a `<Label>` takes its heat tracing from the object the Label is about (its `is about` association, or else its parent).
+
+The PNG image compare looks for heat tracing at the same 1G distance.
 
 ### 5.6 Profile labels
 

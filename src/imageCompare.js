@@ -1,3 +1,4 @@
+import { isHeatTraceRingLabel, heatTraceRingOwnerId } from "./dexpiParser.js";
 // ---------------------------------------------------------------------------
 // PNG <-> DEXPI image compare + auto-fit engine.
 //
@@ -15,8 +16,10 @@
 // ---------------------------------------------------------------------------
 
 // Kept in step with App.jsx's HT_* constants (heat-trace overlay geometry).
-const HT_OFF = 1.5;
-const HT_PIF_OFF = 1.0;
+// Heat-trace offset from the line / symbol outline = 1G (DISC grid unit);
+// buildCompareGeometry() sets it from parsed.gridUnit.
+let HT_OFF = 1;
+let HT_PIF_OFF = 1;
 const HT_THRESH = 0.15;
 // Kept in step with App.jsx's SIGNAL_CONVEYING_MARKS / SIGNAL_MARK_* constants.
 const SIGNAL_MARK_TYPES = new Set([
@@ -322,6 +325,7 @@ export function buildCompareGeometry(parsed) {
     const elements = parsed?.graphics?.elements || [];
     const nodePosMap = parsed?.graphics?.nodePosMap || new Map();
     const htSet = parsed?.heatTraceSet || new Map();
+    HT_OFF = HT_PIF_OFF = parsed?.gridUnit || 1;
     const treeMap = parsed?.treeMap || new Map();
     const localCache = new Map();
     const items = [];
@@ -387,6 +391,12 @@ export function buildCompareGeometry(parsed) {
                 if (htType === "inline" || htType === "nozzle") item.ht = { expected: true, pts: Float32Array.from(heatTraceSymbolSamples(el)) };
                 else if (htType === "pif") item.ht = { expected: true, pts: Float32Array.from(heatTracePifSamples(el)) };
                 else if (el.representedId) item.ht = { expected: false, pts: Float32Array.from(heatTraceSymbolSamples(el)) };
+            }
+            // Tag-bubble labels (ND0248B): heat trace is a dashed ring outside the
+            // bubble (as for an ND0248A PIF), keyed on the labelled object.
+            if (isHeatTraceRingLabel(el)) {
+                const ownerId = heatTraceRingOwnerId(el);
+                if (ownerId) item.ht = { expected: htSet.has(ownerId), pts: Float32Array.from(heatTracePifSamples(el)) };
             }
             items.push(item);
         } else if (el.kind === "connectorLine") {

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
     boundsFromElements, clampViewBox,
     findAncestors, collectDescendantObjectIds, flattenTree,
-    parseColor, isConnectivityRefProperty,
+    parseColor, isConnectivityRefProperty, isHeatTraceRingLabel, heatTraceRingOwnerId,
 } from "./dexpiParser.js";
 import { parseProteusPackage, SEGMENT_SYSTEM_MEMBERSHIP_REF_PROPERTIES, TREE_CONTAINMENT_REF_PROPERTIES } from "./proteusParser.js";
 import { validateProteusXsd } from "./xsdValidate.js";
@@ -512,11 +512,11 @@ function selectionColor(elementRole) {
 const HT_COLOR  = "#e06000";
 const HT_DASH   = "6 2 6 2";  // dash-dash pattern
 const HT_SW     = 0.6;         // stroke width (SVG units)
-const HT_OFF    = 1.5;         // offset distance (~1 pt) from pipe / symbol edge
+const HT_OFF    = 1;           // default offset = 1G (DISC grid unit); the live value comes from parsed.gridUnit
 const HT_THRESH = 0.15;        // |sin| or |cos| threshold for axis-alignment (~8.6 deg)
 
 // Heat trace dashed line for a Proteus CenterLine polyline, using the polyline's own world-space points directly.
-function HeatTracePolyline({ points }) {
+function HeatTracePolyline({ points, off = HT_OFF }) {
     if (!points || points.length < 2) return null;
     const segs = [];
     for (let i = 0; i < points.length - 1; i++) {
@@ -526,10 +526,10 @@ function HeatTracePolyline({ points }) {
         if (len < 0.001) continue;
         if (Math.abs(dy / len) < HT_THRESH) {
             // horizontal segment -> offset below
-            segs.push({ x1: p1.x, y1: p1.y + HT_OFF, x2: p2.x, y2: p2.y + HT_OFF });
+            segs.push({ x1: p1.x, y1: p1.y + off, x2: p2.x, y2: p2.y + off });
         } else if (Math.abs(dx / len) < HT_THRESH) {
             // vertical segment -> offset to the right
-            segs.push({ x1: p1.x + HT_OFF, y1: p1.y, x2: p2.x + HT_OFF, y2: p2.y });
+            segs.push({ x1: p1.x + off, y1: p1.y, x2: p2.x + off, y2: p2.y });
         }
         // diagonal -> skip
     }
@@ -567,17 +567,17 @@ function symbolDiagramBBox(el) {
 
 // Heat trace dashed line for an inline symbol (valve, fitting, nozzle).
 // Orientation follows el.rotation: horizontal pipe -> line below; vertical pipe -> line to the right; otherwise below.
-function HeatTraceSymbol({ el }) {
+function HeatTraceSymbol({ el, off = HT_OFF }) {
     const normRot = ((el.rotation || 0) % 360 + 360) % 360;
     const isVertical = (normRot > 75 && normRot < 105) || (normRot > 255 && normRot < 285);
     const bb = symbolDiagramBBox(el);
     if (isVertical) {
-        const x = bb.maxX + HT_OFF;
+        const x = bb.maxX + off;
         return <line x1={x} y1={bb.minY} x2={x} y2={bb.maxY}
             stroke={HT_COLOR} strokeWidth={HT_SW} strokeDasharray={HT_DASH}
             vectorEffect="non-scaling-stroke" pointerEvents="none" />;
     } else {
-        const y = bb.maxY + HT_OFF;
+        const y = bb.maxY + off;
         return <line x1={bb.minX} y1={y} x2={bb.maxX} y2={y}
             stroke={HT_COLOR} strokeWidth={HT_SW} strokeDasharray={HT_DASH}
             vectorEffect="non-scaling-stroke" pointerEvents="none" />;
@@ -586,10 +586,10 @@ function HeatTraceSymbol({ el }) {
 
 // Heat trace overlay for a ProcessInstrumentationFunction symbol: traces its outer boundary primitives (circle, ellipse, polygon), expanded outward.
 // Falls back to a bounding-box rect when none is found.
-function HeatTracePIF({ el }) {
+function HeatTracePIF({ el, off = HT_OFF }) {
     const mirror = el.isMirrored ? -1 : 1;
     const transform = `translate(${el.position.x} ${el.position.y}) rotate(${el.rotation}) scale(${el.scaleX * mirror} ${el.scaleY})`;
-    const pad = 1.5;
+    const pad = off; // 1G outside the symbol outline
 
     const overlays = [];
     (el.variant.primitives || []).forEach((p, i) => {
@@ -2374,18 +2374,25 @@ export default function App() {
                         </g>
                         {/* Heat-trace overlays: rendered on top, only when a DiscProfile.xml is loaded and at least one object has an active HeatTracingType. */}
                         {parsed?.heatTraceSet?.size > 0 && parsed.graphics.elements.map(el => {
-                            // Never draw heat-trace overlays on label or annotation elements
+                            const htOff = parsed.gridUnit || HT_OFF; // 1G from the line / symbol outline
+                            // Tag-bubble labels (ND0248B) get the same dashed outer ring as an
+                            // ND0248A instrument bubble when the object they label is heat traced.
+                            if (isHeatTraceRingLabel(el)) {
+                                const ownerId = heatTraceRingOwnerId(el);
+                                return ownerId && parsed.heatTraceSet.has(ownerId) ? <HeatTracePIF key={`ht_${el.key}`} el={el} off={htOff} /> : null;
+                            }
+                            // Never draw heat-trace overlays on other label or annotation elements
                             if (el.elementRole === "label") return null;
                             // Proteus CenterLine polylines bridge through htSegmentId: HeatTracingType inheritance applies to the owning PipingNetworkSegment, not the synthetic CenterLine node, so the lookup uses the segment's id.
                             if (el.htSegmentId && el.primitive?.kind === "polyline" && parsed.heatTraceSet.has(el.htSegmentId)) {
-                                return <HeatTracePolyline key={`ht_${el.key}`} points={el.primitive.points} />;
+                                return <HeatTracePolyline key={`ht_${el.key}`} points={el.primitive.points} off={htOff} />;
                             }
                             const htType = el.representedId ? parsed.heatTraceSet.get(el.representedId) : null;
                             if (!htType) return null;
                             if ((htType === "inline" || htType === "nozzle") && el.kind === "symbolUsage")
-                                return <HeatTraceSymbol key={`ht_${el.key}`} el={el} />;
+                                return <HeatTraceSymbol key={`ht_${el.key}`} el={el} off={htOff} />;
                             if (htType === "pif" && el.kind === "symbolUsage")
-                                return <HeatTracePIF key={`ht_${el.key}`} el={el} />;
+                                return <HeatTracePIF key={`ht_${el.key}`} el={el} off={htOff} />;
                             return null;
                         })}
                     </svg>

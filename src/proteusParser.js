@@ -21,6 +21,7 @@ import dexpiRdl from "./dexpi14Rdl.json";
 // Core.xml unit symbols per PhysicalQuantities enumeration literal (same file
 // as DEXPIViewer's), e.g. "PressureGaugeUnit.Bar" -> "barg".
 import { UNIT_SYMBOLS } from "./unitSymbols.js";
+import { profileGridUnit } from "./profileRules.js";
 
 // ---------------------------------------------------------------------------
 // Format detection
@@ -1493,6 +1494,9 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, embeddedSh
                         kind: "symbolUsage", key: `sym_${id}`, representedId: id, elementRole: "symbol",
                         symbol, variant, position: { x: pos.x, y: pos.y }, rotation: pos.rotation,
                         scaleX: scale.x, scaleY: scale.y, isMirrored: pos.isMirrored,
+                        // A <Label> placing a tag bubble (e.g. ND0248B) takes its heat-trace
+                        // ring from the object it labels - see isHeatTraceRingLabel().
+                        ...(el.tagName === "Label" ? { htOwnerId: resolveLabelOwnerId(el, id, elementById) } : {}),
                     });
                 }
             }
@@ -1783,6 +1787,9 @@ export function parseProteusPackage(mainXml, discProfileXml) {
     return {
         mainDoc, discDoc, tree, flatTree, treeMap, symbolMap, graphics, meta,
         connectivityMap, heatTraceSet,
+        // DISC grid unit (1G, from the profile's Profile/Grid or the default) -
+        // heat-trace overlays sit 1G outside the line / symbol outline.
+        gridUnit: profileGridUnit(discDoc),
         _diagnostics: diagnostics,
     };
 }

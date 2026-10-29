@@ -606,6 +606,23 @@ function buildHtEligibility(discDoc) {
     };
 }
 
+// Tag-bubble LABEL symbols whose own circle should get the same dashed
+// heat-trace ring as an ND0248A instrument bubble when the object they
+// label is heat traced (e.g. DISC ND0248B tagging a heat-traced valve).
+// Matched on the DiscProfile symbol name (registration number).
+export const HEAT_TRACE_RING_LABEL_SYMBOLS = new Set(["ND0248B"]);
+export function isHeatTraceRingLabel(el) {
+    if (!el || el.kind !== "symbolUsage") return false;
+    const name = el.symbol?.name || String(el.symbol?.key || "").split("/").pop();
+    return HEAT_TRACE_RING_LABEL_SYMBOLS.has(name);
+}
+// Object whose HeatTracingType governs a ring label: the labelled owner when
+// the bubble is placed by a Proteus <Label> (htOwnerId, set in
+// proteusParser.js), otherwise the element the symbol represents.
+export function heatTraceRingOwnerId(el) {
+    return el?.htOwnerId || el?.representedId || null;
+}
+
 export function buildHeatTraceSet(tree, discDoc = null) {
     const result = new Map();
     const isEligibleType = buildHtEligibility(discDoc);

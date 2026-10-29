@@ -1,5 +1,58 @@
 # Changelog
 
+## 2.8.3
+
+Changes from version 2.8.2 (commit `51b3b04` "Version 2.8.2 text label update", 2026-10-29).
+
+### Version
+
+- The app is versioned as **2.8.3** (`package.json` / `package-lock.json` 2.8.3, `README.md`, User Guide).
+
+### Heat trace ring on ND0248B tag bubbles
+
+An ND0248B tag bubble now shows heat tracing the same way as an ND0248A instrument bubble: a dashed ring outside its circle. The ring is drawn when the object the bubble tags has an active `HeatTracingType`. A bubble placed by a `<Label ComponentName=...>` represents the Label itself, so it takes its heat tracing from the Label's owner (`resolveLabelOwnerId()`: the `is about` association, or else the parent).
+
+| Case | 2.8.2 | 2.8.3 |
+|---|---|---|
+| ND0248B, tagged object heat traced | no overlay | dashed ring outside the bubble |
+| ND0248B, tagged object not heat traced | no overlay | unchanged |
+| ND0248A, other symbols and other labels | as before | unchanged |
+
+Implementation:
+
+- `src/dexpiParser.js`: new `HEAT_TRACE_RING_LABEL_SYMBOLS` (`ND0248B`), `isHeatTraceRingLabel()` and `heatTraceRingOwnerId()`.
+- `src/proteusParser.js`: a symbol usage placed by a `<Label>` carries `htOwnerId`, the object the Label is about.
+- `src/App.jsx`: the heat-trace overlay draws these bubbles with `HeatTracePIF` when their owner is heat traced.
+- `src/imageCompare.js`: the PNG compare expects a ring around an ND0248B bubble when its owner is heat traced, and no ring otherwise.
+
+### Heat trace offset is 1G
+
+The distance between a line or symbol outline and its heat-trace overlay is now **1G**, the DISC grid unit. It used to be a fixed 1.5 mm, which put the trace further out than in the DEXPI 2.0 viewer.
+
+| Overlay | 2.8.2 | 2.8.3 |
+|---|---|---|
+| Piping centerline (below / right of the run) | 1.5 mm | 1G |
+| Inline component / nozzle (beside the symbol) | 1.5 mm | 1G |
+| Instrument and ND0248B ring (outside the circle) | 1.5 mm | 1G |
+| PNG image compare sample positions | 1.5 mm lines, 1.0 mm rings | 1G |
+
+G is read with `profileGridUnit()` (`src/profileRules.js`): the loaded profile's `Profile/Grid` unit, or the default 1. It is the same unit the grid-snapping rule uses.
+
+Implementation:
+
+- `src/proteusParser.js`: `parseProteusPackage()` returns `gridUnit`.
+- `src/App.jsx`: `HeatTracePolyline`, `HeatTraceSymbol` and `HeatTracePIF` take an `off` prop, set to `parsed.gridUnit`.
+- `src/imageCompare.js`: `buildCompareGeometry()` sets the heat-trace sample offsets from `parsed.gridUnit`.
+
+### User Guide
+
+- `public/UserGuide.md`: version 2.8.3; section 5.5 *Heat trace overlay* describes the 1G offset, each overlay shape and the ND0248B tag-bubble ring.
+- `public/UserGuide.html`: rebuilt with `scripts/build-guide.py`.
+
+### Files changed
+
+`package.json`, `package-lock.json`, `README.md`, `ChangeLog_2.7_to_2.8.md`, `public/UserGuide.md`, `public/UserGuide.html`, `src/App.jsx`, `src/dexpiParser.js`, `src/imageCompare.js`, `src/proteusParser.js`.
+
 ## 2.8.2
 
 Changes from version 2.8.1 (commit `9ee1d03` "version 2.8.1", 2026-10-22).
