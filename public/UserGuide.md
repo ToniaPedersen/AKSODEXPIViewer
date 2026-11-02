@@ -2,7 +2,7 @@
 
 A browser-based viewer and validation tool for legacy **DEXPI 1.4 / Proteus 4.1.1** XML files, rendered and checked using **DEXPI 2.x profile** symbols, classes and attributes by way of a loaded `DiscProfile.xml`.
 
-Developed by **Tonia Pedersen**. Version **2.8.3**. See `ChangeLog_2.7_to_2.8.md` for what changed since 2.7.
+Developed by **Tonia Pedersen**. Version **2.9**. See `ChangeLog_2.8_to_2.9.md` for what changed since 2.8.3.
 
 ---
 
@@ -114,7 +114,7 @@ Two notices can appear above the list:
 
 The currently loaded `DiscProfile.xml` is used for every file in the run — by default the one fetched at startup (2.2), so there is normally nothing to load first. If no profile is loaded, the app asks for confirmation before starting and names what will be skipped — the run then covers the schema and the DEXPI 1.4 model only, and the header says "no profile". A progress line reports each file as it goes, with **Stop** to end the run early and keep what has been done so far.
 
-**Save PNG…**, next to it, renders every `.xml` in a folder and its subfolders and saves each drawing as a `.png` with the same name, next to its source file. The browser asks for permission to write to the folder. Browsers without folder write access download each PNG instead. The PNG uses the same rendering as the drawing toolbar's **Save PNG**, fitted to the whole drawing, and honours the drawing toolbar's current **Profile labels**, **Line Boost** and **Include symbol outlines** settings. Line weights are scaled so they match what you see on screen. A BG image is not included. The file you had open is restored afterwards.
+**Save PNG…**, next to it, renders every `.xml` in a folder and its subfolders and saves each drawing as a `.png` with the same name, next to its source file. The browser asks for permission to write to the folder. Browsers without folder write access download each PNG instead. The PNG uses the same rendering as the drawing toolbar's **Save PNG**, fitted to the whole drawing, and honours the drawing toolbar's current **Profile labels**, **Mixed labels**, **Line Boost** and **Include symbol outlines** settings. Line weights are scaled so they match what you see on screen. A BG image is not included. The file you had open is restored afterwards.
 
 **Export Element…** reads every `.xml` in a folder and its subfolders and downloads `<folder>-elements.xlsx` with three sheets:
 
@@ -183,8 +183,8 @@ The drawing number, name and subtitle from the file are shown at the top left of
 | Action | How |
 |---|---|
 | Zoom | Scroll the mouse wheel over the drawing (zooms toward the cursor) |
-| Pan | Hold **Space** and drag |
-| Fit to window | **Fit** button |
+| Pan | Drag with the left or middle mouse button. A click without moving the mouse still selects |
+| Fit to window | **Fit** button, or double-click the drawing |
 | Select | Click a symbol or line — it is outlined red (orange for labels) |
 
 ### 5.2 Toolbar controls
@@ -198,7 +198,7 @@ The drawing number, name and subtitle from the file are shown at the top left of
 | **Save PNG** / **Save PDF** | Saves the current view — drawing plus background image, if visible. The PDF is a single full-page image, long edge ≈ 420 mm (A3-ish); DEXPI coordinates are not reliably tied to real-world units, so this is a print-friendly fit, not a to-scale export. The file name is taken from the drawing number. |
 | **Connectivity** | Colour-codes the selected object's network neighbours (see below). Off by default. |
 | **Sub-components** | Makes a selection also highlight every child of the selected object — useful when selecting a container such as a `PipingNetworkSystem`. Off by default. |
-| **Profile labels** | Shown only when a profile is loaded (see 5.5). |
+| **Profile labels** / **Mixed labels** | Shown only when a profile is loaded (see 5.6). Only one can be checked at a time. |
 | **BG Image** / **BG Controls** | Reference image behind the drawing (see 5.6). |
 
 ### 5.3 Connectivity highlighting
@@ -251,11 +251,24 @@ The PNG image compare looks for heat tracing at the same 1G distance.
 
 The `String` stored on the `<Text>` is **never shown**, with or without a profile and whatever the state of **Profile labels**. It is a cached export result, not a link. A `<Text>` with no `ItemID` reference, or with a reference that does not resolve, is not drawn. With a profile loaded, every referenced attribute must also be one the placed profile symbol's label templates use, or the reference must point at a Note (see `PRF-LBL-01` / `PRF-LBL-02`). Without a profile, any attribute that resolves on its target is accepted. Literal text that is part of a symbol's own graphics, and the profile's `Profile/LabelTemplate` overlays, are still drawn.
 
-With a profile loaded, a **Profile labels** checkbox appears.
+With a profile loaded, two checkboxes appear: **Profile labels** and **Mixed labels**. Checking one unchecks the other.
 
-- **Unchecked** — the file's own `<Label>` texts are drawn where the file puts them, with the text built from their links as described above.
-- **Checked** — in addition, every catalogued symbol placement shows the value built from the profile symbol's own `Profile/LabelTemplate`, as an overlay, even for symbols that carry no `<Label>` of their own in the file.
-  - Alarm templates (`HH`, `H`, `L`, `LL` with `SignalConveyingFunction:<AlarmValue>`) are shown only when one of the object's SignalConveyingFunctions has the matching `PortStatusSpecialization` (`StatusHighHighPort`, `StatusHighPort`, `StatusLowPort`, `StatusLowLowPort`). The text follows the profile's template: with the current profile each shows `<level>=<AlarmValue> <unit>`, e.g. `HH=272 barg`; a template with just `'H'` shows `H`.
+- **Both unchecked** — the file's own `<Label>` texts (the representation group labels) are drawn where the file puts them, with the text built from their links as described above.
+- **Profile labels** — **only** the profile labels are drawn: every catalogued symbol placement shows the value built from the profile symbol's own `Profile/LabelTemplate`, even for symbols that carry no `<Label>` of their own in the file. None of the file's other `<Label>` texts are drawn, nor their leader lines. Always drawn: Note texts (every reference points at a Note, e.g. `NOTE 13` or a Note's own text), and the leader lines of Note labels and of label symbols (a `<Label ComponentName=...>` that places e.g. ND0048 or ND0248B).
+  - Alarm templates (`HH`, `H`, `L`, `LL` with `SignalConveyingFunction:<AlarmValue>`) (profile labels and default labels) are shown only when one of the object's SignalConveyingFunctions has the matching `PortStatusSpecialization` (`StatusHighHighPort`, `StatusHighPort`, `StatusLowPort`, `StatusLowLowPort`). The text follows the profile's template: with the current profile each shows `<level>=<AlarmValue> <unit>`, e.g. `HH=272 barg`; a template with just `'H'` shows `H`.
+- **Mixed labels** — the file's `<Label>` texts that reference at least one of the label symbol's profile label attributes are drawn at the file's position, showing:
+  - only the values of the referenced attributes that are label attributes of that symbol (a reference to a Note or to any other attribute is left out);
+  - between two values, only the literal the profile label allows there: the one that stands between those attributes in the profile's `Profile/LabelTemplate` (for example a space, `x` or `-`). A literal in the file's own text (`String`, or a reference without an `ItemID`) is never shown, so a file separator ` x ` where the profile has `x` shows as `x`. Literals before the first or after the last value (`EL: `, `HH=`) are not shown;
+  - values in the order of the profile template. Values from different template rows are separated by a space.
+
+  A symbol placement with **no** such `<Label>` text shows its profile default label instead, as with **Profile labels**. Note texts are drawn as in the file, as with **Profile labels**. Leader lines are drawn for the labels shown, for Note labels and for every label symbol. A nested label symbol (e.g. ND0048, ND0248B) is treated as its own placement.
+
+  | File text | Profile template | Shown |
+  |---|---|---|
+  | `In` + `" x "` + `Out` | `<NominalDiameterRepresentationIn>x<NominalDiameterRepresentationOut>` (ND0077) | `0400x0150` |
+  | `"/"` + `LockMechanism` + `"/"` + `TrimType` | `<TrimType> <LockMechanism>` (ND0029, ND0182A) | `FB KILO` |
+  | `NoteText` of a Note only | — | not drawn; the symbol shows its profile default label |
+
 
 A numeric attribute with a unit is shown with its unit symbol (`Bar` on a gauge pressure → `barg`, `DegreeCelsius` → `°C`). Set point and alarm labels (`SP = `, `HH=`, `H=`, `L=`, `LL=`) always show the value with its unit, e.g. `SP = 6 barg`, `HH=272 barg`. An alarm pressure whose unit is not marked gauge or absolute is shown as gauge. A pressure at full vacuum (−1.01325 barg, or 0 in an absolute unit) is shown as `FV`. Whether a pressure is gauge or absolute is taken from the GenericAttribute's `Type` / `TypeURI`, else from the attribute's definition in the loaded DiscProfile.xml, else from the DEXPI 1.4 model.
 

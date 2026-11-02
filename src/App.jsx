@@ -748,7 +748,6 @@ export default function App() {
     const [viewBox, setViewBox] = useState({ x: 0, y: 0, w: 1000, h: 1000 });
     const [fullBounds, setFullBounds] = useState({ minX: 0, minY: 0, maxX: 1000, maxY: 1000 });
     const [isPanning, setIsPanning] = useState(false);
-    const [panStart, setPanStart] = useState(null);
     const [bgImage, setBgImage] = useState(null);
     const [showBgControls, setShowBgControls] = useState(false);
     // Running auto-fit: { phase, done, total } or null; fitStatus: { score } after an auto-fit.
@@ -768,11 +767,18 @@ export default function App() {
     // Line Boost: percentage multiplier on connector/centerline stroke width. 100 = unchanged.
     const [lineBoostPct, setLineBoostPct] = useState(100);
     const [boostSymbolOutlines, setBoostSymbolOutlines] = useState(false);
-    // "Profile labels" checkbox. Default off: a DiscProfile-catalogued symbol's label shows the catalog's attribute-resolved LabelTemplate value instead of its literal exported text; other labels are unaffected.
-    // Checked: every catalogued symbol's own <Label> text is hidden, and its LabelTemplate(s) are drawn instead as "lbltpl_"-prefixed overlays.
+    // Label display checkboxes (Proteus, profile loaded). Both off: the file's own <Label> texts ("lbl_"), built from their attribute links.
+    // "Profile labels": ONLY the profile's LabelTemplate overlays ("lbltpl_") - no representation group (<Label>) texts or leaders.
+    // "Mixed labels": <Label> texts that reference the label symbol's profile label attributes, showing only those
+    // values plus the template's in-between literals (primitive.repGroupValue); a symbol placement with no such text shows its
+    // profile default label ("lbltpl_" overlays with the same labelGroupId) instead. The two checkboxes are mutually exclusive.
     const [showProfileLabels, setShowProfileLabels] = useState(false);
+    const [showMixedLabels, setShowMixedLabels] = useState(false);
     const [showAllAttributes, setShowAllAttributes] = useState(false); // default: hide non-DEXPI attributes
-    const [spaceDown, setSpaceDown] = useState(false);
+    // Drag-to-pan state, as in xBridge (MIMS_Bridge_DEXPI ModelCanvas.vue): a left- or middle-button press starts a drag;
+    // once it has moved more than 2 px it pans and the click that ends it does not select. A press without movement is a click.
+    const panDragRef = useRef(null);
+    const suppressClickRef = useRef(false);
     const [rdlStatus, setRdlStatus] = useState("idle"); // idle | running | done
     const [rdlResult, setRdlResult] = useState(null);
     // Validation codes currently folded (collapsed) in the unified Validation tab. A code not in this set renders expanded.
@@ -1685,6 +1691,44 @@ export default function App() {
         return [...sentToBack, ...rest];
     }, [parsed, zOrderOverrides]);
 
+    // paintOrderElements filtered (and, for "Mixed labels", re-texted) by the label display checkboxes above.
+    const drawnElements = useMemo(() => {
+        const isText = el => el.key.startsWith("lbl_");
+        const isLeader = el => el.key.startsWith("lblleader_");
+        const isTemplate = el => el.key.startsWith("lbltpl_");
+        // Note texts (primitive.isNoteText) and the leader lines of label symbols (el.isSymbolLabel, e.g. ND0048 SpecialItemLabel)
+        // and of Note labels (el.isNoteLabel) are drawn in every mode.
+        const isNote = el => isText(el) && el.primitive?.isNoteText;
+        const keepLeader = el => el.isSymbolLabel || el.isNoteLabel;
+        if (showProfileLabels) return paintOrderElements.filter(el => (isText(el) ? isNote(el) : !(isLeader(el) && !keepLeader(el))));
+        if (!showMixedLabels) {
+            return paintOrderElements.filter(el => !isTemplate(el) && !(isText(el) && el.primitive?.resolvedTemplateValue == null));
+        }
+        const groupsWithRepText = new Set();
+        paintOrderElements.forEach(el => { if (isText(el) && el.primitive?.repGroupValue != null) groupsWithRepText.add(el.labelGroupId); });
+        const out = [];
+        paintOrderElements.forEach(el => {
+            if (isNote(el)) out.push(el);
+            else if (isText(el)) {
+                if (el.primitive?.repGroupValue == null) return;
+                out.push({ ...el, primitive: { ...el.primitive, resolvedTemplateValue: el.primitive.repGroupValue } });
+            } else if (isLeader(el)) {
+                if (keepLeader(el) || groupsWithRepText.has(el.labelGroupId)) out.push(el);
+            } else if (isTemplate(el)) {
+                if (!groupsWithRepText.has(el.labelGroupId)) out.push(el);
+            } else out.push(el);
+        });
+        return out;
+    }, [paintOrderElements, showProfileLabels, showMixedLabels]);
+
+    // Fit button and double-click on the drawing (as in xBridge): shows the whole drawing.
+    const fitDrawingToWindow = useCallback(() => {
+        if (!parsed) return;
+        const b = boundsFromElements(parsed.graphics);
+        setFullBounds(b);
+        setViewBox({ x: b.minX, y: b.minY, w: b.maxX - b.minX, h: b.maxY - b.minY });
+    }, [parsed]);
+
     // Toggles "Send to Back" for the currently selected object only, without touching selection or highlighting.
     const toggleSendToBack = useCallback(() => {
         if (!selectedId) return;
@@ -1719,21 +1763,16 @@ export default function App() {
             e.preventDefault();
             const rect = el.getBoundingClientRect();
             const factor = e.deltaY > 0 ? 1.12 : 0.88;
-            const mx = ((e.clientX - rect.left) / rect.width) * viewBox.w + viewBox.x;
-            const my = ((e.clientY - rect.top) / rect.height) * viewBox.h + viewBox.y;
-            setViewBox(v => clampViewBox({ x: mx - (mx - v.x) * factor, y: my - (my - v.y) * factor, w: v.w * factor, h: v.h * factor }, fullBounds));
+            // Cursor position from the current view (v), so zoom stays anchored under the cursor.
+            setViewBox(v => {
+                const mx = ((e.clientX - rect.left) / rect.width) * v.w + v.x;
+                const my = ((e.clientY - rect.top) / rect.height) * v.h + v.y;
+                return clampViewBox({ x: mx - (mx - v.x) * factor, y: my - (my - v.y) * factor, w: v.w * factor, h: v.h * factor }, fullBounds);
+            });
         };
         el.addEventListener("wheel", onWheel, { passive: false });
         return () => el.removeEventListener("wheel", onWheel);
     }, [fullBounds]);
-
-    useEffect(() => {
-        const onKeyDown = e => { if (e.code === "Space" && e.target === document.body) { e.preventDefault(); setSpaceDown(true); } };
-        const onKeyUp   = e => { if (e.code === "Space") { setSpaceDown(false); setIsPanning(false); setPanStart(null); } };
-        window.addEventListener("keydown", onKeyDown);
-        window.addEventListener("keyup", onKeyUp);
-        return () => { window.removeEventListener("keydown", onKeyDown); window.removeEventListener("keyup", onKeyUp); };
-    }, []);
 
     // Revokes the current BG image object URL when the app unmounts.
     useEffect(() => {
@@ -2248,7 +2287,7 @@ export default function App() {
                         <div style={{ fontSize: 12, color: "#57606a" }}>{parsed?.meta?.drawingName || ""}{parsed?.meta?.subtitle ? ` - ${parsed.meta.subtitle}` : ""}</div>
                     </div>
                     <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
-                        <button style={S.btn} onClick={() => { if (!parsed) return; const b = boundsFromElements(parsed.graphics); setFullBounds(b); setViewBox({ x: b.minX, y: b.minY, w: b.maxX - b.minX, h: b.maxY - b.minY }); }} title="Fit drawing to window">Fit</button>
+                        <button style={S.btn} onClick={fitDrawingToWindow} title="Fit drawing to window (or double-click the drawing)">Fit</button>
                         {zOrderOverrides.size > 0 && (
                             <button style={S.btn} onClick={() => setZOrderOverrides(new Set())} title="Clear every 'Send to Back' draw-order override and restore the file's original paint order">
                                 Reset Z-Order ({zOrderOverrides.size})
@@ -2274,15 +2313,20 @@ export default function App() {
                             Sub-components
                         </label>
                         {discFileLoaded && (
-                            <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#57606a", cursor: "pointer" }} title="Toggle between a DiscProfile-catalogued symbol's own exported label text and the loaded DiscProfile.xml's attribute-resolved LabelTemplate value for it - checked shows the catalog's LabelTemplate(s) as an overlay (even for symbols with no Label XML of their own); unchecked shows the profile's resolved value in place of the original literal text.">
-                                <input type="checkbox" checked={showProfileLabels} onChange={e => setShowProfileLabels(e.target.checked)} />
+                            <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#57606a", cursor: "pointer" }} title="Show only the loaded DiscProfile.xml's LabelTemplate labels for every catalogued symbol, resolved from the attribute data. The file's own representation group labels (<Label> texts and leaders) are hidden.">
+                                <input type="checkbox" checked={showProfileLabels} onChange={e => { setShowProfileLabels(e.target.checked); if (e.target.checked) setShowMixedLabels(false); }} />
                                 Profile labels
+                            </label>
+                        )}
+                        {discFileLoaded && (
+                            <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#57606a", cursor: "pointer" }} title="Show the file's representation group labels (<Label> texts) that reference any of the label symbol's profile label attributes: only those attribute values, with the profile label's literals between them (e.g. a space or ' x '). A symbol with no such label shows its profile default label instead.">
+                                <input type="checkbox" checked={showMixedLabels} onChange={e => { setShowMixedLabels(e.target.checked); if (e.target.checked) setShowProfileLabels(false); }} />
+                                Mixed labels
                             </label>
                         )}
                         <button style={S.btn} onClick={handleBgButton} title="Overlay an image behind the drawing. Pick a Proteus XML together with its .png to load both.">BG Image</button>
                         {bgImage && <button style={{ ...S.btn, background: showBgControls ? "#eaf2ff" : "white" }} onClick={() => setShowBgControls(p => !p)}>BG Controls</button>}
                         <input ref={bgInputRef} type="file" accept="image/*,.xml" multiple style={{ display: "none" }} onChange={handleBgFile} />
-                        <span style={{ fontSize: 11, color: "#888", marginLeft: 4 }}>Scroll to zoom · Space+drag to pan</span>
                     </div>
                 </div>
 
@@ -2340,17 +2384,38 @@ export default function App() {
 
                 {parseError && <div style={{ color: "#cf222e", padding: "8px 12px", fontSize: 13 }}>{parseError}</div>}
 
-                <div ref={svgViewportRef} style={{ flex: 1, position: "relative", background: "white", cursor: isPanning ? "grabbing" : spaceDown ? "grab" : "default", overflow: "hidden" }}
-                    onMouseDown={e => { if (e.button !== 0 || !spaceDown) return; e.preventDefault(); setIsPanning(true); setPanStart({ x: e.clientX, y: e.clientY, view: viewBox }); }}
-                    onMouseMove={e => {
-                        if (!isPanning || !panStart || !svgViewportRef.current) return;
-                        const rect = svgViewportRef.current.getBoundingClientRect();
-                        const dx = ((e.clientX - panStart.x) / rect.width) * panStart.view.w;
-                        const dy = ((e.clientY - panStart.y) / rect.height) * panStart.view.h;
-                        setViewBox(clampViewBox({ ...panStart.view, x: panStart.view.x - dx, y: panStart.view.y - dy }, fullBounds));
+                <div ref={svgViewportRef} style={{ flex: 1, position: "relative", background: "white", cursor: isPanning ? "grabbing" : "default", overflow: "hidden", touchAction: "none" }}
+                    // Pan like xBridge: left- or middle-button drag. Pointer capture starts only once the drag has moved, so a plain
+                    // click still reaches the symbol/line under it and selects it; the click ending a pan is swallowed (onClickCapture).
+                    onMouseDown={e => { if (e.button === 0 || e.button === 1) e.preventDefault(); /* no text selection / middle-button autoscroll */ }}
+                    onPointerDown={e => {
+                        if (e.button !== 0 && e.button !== 1) return;
+                        suppressClickRef.current = false;
+                        panDragRef.current = { x: e.clientX, y: e.clientY, view: viewBox, moved: false, pointerId: e.pointerId };
                     }}
-                    onMouseUp={() => { setIsPanning(false); setPanStart(null); }}
-                    onMouseLeave={() => { setIsPanning(false); setPanStart(null); }}
+                    onPointerMove={e => {
+                        const d = panDragRef.current;
+                        if (!d || d.pointerId !== e.pointerId || !svgViewportRef.current) return;
+                        if (!d.moved) {
+                            if (Math.abs(e.clientX - d.x) + Math.abs(e.clientY - d.y) <= 2) return;
+                            d.moved = true;
+                            setIsPanning(true);
+                            try { svgViewportRef.current.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+                        }
+                        const rect = svgViewportRef.current.getBoundingClientRect();
+                        const dx = ((e.clientX - d.x) / rect.width) * d.view.w;
+                        const dy = ((e.clientY - d.y) / rect.height) * d.view.h;
+                        setViewBox(clampViewBox({ ...d.view, x: d.view.x - dx, y: d.view.y - dy }, fullBounds));
+                    }}
+                    onPointerUp={e => {
+                        const d = panDragRef.current;
+                        if (!d || d.pointerId !== e.pointerId) return;
+                        panDragRef.current = null;
+                        if (d.moved) { suppressClickRef.current = true; setIsPanning(false); }
+                    }}
+                    onPointerCancel={() => { panDragRef.current = null; setIsPanning(false); }}
+                    onClickCapture={e => { if (suppressClickRef.current) { suppressClickRef.current = false; e.stopPropagation(); } }}
+                    onDoubleClick={fitDrawingToWindow}
                 >
                     <svg ref={svgElRef} viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`} width="100%" height="100%" style={{ display: "block" }} onAuxClick={e => e.preventDefault()}>
                         {bgImage && bgPlacement && !batchPng && (
@@ -2360,10 +2425,9 @@ export default function App() {
                             </g>
                         )}
                         <g opacity={drawingOpacity}>
-                        {paintOrderElements
-                            // "lbltpl_"-prefixed keys are catalog-LabelTemplate overlay texts for DiscProfile-catalogued symbols; hidden when the Profile labels checkbox is off.
-                            // Iterates paintOrderElements (not the raw parsed list) so "Send to Back" overrides affect both paint and click order.
-                            .filter(el => showProfileLabels || !el.key.startsWith("lbltpl_"))
+                        {drawnElements
+                            // drawnElements: paintOrderElements (so "Send to Back" overrides affect both paint and click order) filtered by the
+                            // Profile labels / Mixed labels checkboxes - see its useMemo.
                             .map(el => {
                             const isSelected = !!el.representedId && selectedRepresentedIds.has(el.representedId);
                             const ch = connectivityHighlight;

@@ -1437,6 +1437,77 @@ export function isValidTextTemplateAttribute(textEl, allowedAttrNames, elementBy
     return resolveTextTemplateValue(textEl, allowedAttrNames, elementById) !== null;
 }
 
+// ---------------------------------------------------------------------------
+// "Mixed labels" display value
+//
+// Splits a profile LabelTemplate text into literal and token parts, after
+// unwrapping VB-style formulas ("'SP = ' & <SetPoint>") line by line.
+function labelTemplateParts(templateText) {
+    const text = String(templateText || "").split(/\r?\n/).map(unwrapLabelFormula).join("\n");
+    const parts = [];
+    const re = new RegExp(LABEL_TEMPLATE_TOKEN_RE.source, "g");
+    let last = 0, m;
+    while ((m = re.exec(text))) {
+        if (m.index > last) parts.push({ literal: text.slice(last, m.index) });
+        parts.push({ attribute: m[2] });
+        last = re.lastIndex;
+    }
+    if (last < text.length) parts.push({ literal: text.slice(last) });
+    return parts;
+}
+
+// Builds what a real <Label> Text shows when the "Mixed labels"
+// checkbox is on:
+// - only its ObjectAttributesReferences with an ItemID whose DependantAttribute
+//   is one of the label symbol's own LabelTemplate attributes (allowedAttrNames)
+//   are used, each shown as the live value on its ItemID target;
+// - references without an ItemID (literal separators in the file) and the
+//   Text's String are never shown;
+// - between two shown values, the literal that stands right before the second
+//   value's token in the profile's LabelTemplate is inserted (" ", " x ", "/").
+//   Literals before the first or after the last shown token are not.
+// The values are laid out against templateTexts in order; a template takes the
+// remaining values whose attributes it uses. Values from different templates,
+// or not found in any template, are joined with a space.
+// Returns null when the Text references none of allowedAttrNames with a value.
+export function formatRepresentationGroupLabel(textEl, templateTexts, allowedAttrNames, elementById, decimals = null) {
+    if (!allowedAttrNames) return null;
+    const refs = readTextTemplateReferences(textEl);
+    if (!refs || refs.length === 0) return null;
+    const remaining = [];
+    for (const ref of refs) {
+        if (!ref.itemId || !allowedAttrNames.has(ref.attribute)) continue;
+        const value = resolveDependantAttributeValue(ref.itemId, ref.attribute, elementById, decimals);
+        if (value === null || value === "") continue;
+        remaining.push({ attribute: ref.attribute, value });
+    }
+    if (remaining.length === 0) return null;
+    const segments = [];
+    for (const templateText of templateTexts || []) {
+        if (remaining.length === 0) break;
+        let out = "", emitted = false, pendingLiteral = "";
+        for (const part of labelTemplateParts(templateText)) {
+            if (part.literal !== undefined) { pendingLiteral += part.literal; continue; }
+            const i = remaining.findIndex(v => v.attribute === part.attribute);
+            if (i < 0) { pendingLiteral = ""; continue; }
+            out += (emitted ? pendingLiteral : "") + remaining[i].value;
+            emitted = true;
+            pendingLiteral = "";
+            remaining.splice(i, 1);
+        }
+        if (emitted) segments.push(out);
+    }
+    remaining.forEach(v => segments.push(v.value));
+    return segments.join(" ");
+}
+
+// LabelTemplate texts of one placed profile symbol variant, or of the first
+// variant of `symbol` that has templates when no variant is known.
+function variantLabelTemplateTexts(variant, symbol) {
+    const v = variant?.labelTemplates?.length ? variant : (symbol?.variants || []).find(x => x.labelTemplates?.length);
+    return (v?.labelTemplates || []).map(lt => lt.text);
+}
+
 function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, embeddedShapeMap, dataByObjectId, discProfileLoaded) {
     const elements = [];
     // Keyed by the id of the element that owns the ComponentName+Position that
@@ -1570,6 +1641,20 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, embeddedSh
             const labelProfileSymbol = labelRegNum ? symbolMap.get(`DiscProfile/${labelRegNum}`) || null : null;
             const labelAllowedAttrNames = labelProfileSymbol ? symbolLabelAttributeNames(labelProfileSymbol) : allowedLabelAttrNames;
             const labelSymbolName = (labelProfileSymbol || placedProfileSymbol)?.name || "";
+            // "Mixed labels": the profile LabelTemplates this Label's
+            // Texts are laid out against, and labelGroupId - the element whose
+            // "lbltpl_" overlays are this label symbol's profile default label (the
+            // nested label-symbol Label itself, else the placed element).
+            const labelElId = labelEl.getAttribute("ID");
+            const labelTemplateTexts = labelProfileSymbol
+                ? variantLabelTemplateTexts(pickVariant(labelProfileSymbol, dataByObjectId.get(labelElId)), labelProfileSymbol)
+                : variantLabelTemplateTexts(placedFromDiscProfile ? placedVariant : null, placedProfileSymbol);
+            const labelGroupId = labelProfileSymbol && labelElId ? labelElId : id;
+            // A Label that places its own profile label symbol (e.g. ND0048 SpecialItemLabel, ND0248B): its leader
+            // line belongs to the symbol and stays visible with "Profile labels" and "Mixed labels".
+            const isSymbolLabel = labelEl === el ? placedFromDiscProfile : !!labelProfileSymbol;
+            // Set when one of this Label's drawn Texts is a Note text (see isNoteText below); its leader then shows too.
+            let hasNoteText = false;
 
             directChildrenByTag(labelEl, "Text").forEach((textEl, ti) => {
                 // NO Text@String RULE: the exported String is a cached result that
@@ -1603,7 +1688,20 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, embeddedSh
                 // is not drawn.
                 const allowedAttrNames = discProfileLoaded ? labelAllowedAttrNames : ANY_LABEL_ATTRIBUTE;
                 const resolvedTemplateValue = resolveTextTemplateValue(textEl, allowedAttrNames, elementById, textDecimals);
-                if (resolvedTemplateValue === null) return;
+                // "Mixed labels" value: only the references to the
+                // label symbol's LabelTemplate attributes, with the template's
+                // in-between literals (formatRepresentationGroupLabel()). null when
+                // the Text references none of them, or no profile is loaded.
+                const repGroupValue = discProfileLoaded
+                    ? formatRepresentationGroupLabel(textEl, labelTemplateTexts, labelAllowedAttrNames, elementById, textDecimals)
+                    : null;
+                if (resolvedTemplateValue === null && repGroupValue === null) return;
+                // isNoteText: every ItemID reference of this Text points at a Note (e.g. "NOTE " + LocalNoteIdentifier,
+                // or a Note's own NoteText). Note texts are drawn as in the file with "Profile labels" and "Mixed labels" too.
+                const itemRefs = (readTextTemplateReferences(textEl) || []).filter(r => r.itemId);
+                const isNoteText = resolvedTemplateValue !== null && itemRefs.length > 0
+                    && itemRefs.every(r => elementById.get(r.itemId)?.getAttribute("ComponentClass") === NOTE_COMPONENT_CLASS);
+                if (isNoteText) hasNoteText = true;
                 // hasOwnValidatedTemplate: always true for a drawn instance Text - it
                 // is shown as resolvedTemplateValue in every "Profile labels" state.
                 const hasOwnValidatedTemplate = true;
@@ -1614,7 +1712,7 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, embeddedSh
                 // angle and swaps the Justification-derived alignment to match.
                 const orient = tPos ? readableLabelOrientation(tPos.rotation, j.horizontal, j.vertical) : { rotation: 0, horizontal: j.horizontal, vertical: j.vertical };
                 elements.push({
-                    kind: "primitive", key: `lbl_${id}_${li}_${ti}`, representedId, elementRole: "label",
+                    kind: "primitive", key: `lbl_${id}_${li}_${ti}`, representedId, elementRole: "label", labelGroupId,
                     primitive: {
                         kind: "text", key: `lbltxt_${id}_${li}_${ti}`,
                         position: tPos ? { x: tPos.x, y: tPos.y } : { x: 0, y: 0 },
@@ -1629,7 +1727,7 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, embeddedSh
                         // overrides the "Profile labels" checkbox gating when true.
                         isDiscProfileLabel, isProfileGoverned: isDiscProfileLabel,
                         hasProfileAttributeBacking, hasProfileAttributeValue, validRawProfileText,
-                        hasOwnValidatedTemplate, resolvedTemplateValue,
+                        hasOwnValidatedTemplate, resolvedTemplateValue, repGroupValue, isNoteText,
                     },
                 });
             });
@@ -1642,7 +1740,7 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, embeddedSh
                 }));
                 if (points.length < 2) return;
                 elements.push({
-                    kind: "primitive", key: `lblleader_${id}_${li}_${pli}`, representedId, elementRole: "label",
+                    kind: "primitive", key: `lblleader_${id}_${li}_${pli}`, representedId, elementRole: "label", labelGroupId, isSymbolLabel, isNoteLabel: hasNoteText,
                     primitive: { kind: "polyline", key: `lblleaderprim_${id}_${li}_${pli}`, points, stroke: { color: "#000000", width: 0.25, dashArray: "" } },
                 });
             });
@@ -1683,7 +1781,7 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, embeddedSh
                 const wx = orient.x, wy = orient.y;
                 const displayText = stacked ? Array.from(text).join("\n") : text;
                 elements.push({
-                    kind: "primitive", key: `lbltpl_${id}_${li}`, representedId: ownerId, elementRole: "label",
+                    kind: "primitive", key: `lbltpl_${id}_${li}`, representedId: ownerId, elementRole: "label", labelGroupId: id,
                     primitive: {
                         kind: "text", key: `lbltpltxt_${id}_${li}`,
                         position: { x: wx, y: wy }, value: displayText, rotation: orient.rotation,

@@ -71,7 +71,7 @@ footer{margin-top:60px;padding-top:14px;border-top:1px solid var(--line);color:v
 <main>
 <h1 id="dexpi-14-disc-profile-viewer-user-guide">DEXPI 1.4 / DISC Profile Viewer — User Guide</h1>
 <p>A browser-based viewer and validation tool for legacy <strong>DEXPI 1.4 / Proteus 4.1.1</strong> XML files, rendered and checked using <strong>DEXPI 2.x profile</strong> symbols, classes and attributes by way of a loaded <code>DiscProfile.xml</code>.</p>
-<p>Developed by <strong>Tonia Pedersen</strong>. Version <strong>2.8.3</strong>. See <code>ChangeLog_2.7_to_2.8.md</code> for what changed since 2.7.</p>
+<p>Developed by <strong>Tonia Pedersen</strong>. Version <strong>2.9</strong>. See <code>ChangeLog_2.8_to_2.9.md</code> for what changed since 2.8.3.</p>
 <hr />
 <hr />
 <h2 id="1-introduction">1. Introduction</h2>
@@ -156,7 +156,7 @@ npm run dev
 <p><strong>Nothing is uploaded.</strong> The files are read and validated inside your browser, on your own machine, and are never sent to a server. The browser asks permission first, worded as <em>"view and copy files"</em>, <em>"let this site view files"</em> or <em>"upload N files to this site"</em> depending on the browser and version. Every one of those is the browser asking whether the page may <strong>read</strong> those files into itself — read access is the only folder permission validation requests, and there is no weaker one. Nothing is sent anywhere, which you can confirm in DevTools → Network: no requests are made while a folder is validated.</p>
 </blockquote>
 <p>The currently loaded <code>DiscProfile.xml</code> is used for every file in the run — by default the one fetched at startup (2.2), so there is normally nothing to load first. If no profile is loaded, the app asks for confirmation before starting and names what will be skipped — the run then covers the schema and the DEXPI 1.4 model only, and the header says "no profile". A progress line reports each file as it goes, with <strong>Stop</strong> to end the run early and keep what has been done so far.</p>
-<p><strong>Save PNG…</strong>, next to it, renders every <code>.xml</code> in a folder and its subfolders and saves each drawing as a <code>.png</code> with the same name, next to its source file. The browser asks for permission to write to the folder. Browsers without folder write access download each PNG instead. The PNG uses the same rendering as the drawing toolbar's <strong>Save PNG</strong>, fitted to the whole drawing, and honours the drawing toolbar's current <strong>Profile labels</strong>, <strong>Line Boost</strong> and <strong>Include symbol outlines</strong> settings. Line weights are scaled so they match what you see on screen. A BG image is not included. The file you had open is restored afterwards.</p>
+<p><strong>Save PNG…</strong>, next to it, renders every <code>.xml</code> in a folder and its subfolders and saves each drawing as a <code>.png</code> with the same name, next to its source file. The browser asks for permission to write to the folder. Browsers without folder write access download each PNG instead. The PNG uses the same rendering as the drawing toolbar's <strong>Save PNG</strong>, fitted to the whole drawing, and honours the drawing toolbar's current <strong>Profile labels</strong>, <strong>Mixed labels</strong>, <strong>Line Boost</strong> and <strong>Include symbol outlines</strong> settings. Line weights are scaled so they match what you see on screen. A BG image is not included. The file you had open is restored afterwards.</p>
 <p><strong>Export Element…</strong> reads every <code>.xml</code> in a folder and its subfolders and downloads <code>&lt;folder&gt;-elements.xlsx</code> with three sheets:</p>
 <ul>
 <li><strong>Classes</strong> — File, Class, SuperType, Class RDL, Count, IsValid. Class RDL is the class's <code>rdl_uri</code>. A <code>Custom&lt;X&gt;</code> with a <code>TypeURIAssignmentClass</code> is listed under the DiscProfile.xml class it maps to; other elements under their <code>ComponentClass</code>.</li>
@@ -221,11 +221,11 @@ npm run dev
 </tr>
 <tr>
 <td>Pan</td>
-<td>Hold <strong>Space</strong> and drag</td>
+<td>Drag with the left or middle mouse button. A click without moving the mouse still selects</td>
 </tr>
 <tr>
 <td>Fit to window</td>
-<td><strong>Fit</strong> button</td>
+<td><strong>Fit</strong> button, or double-click the drawing</td>
 </tr>
 <tr>
 <td>Select</td>
@@ -271,8 +271,8 @@ npm run dev
 <td>Makes a selection also highlight every child of the selected object — useful when selecting a container such as a <code>PipingNetworkSystem</code>. Off by default.</td>
 </tr>
 <tr>
-<td><strong>Profile labels</strong></td>
-<td>Shown only when a profile is loaded (see 5.5).</td>
+<td><strong>Profile labels</strong> / <strong>Mixed labels</strong></td>
+<td>Shown only when a profile is loaded (see 5.6). Only one can be checked at a time.</td>
 </tr>
 <tr>
 <td><strong>BG Image</strong> / <strong>BG Controls</strong></td>
@@ -370,12 +370,43 @@ npm run dev
 <li>a reference without an <code>ItemID</code> contributes its <code>DependantAttribute</code> text as a literal separator.</li>
 </ul>
 <p>The <code>String</code> stored on the <code>&lt;Text&gt;</code> is <strong>never shown</strong>, with or without a profile and whatever the state of <strong>Profile labels</strong>. It is a cached export result, not a link. A <code>&lt;Text&gt;</code> with no <code>ItemID</code> reference, or with a reference that does not resolve, is not drawn. With a profile loaded, every referenced attribute must also be one the placed profile symbol's label templates use, or the reference must point at a Note (see <code>PRF-LBL-01</code> / <code>PRF-LBL-02</code>). Without a profile, any attribute that resolves on its target is accepted. Literal text that is part of a symbol's own graphics, and the profile's <code>Profile/LabelTemplate</code> overlays, are still drawn.</p>
-<p>With a profile loaded, a <strong>Profile labels</strong> checkbox appears.</p>
+<p>With a profile loaded, two checkboxes appear: <strong>Profile labels</strong> and <strong>Mixed labels</strong>. Checking one unchecks the other.</p>
 <ul>
-<li><strong>Unchecked</strong> — the file's own <code>&lt;Label&gt;</code> texts are drawn where the file puts them, with the text built from their links as described above.</li>
-<li><strong>Checked</strong> — in addition, every catalogued symbol placement shows the value built from the profile symbol's own <code>Profile/LabelTemplate</code>, as an overlay, even for symbols that carry no <code>&lt;Label&gt;</code> of their own in the file.</li>
-<li>Alarm templates (<code>HH</code>, <code>H</code>, <code>L</code>, <code>LL</code> with <code>SignalConveyingFunction:&lt;AlarmValue&gt;</code>) are shown only when one of the object's SignalConveyingFunctions has the matching <code>PortStatusSpecialization</code> (<code>StatusHighHighPort</code>, <code>StatusHighPort</code>, <code>StatusLowPort</code>, <code>StatusLowLowPort</code>). The text follows the profile's template: with the current profile each shows <code>&lt;level&gt;=&lt;AlarmValue&gt; &lt;unit&gt;</code>, e.g. <code>HH=272 barg</code>; a template with just <code>'H'</code> shows <code>H</code>.</li>
+<li><strong>Both unchecked</strong> — the file's own <code>&lt;Label&gt;</code> texts (the representation group labels) are drawn where the file puts them, with the text built from their links as described above.</li>
+<li><strong>Profile labels</strong> — <strong>only</strong> the profile labels are drawn: every catalogued symbol placement shows the value built from the profile symbol's own <code>Profile/LabelTemplate</code>, even for symbols that carry no <code>&lt;Label&gt;</code> of their own in the file. None of the file's other <code>&lt;Label&gt;</code> texts are drawn, nor their leader lines. Always drawn: Note texts (every reference points at a Note, e.g. <code>NOTE 13</code> or a Note's own text), and the leader lines of Note labels and of label symbols (a <code>&lt;Label ComponentName=...&gt;</code> that places e.g. ND0048 or ND0248B).</li>
+<li>Alarm templates (<code>HH</code>, <code>H</code>, <code>L</code>, <code>LL</code> with <code>SignalConveyingFunction:&lt;AlarmValue&gt;</code>) (profile labels and default labels) are shown only when one of the object's SignalConveyingFunctions has the matching <code>PortStatusSpecialization</code> (<code>StatusHighHighPort</code>, <code>StatusHighPort</code>, <code>StatusLowPort</code>, <code>StatusLowLowPort</code>). The text follows the profile's template: with the current profile each shows <code>&lt;level&gt;=&lt;AlarmValue&gt; &lt;unit&gt;</code>, e.g. <code>HH=272 barg</code>; a template with just <code>'H'</code> shows <code>H</code>.</li>
+<li><strong>Mixed labels</strong> — the file's <code>&lt;Label&gt;</code> texts that reference at least one of the label symbol's profile label attributes are drawn at the file's position, showing:</li>
+<li>only the values of the referenced attributes that are label attributes of that symbol (a reference to a Note or to any other attribute is left out);</li>
+<li>between two values, only the literal the profile label allows there: the one that stands between those attributes in the profile's <code>Profile/LabelTemplate</code> (for example a space, <code>x</code> or <code>-</code>). A literal in the file's own text (<code>String</code>, or a reference without an <code>ItemID</code>) is never shown, so a file separator <code>x</code> where the profile has <code>x</code> shows as <code>x</code>. Literals before the first or after the last value (<code>EL:</code>, <code>HH=</code>) are not shown;</li>
+<li>values in the order of the profile template. Values from different template rows are separated by a space.</li>
 </ul>
+<p>A symbol placement with <strong>no</strong> such <code>&lt;Label&gt;</code> text shows its profile default label instead, as with <strong>Profile labels</strong>. Note texts are drawn as in the file, as with <strong>Profile labels</strong>. Leader lines are drawn for the labels shown, for Note labels and for every label symbol. A nested label symbol (e.g. ND0048, ND0248B) is treated as its own placement.</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>File text</th>
+<th>Profile template</th>
+<th>Shown</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>In</code> + <code>" x "</code> + <code>Out</code></td>
+<td><code>&lt;NominalDiameterRepresentationIn&gt;x&lt;NominalDiameterRepresentationOut&gt;</code> (ND0077)</td>
+<td><code>0400x0150</code></td>
+</tr>
+<tr>
+<td><code>"/"</code> + <code>LockMechanism</code> + <code>"/"</code> + <code>TrimType</code></td>
+<td><code>&lt;TrimType&gt; &lt;LockMechanism&gt;</code> (ND0029, ND0182A)</td>
+<td><code>FB KILO</code></td>
+</tr>
+<tr>
+<td><code>NoteText</code> of a Note only</td>
+<td>—</td>
+<td>not drawn; the symbol shows its profile default label</td>
+</tr>
+</tbody>
+</table></div>
 <p>A numeric attribute with a unit is shown with its unit symbol (<code>Bar</code> on a gauge pressure → <code>barg</code>, <code>DegreeCelsius</code> → <code>°C</code>). Set point and alarm labels (<code>SP =</code>, <code>HH=</code>, <code>H=</code>, <code>L=</code>, <code>LL=</code>) always show the value with its unit, e.g. <code>SP = 6 barg</code>, <code>HH=272 barg</code>. An alarm pressure whose unit is not marked gauge or absolute is shown as gauge. A pressure at full vacuum (−1.01325 barg, or 0 in an absolute unit) is shown as <code>FV</code>. Whether a pressure is gauge or absolute is taken from the GenericAttribute's <code>Type</code> / <code>TypeURI</code>, else from the attribute's definition in the loaded DiscProfile.xml, else from the DEXPI 1.4 model.</p>
 <h4 id="rotation-and-mirroring">Rotation and mirroring</h4>
 <p>A profile label template describes the label for the symbol in its upright, unmirrored position. When the symbol is placed rotated or mirrored, the <strong>Profile labels</strong> overlay is placed by DISC DEXPI rule 'B' (requirements document, ANNEX B <em>Profile Label Text under Rotation and Mirroring</em>), for every symbol:</p>
