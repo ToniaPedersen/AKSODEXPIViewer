@@ -21,7 +21,7 @@ The drawing pans by dragging with the left or middle mouse button, as in xBridge
 |---|---|---|
 | none | file `<Label>` texts | unchanged |
 | **Profile labels** | profile LabelTemplate labels **and** the file's `<Label>` texts | the profile LabelTemplate labels and Note texts only; other `<Label>` texts are hidden. Leader lines only for Note labels and label symbols (e.g. ND0048 `SpecialItemLabel-21` in 26010) |
-| **Mixed labels** (new) | — | `<Label>` texts that reference the label symbol's profile label attributes, showing only those values with the template's in-between literals; a placement with no such text shows its profile default label |
+| **Mixed labels** (new) | — | `<Label>` texts that reference the label symbol's profile label attributes, showing only those values with the template's in-between literals; each profile label (one per LabelTemplate) whose own attributes no such text shows is drawn as the default |
 
 The two checkboxes are mutually exclusive. With **Mixed labels**, only literals allowed by the profile label are shown; the file's own literals (Text `String`, references without `ItemID`) are not. The separator between two values is the literal that stands before the second value's token in the profile template, so `0400 x 0150` (ND0077, template `<In>x<Out>`) shows `0400x0150`, and `/KILO/FB` (ND0029, template `<TrimType> <LockMechanism>`) shows `FB KILO`. Literals before the first or after the last value (`EL: `, `HH=`) are not shown.
 
@@ -32,6 +32,23 @@ Implementation:
 - Leader lines of a `<Label>` that places its own label symbol (ND0048, ND0248B …) carry `isSymbolLabel` and are drawn with **Profile labels** and **Mixed labels** too.
 - `src/App.jsx`: `showMixedLabels` state, new checkbox, `drawnElements` filter replacing the old `lbltpl_` filter.
 - `public/UserGuide.md` / `.html`: section 5.6 and the toolbar table.
+
+Mixed labels decides per profile label: a LabelTemplate overlay is drawn as the default unless one of its own attributes (`templateAttrs`) is shown by a `<Label>` text of that placement (`repGroupAttrs`). On 26010 the ND0006 instrument XMP_101, whose only `<Label>` text shows `TagType`, now also gets its `D-26` and `0001` profile labels; deciding per placement had hidden all of them.
+
+### Attribute references show what DependantAttributeContents asks for
+
+A `<Label>` text's `ObjectAttributesReference` now shows exactly its `DependantAttributeContents`: `Value` the value only, `Units` the unit symbol only, `ValueAndUnits` the value with its unit symbol. Before, SetPoint and AlarmValue always got their unit, even for `Value`, and `ValueAndUnits` never added one to other attributes. A reference without `DependantAttributeContents` is unchanged. Profile LabelTemplate labels are unchanged (`SP = 6 barg`, `HH=272 barg`).
+
+| Reference | 2.8.3 | 2.9 |
+|---|---|---|
+| SetPoint / AlarmValue, `Value` | `6 barg` | `6` |
+| any attribute with a unit, `ValueAndUnits` (C01V04, no profile) | `60`, `-45`, `P = 6` | `60 barg`, `-45 °C`, `P = 6 barg` |
+
+With **Mixed labels**, a `Units` reference after a `Value` reference to the same attribute of the same object is joined with a space; any other repeat adds nothing.
+
+`src/proteusParser.js`: `readTextTemplateReferences()` returns `contents`; `gaDisplayValue()` / `resolveDependantAttributeValue()` take it; `formatRepresentationGroupLabel()` returns the attributes used. `src/App.jsx`: Mixed labels hides a profile label only when one of its `templateAttrs` is used.
+
+Checked on 26010, FPQ-26055-CNV12 and DISC_EXAMPLE-05-10 with the profile: no label text changes (all their references are `Value` without SetPoint/AlarmValue). C01V04 without a profile: the 50 `ValueAndUnits` texts now show their unit.
 
 Checked on FPQ-26055-CNV12: none 206 label texts; Profile labels 88 profile labels only; Mixed labels 73 label texts + 42 default labels on 71 placements. DISC_EXAMPLE-05-10 has no `<Label>` texts, so the new mode shows all 131 default labels.
 

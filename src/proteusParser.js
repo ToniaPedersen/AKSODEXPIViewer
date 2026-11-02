@@ -1342,7 +1342,7 @@ export function readTextTemplateReferences(textEl) {
     const specEl = directChildrenByTag(textEl, "TextStringFormatSpecification")[0];
     if (!specEl) return null;
     return directChildrenByTag(specEl, "ObjectAttributesReference")
-        .map(ref => ({ attribute: ref.getAttribute("DependantAttribute"), itemId: ref.getAttribute("ItemID") }))
+        .map(ref => ({ attribute: ref.getAttribute("DependantAttribute"), itemId: ref.getAttribute("ItemID"), contents: ref.getAttribute("DependantAttributeContents") || null }))
         .filter(r => r.attribute);
 }
 
@@ -1373,8 +1373,24 @@ const ANY_LABEL_ATTRIBUTE = { has: () => true };
 // formatLabelNumber()), so a box's own label text and its "Profile labels"
 // overlay show the same "91.0". Text values are never rounded.
 const NUMERIC_GA_FORMATS = new Set(["double", "float", "integer", "long", "short", "byte", "ulong"]);
-function gaDisplayValue(ga, decimals) {
+// contents: the reference's DependantAttributeContents. "Value" shows the value
+// only (no unit, also for SetPoint / AlarmValue), "Units" the unit symbol only,
+// "ValueAndUnits" the value and its unit symbol. Without it (null), SetPoint /
+// AlarmValue show their unit (UNIT_LABEL_ATTRIBUTES) and others the value only.
+function gaDisplayValue(ga, decimals, contents = null) {
     const raw = ga.getAttribute("Value");
+    const unitSym = () => ga.getAttribute("Units") ? unitSymbolFor(ga.getAttribute("Units"), gaUnitType(ga)) : "";
+    if (contents === "Units") return unitSym() || "";
+    if (contents === "Value" || contents === "ValueAndUnits") {
+        if (raw === null) return null;
+        const isNum = NUMERIC_GA_FORMATS.has(ga.getAttribute("Format") || "") && raw.trim() !== "" && Number.isFinite(Number(raw));
+        if (isNum && isFullVacuum(Number(raw), ga.getAttribute("Units"), ga.getAttribute("UnitsURI"), (ga.getAttribute("Name") || "").replace(/AssignmentClass$/, ""), gaUnitType(ga))) return "FV";
+        const val = isNum && (decimals !== null && decimals !== undefined || UNIT_LABEL_ATTRIBUTES.has((ga.getAttribute("Name") || "").replace(/AssignmentClass$/, "")))
+            ? formatLabelNumber(Number(raw), decimals) : raw;
+        if (contents === "Value") return val;
+        const sym = unitSym();
+        return sym && val !== "" ? `${val} ${sym}` : val;
+    }
     if (raw !== null && raw.trim() !== "" && NUMERIC_GA_FORMATS.has(ga.getAttribute("Format") || "")
         && isFullVacuum(Number(raw), ga.getAttribute("Units"), ga.getAttribute("UnitsURI"), (ga.getAttribute("Name") || "").replace(/AssignmentClass$/, ""), gaUnitType(ga))) return "FV";
     if (raw !== null && UNIT_LABEL_ATTRIBUTES.has((ga.getAttribute("Name") || "").replace(/AssignmentClass$/, "")) && ga.getAttribute("Units")) {
@@ -1387,7 +1403,7 @@ function gaDisplayValue(ga, decimals) {
     const n = Number(raw);
     return raw.trim() !== "" && Number.isFinite(n) ? formatLabelNumber(n, decimals) : raw;
 }
-function resolveDependantAttributeValue(itemId, attributeName, elementById, decimals = null) {
+function resolveDependantAttributeValue(itemId, attributeName, elementById, decimals = null, contents = null) {
     const target = itemId ? elementById?.get(itemId) : null;
     if (!target) return null;
     const suffixedName = `${attributeName}AssignmentClass`;
@@ -1395,8 +1411,8 @@ function resolveDependantAttributeValue(itemId, attributeName, elementById, deci
     for (const group of directChildrenByTag(target, "GenericAttributes")) {
         for (const ga of directChildrenByTag(group, "GenericAttribute")) {
             const name = ga.getAttribute("Name");
-            if (name === attributeName) return gaDisplayValue(ga, decimals);
-            if (suffixedValue === null && name === suffixedName) suffixedValue = gaDisplayValue(ga, decimals);
+            if (name === attributeName) return gaDisplayValue(ga, decimals, contents);
+            if (suffixedValue === null && name === suffixedName) suffixedValue = gaDisplayValue(ga, decimals, contents);
         }
     }
     return suffixedValue;
@@ -1424,7 +1440,7 @@ export function resolveTextTemplateValue(textEl, allowedAttrNames, elementById, 
         hasItemIdRef = true;
         const isNoteRef = elementById?.get(ref.itemId)?.getAttribute("ComponentClass") === NOTE_COMPONENT_CLASS;
         if (!isNoteRef && !(allowedAttrNames && allowedAttrNames.has(ref.attribute))) return null;
-        const value = resolveDependantAttributeValue(ref.itemId, ref.attribute, elementById, decimals);
+        const value = resolveDependantAttributeValue(ref.itemId, ref.attribute, elementById, decimals, ref.contents);
         if (value === null) return null;
         parts.push(value);
     }
@@ -1470,18 +1486,34 @@ function labelTemplateParts(templateText) {
 // remaining values whose attributes it uses. Values from different templates,
 // or not found in any template, are joined with a space.
 // Returns null when the Text references none of allowedAttrNames with a value.
-export function formatRepresentationGroupLabel(textEl, templateTexts, allowedAttrNames, elementById, decimals = null) {
+// Each value is shown as its DependantAttributeContents asks (Value -> the value
+// only, no unit). One value per attribute of an object: a "Units" reference
+// after a "Value" reference to the same attribute is joined to it with a space,
+// any other repeat adds nothing. usedAttributes (optional array) receives the
+// attributes that gave a value - "Mixed labels" hides a profile label only when
+// one of its own attributes is among them.
+export function formatRepresentationGroupLabel(textEl, templateTexts, allowedAttrNames, elementById, decimals = null, usedAttributes = null) {
     if (!allowedAttrNames) return null;
     const refs = readTextTemplateReferences(textEl);
     if (!refs || refs.length === 0) return null;
     const remaining = [];
+    const seen = new Map();
     for (const ref of refs) {
         if (!ref.itemId || !allowedAttrNames.has(ref.attribute)) continue;
-        const value = resolveDependantAttributeValue(ref.itemId, ref.attribute, elementById, decimals);
+        const value = resolveDependantAttributeValue(ref.itemId, ref.attribute, elementById, decimals, ref.contents);
+        const key = `${ref.itemId}|${ref.attribute}`;
+        const prev = seen.get(key);
+        if (prev) {
+            if (ref.contents === "Units" && prev.contents === "Value" && value && !prev.joined) { prev.entry.value += ` ${value}`; prev.joined = true; }
+            continue;
+        }
         if (value === null || value === "") continue;
-        remaining.push({ attribute: ref.attribute, value });
+        const entry = { attribute: ref.attribute, value };
+        seen.set(key, { entry, contents: ref.contents, joined: false });
+        remaining.push(entry);
     }
     if (remaining.length === 0) return null;
+    if (usedAttributes) remaining.forEach(v => usedAttributes.push(v.attribute));
     const segments = [];
     for (const templateText of templateTexts || []) {
         if (remaining.length === 0) break;
@@ -1692,8 +1724,9 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, embeddedSh
                 // label symbol's LabelTemplate attributes, with the template's
                 // in-between literals (formatRepresentationGroupLabel()). null when
                 // the Text references none of them, or no profile is loaded.
+                const repGroupAttrs = [];
                 const repGroupValue = discProfileLoaded
-                    ? formatRepresentationGroupLabel(textEl, labelTemplateTexts, labelAllowedAttrNames, elementById, textDecimals)
+                    ? formatRepresentationGroupLabel(textEl, labelTemplateTexts, labelAllowedAttrNames, elementById, textDecimals, repGroupAttrs)
                     : null;
                 if (resolvedTemplateValue === null && repGroupValue === null) return;
                 // isNoteText: every ItemID reference of this Text points at a Note (e.g. "NOTE " + LocalNoteIdentifier,
@@ -1727,7 +1760,7 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, embeddedSh
                         // overrides the "Profile labels" checkbox gating when true.
                         isDiscProfileLabel, isProfileGoverned: isDiscProfileLabel,
                         hasProfileAttributeBacking, hasProfileAttributeValue, validRawProfileText,
-                        hasOwnValidatedTemplate, resolvedTemplateValue, repGroupValue, isNoteText,
+                        hasOwnValidatedTemplate, resolvedTemplateValue, repGroupValue, repGroupAttrs, isNoteText,
                     },
                 });
             });
@@ -1782,6 +1815,8 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, embeddedSh
                 const displayText = stacked ? Array.from(text).join("\n") : text;
                 elements.push({
                     kind: "primitive", key: `lbltpl_${id}_${li}`, representedId: ownerId, elementRole: "label", labelGroupId: id,
+                    // this LabelTemplate's own attributes: "Mixed labels" draws it unless one of them is used by a label Text
+                    templateAttrs: [...String(lt.text || "").matchAll(/(?:[A-Za-z]\w*:)?<([^<>]+)>/g)].map(m => m[1]),
                     primitive: {
                         kind: "text", key: `lbltpltxt_${id}_${li}`,
                         position: { x: wx, y: wy }, value: displayText, rotation: orient.rotation,

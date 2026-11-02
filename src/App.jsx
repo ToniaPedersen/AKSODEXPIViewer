@@ -1704,8 +1704,16 @@ export default function App() {
         if (!showMixedLabels) {
             return paintOrderElements.filter(el => !isTemplate(el) && !(isText(el) && el.primitive?.resolvedTemplateValue == null));
         }
+        // groupsWithRepText: placements with a Mixed label text; usedAttrsByGroup: the profile label attributes those texts show.
+        // A profile label ("lbltpl_") is drawn as the default unless one of its own attributes (templateAttrs) is used.
         const groupsWithRepText = new Set();
-        paintOrderElements.forEach(el => { if (isText(el) && el.primitive?.repGroupValue != null) groupsWithRepText.add(el.labelGroupId); });
+        const usedAttrsByGroup = new Map();
+        paintOrderElements.forEach(el => {
+            if (!isText(el) || el.primitive?.repGroupValue == null) return;
+            groupsWithRepText.add(el.labelGroupId);
+            if (!usedAttrsByGroup.has(el.labelGroupId)) usedAttrsByGroup.set(el.labelGroupId, new Set());
+            (el.primitive.repGroupAttrs || []).forEach(a => usedAttrsByGroup.get(el.labelGroupId).add(a));
+        });
         const out = [];
         paintOrderElements.forEach(el => {
             if (isNote(el)) out.push(el);
@@ -1715,7 +1723,8 @@ export default function App() {
             } else if (isLeader(el)) {
                 if (keepLeader(el) || groupsWithRepText.has(el.labelGroupId)) out.push(el);
             } else if (isTemplate(el)) {
-                if (!groupsWithRepText.has(el.labelGroupId)) out.push(el);
+                const used = usedAttrsByGroup.get(el.labelGroupId);
+                if (!used || !(el.templateAttrs || []).some(a => used.has(a))) out.push(el);
             } else out.push(el);
         });
         return out;
