@@ -1335,6 +1335,20 @@ export function symbolLabelAttributeNames(symbol) {
     return names;
 }
 
+// Every literal (non-token) segment across all of a Profile/Symbol's
+// variants' LabelTemplates, after unwrapping VB-style formulas. A literal
+// ObjectAttributesReference in a file (one with no ItemID, e.g. "/") is only
+// drawn when its text occurs in one of these segments.
+export function symbolLabelLiterals(symbol) {
+    const literals = [];
+    (symbol?.variants || []).forEach(variant => {
+        (variant.labelTemplates || []).forEach(lt => {
+            labelTemplateParts(lt.text).forEach(part => { if (part.literal !== undefined) literals.push(part.literal); });
+        });
+    });
+    return literals;
+}
+
 // Reads the DependantAttribute+ItemID pairs from a Text element's own
 // TextStringFormatSpecification/ObjectAttributesReference children. Returns
 // null when the Text has no TextStringFormatSpecification.
@@ -1421,20 +1435,27 @@ function resolveDependantAttributeValue(itemId, attributeName, elementById, deci
 // Resolves the value a Text's own TextStringFormatSpecification should
 // display: every <ObjectAttributesReference>, concatenated in document
 // order. A reference with no ItemID contributes its own DependantAttribute
-// text verbatim (a literal separator). A reference with an ItemID
+// text verbatim (a literal separator) - but when allowedLiterals (an array of
+// the symbol's LabelTemplate literal segments) is given, only if that text
+// occurs in one of them; other literals are left out. Note texts (every
+// ItemID reference targets a Note) keep all their literals. A reference with an ItemID
 // contributes the live GenericAttribute Value off its target, but only once
 // validated: it targets a Note (see NOTE_COMPONENT_CLASS), or its
 // DependantAttribute is in the resolved symbol's declared label attributes.
 // Returns null when there is no TextStringFormatSpecification, no
 // ItemID-bearing reference, or any reference fails to validate or resolve.
-export function resolveTextTemplateValue(textEl, allowedAttrNames, elementById, decimals = null) {
+export function resolveTextTemplateValue(textEl, allowedAttrNames, elementById, decimals = null, allowedLiterals = null) {
     const refs = readTextTemplateReferences(textEl);
     if (!refs || refs.length === 0) return null;
+    const itemRefs = refs.filter(r => r.itemId);
+    const isNoteText = itemRefs.length > 0
+        && itemRefs.every(r => elementById?.get(r.itemId)?.getAttribute("ComponentClass") === NOTE_COMPONENT_CLASS);
+    const literalAllowed = text => !allowedLiterals || isNoteText || allowedLiterals.some(l => l.includes(text));
     const parts = [];
     let hasItemIdRef = false;
     for (const ref of refs) {
         if (!ref.itemId) {
-            parts.push(ref.attribute);
+            if (literalAllowed(ref.attribute)) parts.push(ref.attribute);
             continue;
         }
         hasItemIdRef = true;
@@ -1672,6 +1693,10 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, embeddedSh
             const labelRegNum = labelEl !== el && discProfileLoaded ? shapeCatalogue.get(labelEl.getAttribute("ComponentName") || "") : null;
             const labelProfileSymbol = labelRegNum ? symbolMap.get(`DiscProfile/${labelRegNum}`) || null : null;
             const labelAllowedAttrNames = labelProfileSymbol ? symbolLabelAttributeNames(labelProfileSymbol) : allowedLabelAttrNames;
+            // Literal segments of the same symbol's LabelTemplates: with a profile, a
+            // literal reference in the file (e.g. "/") is drawn only if it is one of these.
+            const labelAllowedLiterals = labelProfileSymbol ? symbolLabelLiterals(labelProfileSymbol)
+                : isDiscProfileLabel ? symbolLabelLiterals(placedProfileSymbol) : null;
             const labelSymbolName = (labelProfileSymbol || placedProfileSymbol)?.name || "";
             // "Mixed labels": the profile LabelTemplates this Label's
             // Texts are laid out against, and labelGroupId - the element whose
@@ -1719,7 +1744,7 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, embeddedSh
                 // no ItemID-bearing reference, or one that fails to validate/resolve,
                 // is not drawn.
                 const allowedAttrNames = discProfileLoaded ? labelAllowedAttrNames : ANY_LABEL_ATTRIBUTE;
-                const resolvedTemplateValue = resolveTextTemplateValue(textEl, allowedAttrNames, elementById, textDecimals);
+                const resolvedTemplateValue = resolveTextTemplateValue(textEl, allowedAttrNames, elementById, textDecimals, discProfileLoaded ? labelAllowedLiterals : null);
                 // "Mixed labels" value: only the references to the
                 // label symbol's LabelTemplate attributes, with the template's
                 // in-between literals (formatRepresentationGroupLabel()). null when
