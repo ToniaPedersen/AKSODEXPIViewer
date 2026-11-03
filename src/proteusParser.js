@@ -1335,18 +1335,35 @@ export function symbolLabelAttributeNames(symbol) {
     return names;
 }
 
-// Every literal (non-token) segment across all of a Profile/Symbol's
-// variants' LabelTemplates, after unwrapping VB-style formulas. A literal
-// ObjectAttributesReference in a file (one with no ItemID, e.g. "/") is only
-// drawn when its text occurs in one of these segments.
+// The literal pieces of a Profile/Symbol's LabelTemplates (all variants),
+// read row by row after unwrapping VB-style formulas (as DEXPIViewer does):
+// - literals: every literal piece, as written and trimmed (e.g. "P = " and
+//   "P =", " - " and "-", " "). A literal ObjectAttributesReference in a file
+//   (one with no ItemID, e.g. "/") is drawn only when it equals one of them.
+// - gaps: "<A>|<B>" -> the literal the template puts between two adjacent
+//   tokens on one row (e.g. "TrimType|LockMechanism" -> " ").
 export function symbolLabelLiterals(symbol) {
-    const literals = [];
+    const literals = new Set();
+    const gaps = new Map();
     (symbol?.variants || []).forEach(variant => {
         (variant.labelTemplates || []).forEach(lt => {
-            labelTemplateParts(lt.text).forEach(part => { if (part.literal !== undefined) literals.push(part.literal); });
+            String(lt.text || "").split(/\r?\n/).forEach(row => {
+                const text = unwrapLabelFormula(row);
+                const re = new RegExp(LABEL_TEMPLATE_TOKEN_RE.source, "g");
+                let m, prev = null, prevEnd = 0;
+                const addLiteral = piece => { if (piece) { literals.add(piece); if (piece.trim()) literals.add(piece.trim()); } };
+                while ((m = re.exec(text))) {
+                    const piece = text.slice(prevEnd, m.index);
+                    addLiteral(piece);
+                    if (prev !== null && !gaps.has(`${prev}|${m[2]}`)) gaps.set(`${prev}|${m[2]}`, piece);
+                    prev = m[2];
+                    prevEnd = re.lastIndex;
+                }
+                addLiteral(text.slice(prevEnd));
+            });
         });
     });
-    return literals;
+    return { literals, gaps };
 }
 
 // Reads the DependantAttribute+ItemID pairs from a Text element's own
@@ -1439,10 +1456,16 @@ function resolveDependantAttributeValue(itemId, attributeName, elementById, deci
 // Resolves the value a Text's own TextStringFormatSpecification should
 // display: every <ObjectAttributesReference>, concatenated in document
 // order. A reference with no ItemID contributes its own DependantAttribute
-// text verbatim (a literal separator) - but when allowedLiterals (an array of
-// the symbol's LabelTemplate literal segments) is given, only if that text
-// occurs in one of them; other literals are left out. Note texts (every
-// ItemID reference targets a Note) keep all their literals. A reference with an ItemID
+// text verbatim (a literal separator). When allowedLiterals (the symbol's
+// symbolLabelLiterals()) is given:
+// - a literal between two ItemID references whose attributes the template
+//   puts side by side ("<A>|<B>") is replaced by the template's own
+//   separator for that pair; further literals in the same gap add nothing;
+// - any other literal is kept only if it equals a template literal (as
+//   written or trimmed; a space-only literal only if the template has that
+//   exact one), else it is left out.
+// Literals are still drawn when the values next to them are blank. Note texts
+// (every ItemID reference targets a Note) keep all their literals. A reference with an ItemID
 // contributes the live GenericAttribute Value off its target, but only once
 // validated: it targets a Note (see NOTE_COMPONENT_CLASS), or its
 // DependantAttribute is in the resolved symbol's declared label attributes.
@@ -1454,12 +1477,28 @@ export function resolveTextTemplateValue(textEl, allowedAttrNames, elementById, 
     const itemRefs = refs.filter(r => r.itemId);
     const isNoteText = itemRefs.length > 0
         && itemRefs.every(r => elementById?.get(r.itemId)?.getAttribute("ComponentClass") === NOTE_COMPONENT_CLASS);
-    const literalAllowed = text => !allowedLiterals || isNoteText || allowedLiterals.some(l => l.includes(text));
+    const filter = allowedLiterals && !isNoteText ? allowedLiterals : null;
+    const literalAllowed = text => filter.literals.has(text) || (text.trim() !== "" && filter.literals.has(text.trim()));
+    // The template separator for the gap holding literal reference k, or
+    // undefined when the template doesn't put its two neighbours side by side.
+    const gapLiteralAt = k => {
+        let a = k - 1;
+        while (a >= 0 && !refs[a].itemId) a--;
+        let b = k + 1;
+        while (b < refs.length && !refs[b].itemId) b++;
+        if (a < 0 || b >= refs.length) return undefined;
+        const lit = filter.gaps.get(`${refs[a].attribute}|${refs[b].attribute}`);
+        if (lit === undefined) return undefined;
+        return k === a + 1 ? lit : "";
+    };
     const parts = [];
     let hasItemIdRef = false;
-    for (const ref of refs) {
+    for (const [k, ref] of refs.entries()) {
         if (!ref.itemId) {
-            if (literalAllowed(ref.attribute)) parts.push(ref.attribute);
+            if (!filter) { parts.push(ref.attribute); continue; }
+            const gap = gapLiteralAt(k);
+            if (gap !== undefined) parts.push(gap);
+            else if (literalAllowed(ref.attribute)) parts.push(ref.attribute);
             continue;
         }
         hasItemIdRef = true;
