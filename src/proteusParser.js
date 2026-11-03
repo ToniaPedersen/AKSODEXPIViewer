@@ -1351,12 +1351,14 @@ export function symbolLabelLiterals(symbol) {
 
 // Reads the DependantAttribute+ItemID pairs from a Text element's own
 // TextStringFormatSpecification/ObjectAttributesReference children. Returns
-// null when the Text has no TextStringFormatSpecification.
+// null when the Text has no TextStringFormatSpecification. A reference without
+// DependantAttributeContents gets the schema default "ValueAndUnits"
+// (proteus-4.1.1-disc.xsd).
 export function readTextTemplateReferences(textEl) {
     const specEl = directChildrenByTag(textEl, "TextStringFormatSpecification")[0];
     if (!specEl) return null;
     return directChildrenByTag(specEl, "ObjectAttributesReference")
-        .map(ref => ({ attribute: ref.getAttribute("DependantAttribute"), itemId: ref.getAttribute("ItemID"), contents: ref.getAttribute("DependantAttributeContents") || null }))
+        .map(ref => ({ attribute: ref.getAttribute("DependantAttribute"), itemId: ref.getAttribute("ItemID"), contents: ref.getAttribute("DependantAttributeContents") || "ValueAndUnits" }))
         .filter(r => r.attribute);
 }
 
@@ -1389,8 +1391,10 @@ const ANY_LABEL_ATTRIBUTE = { has: () => true };
 const NUMERIC_GA_FORMATS = new Set(["double", "float", "integer", "long", "short", "byte", "ulong"]);
 // contents: the reference's DependantAttributeContents. "Value" shows the value
 // only (no unit, also for SetPoint / AlarmValue), "Units" the unit symbol only,
-// "ValueAndUnits" the value and its unit symbol. Without it (null), SetPoint /
-// AlarmValue show their unit (UNIT_LABEL_ATTRIBUTES) and others the value only.
+// "ValueAndUnits" the value and its unit symbol. A reference read by
+// readTextTemplateReferences() always has one ("ValueAndUnits" when the file
+// leaves it out). Without it (null), SetPoint / AlarmValue show their unit
+// (UNIT_LABEL_ATTRIBUTES) and others the value only.
 function gaDisplayValue(ga, decimals, contents = null) {
     const raw = ga.getAttribute("Value");
     const unitSym = () => ga.getAttribute("Units") ? unitSymbolFor(ga.getAttribute("Units"), gaUnitType(ga)) : "";
