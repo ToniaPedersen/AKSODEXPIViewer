@@ -166,6 +166,8 @@ Source lines are read once per document, straight from the folder pick — no fi
 
 ### 4.5 Suggest… — help on a finding
 
+Under each finding, in the Validation, Issues and Folder tabs and the error explorer, a blue **Suggestion:** line gives a one-line fix for that finding's code, naming the value or attribute from the message where it can. It is worked out from the code and message only. For the XML involved and a worked change, use **Suggest…**.
+
 **Suggest…** appears on every finding: in the Validation tab, the Folder tab and the error explorer. It opens **Suggest a fix**. The app has no AI built in and sends nothing; text only leaves the browser when you paste it somewhere.
 
 The dialog shows:

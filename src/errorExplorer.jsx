@@ -4,6 +4,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ISSUE_CODES, LAYER_LABELS } from "./issueCodes.js";
+import { suggestedCorrectionFor } from "./suggestedCorrection.js";
 
 const SEV_COLORS = { error: "#cf222e", warning: "#b45309", info: "#0969da" };
 const SEV_LABELS = { error: "Error", warning: "Warning", info: "Info" };
@@ -252,6 +253,7 @@ export default function ErrorExplorer({ issues, files, folderName, fileCount, on
                                                 {onSuggest && <button style={{ ...X.btn, marginLeft: "auto", padding: "1px 6px", fontSize: 11 }} onClick={() => onSuggest(issue)} title="Build a question about this finding to paste into Copilot">Suggest…</button>}
                                             </div>
                                             <div style={{ fontSize: 12, color: "#333" }}>{issue.message}</div>
+                                            {suggestedCorrectionFor(issue) && <div style={{ fontSize: 11, color: "#0969da", marginTop: 2 }}>Suggestion: {suggestedCorrectionFor(issue)}</div>}
                                             {issue.line != null && (
                                                 <div style={{ ...X.mono, marginTop: 3, padding: "4px 6px", background: "#f6f8fa", border: "1px solid #eef2f6", borderRadius: 4, whiteSpace: "pre-wrap", wordBreak: "break-all", color: "#24292f" }}>
                                                     {cache === "loading" ? "reading source line…"

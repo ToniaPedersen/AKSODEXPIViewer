@@ -17,6 +17,7 @@ import { version as APP_VERSION } from "../package.json";
 import SuggestDialog from "./suggestDialog.jsx";
 import { buildSuggestion } from "./suggestPrompt.js";
 import { jsPDF } from "jspdf";
+import { suggestedCorrectionFor } from "./suggestedCorrection.js";
 import { svgToDxf } from "./dxfExport.js";
 import { buildCompareGeometry, placementToBgParams } from "./imageCompare.js";
 
@@ -939,6 +940,11 @@ export default function App() {
         try { text = (await folderFilesRef.current.get(issue.path)?.text()) || ""; } catch { /* folder pick no longer readable */ }
         openSuggest(issue, text, issue.path);
     }
+    // "Suggestion: ..." line under a finding, as in DEXPIViewer (suggestedCorrection.js).
+    const suggestionLine = issue => {
+        const text = suggestedCorrectionFor(issue);
+        return text ? <div style={{ fontSize: 11, color: "#0969da", marginTop: 2 }}>Suggestion: {text}</div> : null;
+    };
     const suggestBtn = onClick => (
         <button
             style={{ ...S.btnSmall, marginLeft: "auto", padding: "1px 6px", fontSize: 11 }}
@@ -2151,6 +2157,7 @@ export default function App() {
                                                                     {!isNavable && <span style={{ color: "#cf222e", marginLeft: 4 }} title="No graphical representation found">⚠ no symbol</span>}
                                                                 </div>
                                                             )}
+                                                            {suggestionLine(issue)}
                                                         </div>
                                                     );
                                                 })}
@@ -2317,6 +2324,7 @@ export default function App() {
                                                         {issue.objectId && (
                                                             <div style={{ fontSize: 11, color: "#57606a", fontFamily: "monospace" }}>{issue.objectId}</div>
                                                         )}
+                                                        {suggestionLine(issue)}
                                                     </div>
                                                 ))}
                                             </div>
@@ -2937,6 +2945,7 @@ export default function App() {
                                             </div>
                                             <div style={{ fontSize: 12, fontWeight: 600, color: "#57606a", marginBottom: 2 }}>{issue.codeLabel}</div>
                                             <div style={{ fontSize: 12, color: "#333" }}>{issue.message}</div>
+                                            {suggestionLine(issue)}
                                         </div>
                                     ));
                                 })()}

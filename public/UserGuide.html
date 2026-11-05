@@ -197,6 +197,7 @@ npm run dev
 <p>Source lines are read once per document, straight from the folder pick — no file is re-read from disk until you expand it, and nothing is re-validated. <strong>Open</strong>, on a document row, loads that file into the viewer and closes the explorer, so a finding can be followed onto the drawing.</p>
 <p><strong>The summary panel</strong> on the right tracks whatever is in focus: occurrences, documents hit, the per-type split, and — for a single code — its severity, what the check needs, its scope, and the documents carrying the most hits.</p>
 <h3 id="45-suggest-help-on-a-finding">4.5 Suggest… — help on a finding</h3>
+<p>Under each finding, in the Validation, Issues and Folder tabs and the error explorer, a blue <strong>Suggestion:</strong> line gives a one-line fix for that finding's code, naming the value or attribute from the message where it can. It is worked out from the code and message only. For the XML involved and a worked change, use <strong>Suggest…</strong>.</p>
 <p><strong>Suggest…</strong> appears on every finding: in the Validation tab, the Folder tab and the error explorer. It opens <strong>Suggest a fix</strong>. The app has no AI built in and sends nothing; text only leaves the browser when you paste it somewhere.</p>
 <p>The dialog shows:</p>
 <ul>

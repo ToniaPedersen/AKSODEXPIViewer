@@ -69,6 +69,13 @@ The header row with the issue count badge and the engine text ("ProteusPIDSchema
 
 - `src/App.jsx`: Validation tab header; button row.
 
+### Suggestion under each finding
+
+Every finding now shows a blue **Suggestion:** line under its message, as in DEXPIViewer, in the Validation tab, the Issues tab, the Folder tab and the error explorer. The text is a one-line fix chosen by the finding's code, and by the message wording where one code covers several cases. Values from the message (the bad value, the class or attribute name) are used where they help. Codes with no rule show no line. The **Suggest…** dialog is unchanged.
+
+- `src/suggestedCorrection.js` (new): `suggestedCorrectionFor(issue)`.
+- `src/App.jsx`, `src/errorExplorer.jsx`: the Suggestion line.
+
 ### Validation badges
 
 A badge row under **Run Validation** shows **All**, **Errors**, **Warn** and **Info** counts. The badges are the Validation tab's type filter: clicking one opens the tab filtered to that type, and the active one is outlined. The All / Error / Warning / Info chips at the top of the Validation tab are removed. The Folder tab and Error explorer keep their own chips.
@@ -81,4 +88,4 @@ Not ported from DEXPIViewer 2.5: *Hide elements with issues* (this viewer has no
 
 ### Files changed
 
-`package.json`, `package-lock.json`, `README.md`, `ChangeLog_2.9_to_2.10.md` (new), `public/UserGuide.md`, `public/UserGuide.html`, `src/App.jsx`, `src/dxfExport.js` (new), `src/issueCodes.js`, `src/proteusParser.js`, `src/rdlValidate.js`.
+`package.json`, `package-lock.json`, `README.md`, `ChangeLog_2.9_to_2.10.md` (new), `public/UserGuide.md`, `public/UserGuide.html`, `src/App.jsx`, `src/dxfExport.js` (new), `src/errorExplorer.jsx`, `src/suggestedCorrection.js` (new), `src/issueCodes.js`, `src/proteusParser.js`, `src/rdlValidate.js`.
