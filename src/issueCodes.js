@@ -278,7 +278,7 @@ export const ISSUE_CODES = {
         "needs": "model+profileForDisc",
         "scope": "all",
         "drivenBy": null,
-        "implemented": false
+        "implemented": true
     },
     "MDL-CMP-02": {
         "code": "MDL-CMP-02",

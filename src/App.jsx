@@ -17,6 +17,7 @@ import { version as APP_VERSION } from "../package.json";
 import SuggestDialog from "./suggestDialog.jsx";
 import { buildSuggestion } from "./suggestPrompt.js";
 import { jsPDF } from "jspdf";
+import { svgToDxf } from "./dxfExport.js";
 import { buildCompareGeometry, placementToBgParams } from "./imageCompare.js";
 
 // Issue classification codes reported here come from issueCodes.js, shared by xsdValidate.js and rdlValidate.js.
@@ -243,6 +244,9 @@ const S = {
     btn: { padding: "6px 10px", border: "1px solid #c7ced6", background: "white", borderRadius: 6, cursor: "pointer", fontSize: 13 },
     btnSmall: { padding: "3px 7px", border: "1px solid #c7ced6", background: "white", borderRadius: 4, cursor: "pointer", fontSize: 12 },
     btnPrimary: { padding: "6px 10px", border: "1px solid #0969da", background: "#0969da", color: "white", borderRadius: 6, cursor: "pointer", fontSize: 13 },
+    // PNG / PDF / DXF button group and the Fit / BG PNG icon buttons at the right-hand end of the centre toolbar.
+    exportGroup: { display: "flex", flexShrink: 0, marginLeft: 6 },
+    exportBtn: { display: "inline-flex", alignItems: "center", gap: 3, padding: "3px 7px", border: "1px solid #c7ced6", background: "white", cursor: "pointer", fontSize: 11, fontWeight: 600, color: "#57606a", lineHeight: "16px" },
     // Small bordered "remove" button, used for the DiscProfile.xml unload control and other destructive actions.
     btnDanger: { padding: "3px 7px", border: "1px solid #cf222e", background: "white", color: "#cf222e", borderRadius: 4, cursor: "pointer", fontSize: 12 },
     input: { width: "100%", padding: "6px 8px", border: "1px solid #c7ced6", borderRadius: 6, boxSizing: "border-box", fontSize: 13 },
@@ -634,6 +638,52 @@ function HeatTracePIF({ el, off = HT_OFF }) {
     return <g transform={transform} pointerEvents="none">{overlays}</g>;
 }
 
+// Small "save to file" glyph used on the PNG / PDF / DXF buttons.
+function DownloadIcon() {
+    return (
+        <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true" style={{ flexShrink: 0 }}>
+            <path d="M8 1.5v8.5M4.5 6.8 8 10.3l3.5-3.5M2.5 11.5v2.5h11v-2.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+    );
+}
+
+// "Fit to window" glyph: four corner brackets.
+function FitIcon() {
+    return (
+        <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true" style={{ flexShrink: 0 }}>
+            <path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+    );
+}
+
+// Picture glyph for the BG PNG button.
+function ImageIcon() {
+    return (
+        <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true" style={{ flexShrink: 0 }}>
+            <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+            <circle cx="5.5" cy="6" r="1.3" fill="currentColor" />
+            <path d="M2.5 12.5 6.5 8.5l2.5 2.5 2-2 3 3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+        </svg>
+    );
+}
+
+// Sliders glyph for the BG controls toggle.
+function SlidersIcon() {
+    return (
+        <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true" style={{ flexShrink: 0 }}>
+            <path d="M2 4h12M2 8h12M2 12h12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+            <circle cx="10" cy="4" r="1.7" fill="white" stroke="currentColor" strokeWidth="1.3" />
+            <circle cx="5" cy="8" r="1.7" fill="white" stroke="currentColor" strokeWidth="1.3" />
+            <circle cx="11" cy="12" r="1.7" fill="white" stroke="currentColor" strokeWidth="1.3" />
+        </svg>
+    );
+}
+
+// DXF layer for a drawn element (see dxfExport.js): piping/signal lines, symbols and labels on separate layers.
+function dxfLayerFor(el) {
+    return el.elementRole === "connector" ? "LINES" : el.elementRole === "label" ? "LABELS" : "SYMBOLS";
+}
+
 function SymbolGraphic({ el, selected, connHighlight, onSelect, boostPct, boostSymbolOutlines }) {
     const symbolStrokeMult = boostSymbolOutlines ? boostPct / 100 : 1;
     const mirror = el.isMirrored ? -1 : 1;
@@ -649,7 +699,7 @@ function SymbolGraphic({ el, selected, connHighlight, onSelect, boostPct, boostS
                        : connHighlight === "#8250df" ? "#f3e8ff"
                        : null;
     return (
-        <g onClick={e => { e.stopPropagation(); if (el.representedId) onSelect(el.representedId); }} style={{ cursor: el.representedId ? "pointer" : "default" }}>
+        <g data-dxf-layer={dxfLayerFor(el)} onClick={e => { e.stopPropagation(); if (el.representedId) onSelect(el.representedId); }} style={{ cursor: el.representedId ? "pointer" : "default" }}>
             <g transform={transform}>
                 <rect x={hitX} y={hitY} width={hitW} height={hitH} fill="transparent" stroke="none" pointerEvents="all" />
             </g>
@@ -670,7 +720,7 @@ function PrimitiveGraphic({ el, selected, connHighlight, onSelect, nodePosMap, b
     const hlColor = selected ? (connHighlight || selectionColor(el.elementRole)) : connHighlight || null;
     const prim = el.primitive;
     return (
-        <g onClick={e => { e.stopPropagation(); if (el.representedId) onSelect(el.representedId); }} style={{ cursor: el.representedId ? "pointer" : "default" }}>
+        <g data-dxf-layer={dxfLayerFor(el)} onClick={e => { e.stopPropagation(); if (el.representedId) onSelect(el.representedId); }} style={{ cursor: el.representedId ? "pointer" : "default" }}>
             {prim?.kind === "circle" && <circle cx={prim.center.x} cy={prim.center.y} r={prim.radius + hitPad} fill="transparent" stroke="none" pointerEvents="all" />}
             {prim?.kind === "ellipse" && <ellipse cx={prim.center.x} cy={prim.center.y} rx={prim.rx + hitPad} ry={prim.ry + hitPad} fill="transparent" stroke="none" pointerEvents="all" />}
             {prim?.kind === "rect" && <rect x={prim.center.x - prim.width / 2 - hitPad} y={prim.center.y - prim.height / 2 - hitPad} width={prim.width + hitPad * 2} height={prim.height + hitPad * 2} fill="transparent" stroke="none" pointerEvents="all" />}
@@ -769,9 +819,10 @@ export default function App() {
     const [boostSymbolOutlines, setBoostSymbolOutlines] = useState(false);
     // Label display checkboxes (Proteus, profile loaded). Both off: the file's own <Label> texts ("lbl_"), built from their attribute links.
     // "Profile labels": ONLY the profile's LabelTemplate overlays ("lbltpl_") - no representation group (<Label>) texts or leaders.
-    // "Mixed labels": <Label> texts that reference the label symbol's profile label attributes, showing only those
-    // values plus the template's in-between literals (primitive.repGroupValue); a symbol placement with no such text shows its
-    // profile default label ("lbltpl_" overlays with the same labelGroupId) instead. The two checkboxes are mutually exclusive.
+    // "Mixed labels": <Label> texts that reference, with a value, at least one of the label symbol's profile label attributes,
+    // shown exactly as with both checkboxes unticked (primitive.repGroupValue - never rebuilt from the profile LabelTemplate);
+    // each profile label ("lbltpl_" overlay with the same labelGroupId) whose own attributes no such text uses is drawn as the
+    // default. The two checkboxes are mutually exclusive.
     const [showProfileLabels, setShowProfileLabels] = useState(false);
     const [showMixedLabels, setShowMixedLabels] = useState(false);
     const [showAllAttributes, setShowAllAttributes] = useState(false); // default: hide non-DEXPI attributes
@@ -823,6 +874,8 @@ export default function App() {
     const svgViewportRef = useRef(null);
     const svgElRef = useRef(null);
     const [exporting, setExporting] = useState(false);
+    // True for the moment the DXF export reads the drawing: selection and connectivity highlights are left out.
+    const [cleanExport, setCleanExport] = useState(false);
     const [batchPng, setBatchPng] = useState(false);
     const [pngProgress, setPngProgress] = useState(null);
     const [pngResult, setPngResult] = useState(null);
@@ -1549,8 +1602,13 @@ export default function App() {
         }
     }
 
-    function exportFileBaseName() {
-        return (parsed?.meta?.drawingNumber || "dexpi-drawing").replace(/[\\/:*?"<>|]+/g, "_");
+    // Export file name = the loaded Proteus XML file's name with its ".xml"
+    // extension swapped for the export's (FPQ-AKSO-P-XB-20030-01.XML ->
+    // FPQ-AKSO-P-XB-20030-01.png). Falls back to the drawing number, then
+    // "dexpi-drawing", when no file name is known.
+    function exportFileBaseName(fallback = null) {
+        const stem = (mainFileName || "").replace(/\.xml$/i, "");
+        return (stem || fallback || parsed?.meta?.drawingNumber || "dexpi-drawing").replace(/[\\/:*?"<>|]+/g, "_");
     }
 
     function downloadBlob(blob, filename) {
@@ -1622,6 +1680,27 @@ export default function App() {
         } catch (e) {
             alert(e.message || String(e));
         } finally {
+            setExporting(false);
+        }
+    }
+
+    // DXF: the whole drawing as vector geometry (see dxfExport.js), not just the current view.
+    // The BG image and selection/connectivity highlights are left out; the drawing is exported whatever the BG Blend.
+    async function exportAsDxf() {
+        setExporting(true);
+        setCleanExport(true);
+        try {
+            // Let React re-render without highlights before reading the DOM.
+            await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+            const root = svgElRef.current?.querySelector("[data-dxf-root]");
+            if (!root) throw new Error("Drawing is not ready yet.");
+            const { dxf, count } = svgToDxf(root);
+            if (!count) throw new Error("Nothing to export - the drawing has no visible elements.");
+            downloadBlob(new Blob([dxf], { type: "application/dxf" }), `${exportFileBaseName()}.dxf`);
+        } catch (e) {
+            alert(e.message || String(e));
+        } finally {
+            setCleanExport(false);
             setExporting(false);
         }
     }
@@ -1923,6 +2002,24 @@ export default function App() {
                         {(xsdStatus === "running" || rdlStatus === "running") && (
                             <div style={{ marginTop: 6, fontSize: 12, color: "#57606a", display: "flex", alignItems: "center" }}><Spinner />Validating…</div>
                         )}
+                        {/* Severity badges: the Validation tab's filter. Clicking one opens the tab filtered to that severity; the active one is outlined. */}
+                        {!validationRunning && validationStarted && (xsdResult || rdlResult) && (
+                            <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }} title="Filter the Validation tab">
+                                {[
+                                    { f: "All", label: `${allIssues.length} All`, color: "#57606a" },
+                                    { f: "Error", label: `${issueCounts.error || 0} Errors`, color: SEV_COLORS.error },
+                                    { f: "Warning", label: `${issueCounts.warning || 0} Warn`, color: SEV_COLORS.warning },
+                                    { f: "Info", label: `${issueCounts.info || 0} Info`, color: SEV_COLORS.info },
+                                ].map(({ f, label, color }) => {
+                                    const active = leftTab === "validation" && validationFilter === f;
+                                    return (
+                                        <span key={f} role="button" aria-pressed={active}
+                                            style={{ ...S.badge(color), cursor: "pointer", boxShadow: active ? `0 0 0 2px white, 0 0 0 3.5px ${color}` : "none" }}
+                                            onClick={() => { setValidationFilter(f); setLeftTab("validation"); }}>{label}</span>
+                                    );
+                                })}
+                            </div>
+                        )}
                     </div>
 
                     <div style={S.tabBar}>
@@ -1986,48 +2083,31 @@ export default function App() {
                             )}
                             {!validationRunning && validationStarted && (xsdResult || rdlResult) && (
                                 <>
-                                    <div style={{ padding: "8px 10px", borderBottom: "1px solid #eef2f6", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                                        {allIssues.length === 0
-                                            ? <span style={S.badge("#1a7f37")}>No issues found</span>
-                                            : <span style={S.badge("#cf222e")}>{allIssues.length} issue{allIssues.length === 1 ? "" : "s"}</span>}
-                                        <span style={{ fontSize: 11, color: "#888" }}>
-                                            {xsdResult ? "ProteusPIDSchema 4.1.1 disc.xsd" : ""}
-                                            {xsdResult && rdlResult ? " + " : ""}
-                                            {rdlResult ? `DEXPI 1.4 model/Profile (${rdlResult.summary.totalObjects} objects)` : ""}
-                                        </span>
-                                        {allIssues.length > 0 && (
-                                            <button
-                                                style={{ ...S.btnSmall, marginLeft: "auto" }}
-                                                onClick={() => {
-                                                    const { columns, rows } = singleFileReportRows();
-                                                    downloadCSV(rows, columns.map(c => c.header), `${mainFileName || "validation"}.csv`);
-                                                }}
-                                            >CSV</button>
-                                        )}
-                                    </div>
                                     {xsdResult?.filteredOut?.count > 0 && (
                                         <div style={{ padding: "6px 10px", fontSize: 11, color: "#57606a", background: "#f6f8fa", borderBottom: "1px solid #eef2f6" }} title={xsdResult.filteredOut.sets.join(", ")}>
                                             {xsdResult.filteredOut.count} non-DEXPI attribute group{xsdResult.filteredOut.count === 1 ? "" : "s"} ({xsdResult.filteredOut.sets.length} vendor Set{xsdResult.filteredOut.sets.length === 1 ? "" : "s"}) excluded from XSD validation — only Set="DexpiAttributes"/"DexpiCustomAttributes" are checked.
                                         </div>
                                     )}
-                                    {/* Severity filter/count chips: click to show only issues of that type. */}
-                                    <div style={{ padding: "6px 10px", borderBottom: "1px solid #eef2f6", display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
-                                        {["All", "Error", "Warning", "Info"].map(f => {
-                                            const count = f === "All" ? allIssues.length : (issueCounts[f.toLowerCase()] || 0);
-                                            const active = validationFilter === f;
-                                            return (
-                                                <button
-                                                    key={f}
-                                                    style={{ ...S.btnSmall, background: active ? "#0969da" : "white", color: active ? "white" : "#111", borderColor: active ? "#0969da" : "#c7ced6" }}
-                                                    onClick={() => setValidationFilter(f)}
-                                                >{f} ({count})</button>
-                                            );
-                                        })}
-                                    </div>
-                                    {issuesByCode.size > 1 && (
+                                    {/* The severity filter is set with the badges under Run Validation (left panel). */}
+                                    {/* Expand all / Collapse all (more than one code group) and CSV export (any issue). */}
+                                    {(issuesByCode.size > 1 || allIssues.length > 0) && (
                                         <div style={{ padding: "4px 10px", borderBottom: "1px solid #eef2f6", display: "flex", gap: 6 }}>
-                                            <button style={S.btnSmall} onClick={() => setCollapsedValidationCodes(new Set())}>Expand all</button>
-                                            <button style={S.btnSmall} onClick={() => setCollapsedValidationCodes(new Set(issuesByCode.keys()))}>Collapse all</button>
+                                            {issuesByCode.size > 1 && (
+                                                <>
+                                                    <button style={S.btnSmall} onClick={() => setCollapsedValidationCodes(new Set())}>Expand all</button>
+                                                    <button style={S.btnSmall} onClick={() => setCollapsedValidationCodes(new Set(issuesByCode.keys()))}>Collapse all</button>
+                                                </>
+                                            )}
+                                            {allIssues.length > 0 && (
+                                                <button
+                                                    style={S.btnSmall}
+                                                    title="Save all validation findings as CSV"
+                                                    onClick={() => {
+                                                        const { columns, rows } = singleFileReportRows();
+                                                        downloadCSV(rows, columns.map(c => c.header), `${exportFileBaseName("validation")}.csv`);
+                                                    }}
+                                                >CSV</button>
+                                            )}
                                         </div>
                                     )}
                                     {issuesByCode.size === 0 ? (
@@ -2290,13 +2370,12 @@ export default function App() {
 
             {/* CENTER PANEL */}
             <div style={{ position: "relative", overflow: "hidden", background: "#f8fafc", display: "flex", flexDirection: "column" }}>
-                <div style={{ ...S.toolbar, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ ...S.toolbar, display: "flex", gap: 8, alignItems: "flex-start" }}>
+                    <div style={{ flex: "0 1 auto", minWidth: 0, maxWidth: 260 }}>
                         <div style={{ fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{parsed?.meta?.drawingNumber || ""}</div>
                         <div style={{ fontSize: 12, color: "#57606a" }}>{parsed?.meta?.drawingName || ""}{parsed?.meta?.subtitle ? ` - ${parsed.meta.subtitle}` : ""}</div>
                     </div>
-                    <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
-                        <button style={S.btn} onClick={fitDrawingToWindow} title="Fit drawing to window (or double-click the drawing)">Fit</button>
+                    <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center", flex: "1 1 auto", minWidth: 0 }}>
                         {zOrderOverrides.size > 0 && (
                             <button style={S.btn} onClick={() => setZOrderOverrides(new Set())} title="Clear every 'Send to Back' draw-order override and restore the file's original paint order">
                                 Reset Z-Order ({zOrderOverrides.size})
@@ -2311,8 +2390,6 @@ export default function App() {
                             <input type="checkbox" checked={boostSymbolOutlines} onChange={e => setBoostSymbolOutlines(e.target.checked)} />
                             Include symbol outlines
                         </label>
-                        <button style={S.btn} disabled={!parsed || exporting} onClick={exportAsPng} title="Save the current view (drawing + BG image, if any) as a PNG">{exporting ? "..." : "Save PNG"}</button>
-                        <button style={S.btn} disabled={!parsed || exporting} onClick={exportAsPdf} title="Save the current view (drawing + BG image, if any) as a PDF">{exporting ? "..." : "Save PDF"}</button>
                         <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#57606a", cursor: "pointer" }} title="Connectivity mode: highlights the upstream (blue), downstream (green), and group (purple) connections of the selected object. Hidden by default - check this box to show the highlight.">
                             <input type="checkbox" checked={showConnectivity} onChange={e => setShowConnectivity(e.target.checked)} />
                             Connectivity
@@ -2328,14 +2405,35 @@ export default function App() {
                             </label>
                         )}
                         {discFileLoaded && (
-                            <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#57606a", cursor: "pointer" }} title="Show the file's representation group labels (<Label> texts) that reference any of the label symbol's profile label attributes: only those attribute values, with the profile label's literals between them (e.g. a space or ' x '). A symbol with no such label shows its profile default label instead.">
+                            <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#57606a", cursor: "pointer" }} title="Show the file's representation group labels (<Label> texts) that reference, with a value, any of the label symbol's profile label attributes - exactly as with both checkboxes unticked, never rebuilt from the profile label. Each profile label whose attributes no such text uses is drawn as the default.">
                                 <input type="checkbox" checked={showMixedLabels} onChange={e => { setShowMixedLabels(e.target.checked); if (e.target.checked) setShowProfileLabels(false); }} />
                                 Mixed labels
                             </label>
                         )}
-                        <button style={S.btn} onClick={handleBgButton} title="Overlay an image behind the drawing. Pick a Proteus XML together with its .png to load both.">BG Image</button>
-                        {bgImage && <button style={{ ...S.btn, background: showBgControls ? "#eaf2ff" : "white" }} onClick={() => setShowBgControls(p => !p)}>BG Controls</button>}
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+                        <button style={{ ...S.exportBtn, borderRadius: 5 }} onClick={fitDrawingToWindow} title="Fit drawing to window (or double-click the drawing)"><FitIcon />Fit</button>
+                        <button style={{ ...S.exportBtn, borderRadius: 5, color: bgImage ? "#0969da" : "#57606a", borderColor: bgImage ? "#0969da" : "#c7ced6" }} onClick={handleBgButton} title="Overlay a background image (e.g. the original P&ID as PNG) behind the drawing. Pick a Proteus XML together with its .png to load both.">
+                            <ImageIcon />BG PNG
+                        </button>
+                        {bgImage && (
+                            <button style={{ ...S.exportBtn, borderRadius: 5, padding: "3px 5px", background: showBgControls ? "#eaf2ff" : "white" }} onClick={() => setShowBgControls(p => !p)} title="Show / hide the BG image controls (blend, scale, position)" aria-label="BG controls">
+                                <SlidersIcon />
+                            </button>
+                        )}
                         <input ref={bgInputRef} type="file" accept="image/*,.xml" multiple style={{ display: "none" }} onChange={handleBgFile} />
+                    </div>
+                    <div style={S.exportGroup} role="group" aria-label="Save drawing">
+                        {[
+                            { fmt: "PNG", onClick: exportAsPng, title: "Save the current view (drawing + BG image, if any) as a PNG image" },
+                            { fmt: "PDF", onClick: exportAsPdf, title: "Save the current view (drawing + BG image, if any) as a PDF" },
+                            { fmt: "DXF", onClick: exportAsDxf, title: "Save the whole drawing as a DXF (vector lines, arcs and text on SYMBOLS / LINES / LABELS / HEAT_TRACE layers) for CAD" },
+                        ].map((b, i) => (
+                            <button key={b.fmt} style={{ ...S.exportBtn, borderLeftWidth: i ? 0 : 1, borderRadius: i === 0 ? "5px 0 0 5px" : i === 2 ? "0 5px 5px 0" : 0, opacity: !parsed || exporting ? 0.5 : 1 }}
+                                disabled={!parsed || exporting} onClick={b.onClick} title={b.title}>
+                                <DownloadIcon />{b.fmt}
+                            </button>
+                        ))}
                     </div>
                 </div>
 
@@ -2433,20 +2531,22 @@ export default function App() {
                                 <rect x={bgPlacement.x} y={bgPlacement.y} width={bgPlacement.width} height={bgPlacement.height} fill={BG_TINT_COLOR} style={{ mixBlendMode: "color" }} />
                             </g>
                         )}
-                        <g opacity={drawingOpacity}>
+                        {/* data-dxf-root: everything the DXF export reads (drawing + heat-trace overlays); the BG image is outside it. */}
+                        <g data-dxf-root="">
+                        <g opacity={drawingOpacity} data-dxf-keep-opacity="">
                         {drawnElements
                             // drawnElements: paintOrderElements (so "Send to Back" overrides affect both paint and click order) filtered by the
                             // Profile labels / Mixed labels checkboxes - see its useMemo.
                             .map(el => {
-                            const isSelected = !!el.representedId && selectedRepresentedIds.has(el.representedId);
+                            const isSelected = !cleanExport && !!el.representedId && selectedRepresentedIds.has(el.representedId);
                             const ch = connectivityHighlight;
-                            const connColor = el.representedId ? (ch.upstream.has(el.representedId) ? "#0969da" : ch.downstream.has(el.representedId) ? "#1a7f37" : ch.group.has(el.representedId) ? "#8250df" : null) : null;
+                            const connColor = !cleanExport && el.representedId ? (ch.upstream.has(el.representedId) ? "#0969da" : ch.downstream.has(el.representedId) ? "#1a7f37" : ch.group.has(el.representedId) ? "#8250df" : null) : null;
                             if (el.kind === "symbolUsage") return <SymbolGraphic key={el.key} el={el} selected={isSelected} connHighlight={connColor} onSelect={handleSelect} boostPct={lineBoostPct} boostSymbolOutlines={boostSymbolOutlines} />;
                             return <PrimitiveGraphic key={el.key} el={el} selected={isSelected} connHighlight={connColor} onSelect={handleSelect} nodePosMap={parsed.graphics.nodePosMap} boostPct={lineBoostPct} boostSymbolOutlines={boostSymbolOutlines} showProfileLabels={showProfileLabels} />;
                         })}
                         </g>
                         {/* Heat-trace overlays: rendered on top, only when a DiscProfile.xml is loaded and at least one object has an active HeatTracingType. */}
-                        {parsed?.heatTraceSet?.size > 0 && parsed.graphics.elements.map(el => {
+                        {parsed?.heatTraceSet?.size > 0 && <g data-dxf-layer="HEAT_TRACE">{parsed.graphics.elements.map(el => {
                             const htOff = parsed.gridUnit || HT_OFF; // 1G from the line / symbol outline
                             // Tag-bubble labels (ND0248B) get the same dashed outer ring as an
                             // ND0248A instrument bubble when the object they label is heat traced.
@@ -2467,7 +2567,8 @@ export default function App() {
                             if (htType === "pif" && el.kind === "symbolUsage")
                                 return <HeatTracePIF key={`ht_${el.key}`} el={el} off={htOff} />;
                             return null;
-                        })}
+                        })}</g>}
+                        </g>
                     </svg>
                     {showConnectivity && selectedId && (
                         <div style={{ position: "absolute", bottom: 10, left: 10, background: "rgba(255,255,255,0.9)", padding: "5px 10px", borderRadius: 6, border: "1px solid #d0d7de", fontSize: 11, display: "flex", gap: 8 }}>

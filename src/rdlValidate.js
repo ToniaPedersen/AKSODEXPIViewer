@@ -361,6 +361,27 @@ const CLASS_BEARING_TAGS = [
     "SignalOffPageConnectorReference", "Symbol",
 ];
 
+// MDL-CMP-01 "signal-line-child": DEXPI SignalConveyingFunction (and its
+// subtypes MeasuringLineFunction / SignalLineFunction) has no composition
+// property, so no plant object can be nested in an <InformationFlow>. These
+// child element names are graphics/annotation, not plant objects, and may
+// stay there.
+const SIGNAL_LINE_NON_OBJECT_TAGS = new Set(["Label", "MetaData", "Symbol", "InsulationSymbol", "PipeFlowArrow", "PipeSlopeSymbol", "SignalConnectorSymbol"]);
+// Where a misplaced object's element belongs, for the MDL-CMP-01 correction hint.
+const SIGNAL_LINE_CHILD_HOME = {
+    PipingComponent: "a PipingNetworkSegment (PipingNetworkSegment.Items)",
+    PropertyBreak: "a PipingNetworkSegment (PipingNetworkSegment.Items)",
+    PipeConnectorSymbol: "a PipingNetworkSegment (PipingNetworkSegment.Items)",
+    PipingNetworkSegment: "a PipingNetworkSystem (PipingNetworkSystem.Segments)",
+    Nozzle: "its Equipment (Equipment.Nozzles)",
+    Component: "the Equipment it belongs to (Equipment.SubEquipment)",
+    Equipment: "the plant model root or its parent Equipment",
+    ProcessSignalGeneratingFunction: "the ProcessInstrumentationFunction it belongs to",
+    ActuatingFunction: "the ProcessInstrumentationFunction it belongs to",
+    ActuatingElectricalFunction: "the ProcessInstrumentationFunction it belongs to",
+    InformationFlow: "the ProcessInstrumentationFunction or InstrumentationLoopFunction it belongs to",
+};
+
 // DEXPI Symbol subtypes are not checked by MDL-CLS-05: by ComponentClass, or by element name when it has none.
 const SYMBOL_TAGS = new Set(["Symbol", "InsulationSymbol", "PipeFlowArrow", "PipeSlopeSymbol"]);
 function isSymbolElement(el, componentClass) {
@@ -1098,6 +1119,7 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
         missingSignalConnectionCount = 0, pipingNodeOwnerNoNodeCount = 0, pipingNodeOwnerNoConnectionCount = 0,
         transmissionSystemCheckedCount = 0, transmissionSystemParentIssueCount = 0, transmissionSystemDriveChainIssueCount = 0,
         vesselComponentCheckedCount = 0, vesselComponentParentIssueCount = 0,
+        signalLineChildCount = 0,
         pifSymbolAttrCheckedCount = 0, pifSymbolAttrMissingCount = 0,
         zeroScaleSymbolCheckedCount = 0, zeroScaleSymbolCount = 0,
         textTemplateAttrCheckedCount = 0, textTemplateAttrInvalidCount = 0,
@@ -1429,6 +1451,18 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
         checkLabelTextTemplates(el.getAttribute("ComponentName"), el.getAttribute("ID"), el.getAttribute("ComponentClass") || null, [el]);
     });
 
+    // Objects that point at an element through Association Type="is located in"
+    // (e.g. ProcessSignalGeneratingFunction.SensingLocation), for the MDL-CMP-01
+    // "signal-line-child" hint below.
+    const locatedInReferrers = new Map();
+    qsa(mainDoc, 'Association[Type="is located in"]').forEach(a => {
+        const itemId = a.getAttribute("ItemID");
+        const owner = a.parentElement;
+        if (!itemId || !owner?.getAttribute("ID")) return;
+        if (!locatedInReferrers.has(itemId)) locatedInReferrers.set(itemId, []);
+        locatedInReferrers.get(itemId).push(owner);
+    });
+
     // InformationFlow ComponentClass check: expected to be
     // "SignalConveyingFunction" or one of its two concrete subtypes
     // (MeasuringLineFunction, SignalLineFunction).
@@ -1446,6 +1480,33 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
             findings.push({
                 severity: "warning", code: "MDL-REF-03", category: "signal-flow-class", objectId, componentClass,
                 message: `InformationFlow ComponentClass "${componentClass}" is not "SignalConveyingFunction" or a known subtype (MeasuringLineFunction, SignalLineFunction).`,
+            });
+        }
+
+        // Objects nested in the signal line (MDL-CMP-01 "signal-line-child"):
+        // SignalConveyingFunction and its subtypes have no composition property,
+        // so every plant object element inside an <InformationFlow> is reported -
+        // e.g. a <PipingComponent ComponentClass="Flange"> (or a Sensorwell) nested
+        // in a MeasuringLineFunction. A sensor location belongs in its
+        // PipingNetworkSegment; the ProcessSignalGeneratingFunction already points
+        // to it with Association Type="is located in" (SensingLocation). The
+        // XSD check reports some <PipingComponent>s here too (SER-STR-01), but
+        // not a <Component>, which disc.xsd allows.
+        for (const child of el.children) {
+            const tag = child.tagName;
+            if (SIGNAL_LINE_NON_OBJECT_TAGS.has(tag) || !CLASS_BEARING_TAGS.includes(tag)) continue;
+            const childId = child.getAttribute("ID") || null;
+            const childClass = child.getAttribute("ComponentClass") || null;
+            const home = SIGNAL_LINE_CHILD_HOME[tag] || "a parent object that can contain it";
+            const locators = childId ? (locatedInReferrers.get(childId) || []) : [];
+            const locatorText = locators.length
+                ? ` ${locators.map(o => `${o.getAttribute("ComponentClass") || o.tagName} "${o.getAttribute("ID")}"`).join(", ")} already ${locators.length === 1 ? "points" : "point"} to it with Association Type="is located in" (SensingLocation), so it does not need to be nested in the signal line.`
+                : "";
+            signalLineChildCount++;
+            findings.push({
+                severity: "warning", code: "MDL-CMP-01", category: "signal-line-child",
+                objectId: childId || objectId, componentClass: childClass,
+                message: `<${tag}${childClass ? ` ComponentClass="${childClass}"` : ""}>${childId ? ` "${childId}"` : ""} is nested in <InformationFlow${componentClass ? ` ComponentClass="${componentClass}"` : ""}> "${objectId}". ${componentClass || "SignalConveyingFunction"} has no composition property in the DEXPI model, so it cannot contain objects. Move it to ${home}.${locatorText}`,
             });
         }
 
@@ -2088,6 +2149,7 @@ export function validateAgainstRdl(mainDoc, discDoc, connectivityMap) {
             transmissionSystemParentIssues: transmissionSystemParentIssueCount,
             vesselComponentsChecked: vesselComponentCheckedCount,
             vesselComponentParentIssues: vesselComponentParentIssueCount,
+            signalLineChildren: signalLineChildCount,
             transmissionSystemDriveChainIssues: transmissionSystemDriveChainIssueCount,
             customClassAttrMissing: customClassAttrMissingCount,
             pifSymbolAttrChecked: pifSymbolAttrCheckedCount,

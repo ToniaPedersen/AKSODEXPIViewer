@@ -2,7 +2,7 @@
 
 A browser-based viewer and validation tool for legacy **DEXPI 1.4 / Proteus 4.1.1** XML files, rendered and checked using **DEXPI 2.x profile** symbols, classes and attributes by way of a loaded `DiscProfile.xml`.
 
-Developed by **Tonia Pedersen**. Version **2.9**. See `ChangeLog_2.8_to_2.9.md` for what changed since 2.8.3.
+Developed by **Tonia Pedersen**. Version **2.10**. See `ChangeLog_2.9_to_2.10.md` for what changed since 2.9.
 
 ---
 
@@ -65,6 +65,8 @@ Both engines run **automatically** when a file is opened, so the Validation tab 
 
 **Run Validation** (the blue, full-width button) re-runs both engines on the file already loaded. It is there for a deliberate re-check; nothing has to be clicked to get results.
 
+Once validation has run, a row of badges under the button shows the counts: grey **All**, red **Errors**, amber **Warn** and blue **Info**. Clicking a badge opens the Validation tab filtered to that type (**All** shows every issue); the badge of the active filter is outlined.
+
 To check a whole folder rather than one file, use **Validate…** on the Folder tab (see [4.3](#43-folder-tab--validating-a-whole-folder)).
 
 ---
@@ -94,9 +96,9 @@ Clicking a node selects it: the matching graphics are highlighted in the drawing
 
 ### 4.2 Validation tab
 
-Both engines' results merged into one list, populated as soon as a file is opened. The header row shows the total issue count, which engines contributed, and a **CSV** button ([section 9](#9-csv-and-excel-export)).
+Both engines' results merged into one list, populated as soon as a file is opened. A button row above the list holds **Expand all** / **Collapse all** (when there is more than one code group) and **CSV** ([section 9](#9-csv-and-excel-export)).
 
-- **All / Error / Warning / Info** chips filter the list by type and show the count for each.
+- The type filter is set with the badges under **Run Validation** ([2.3](#23-running-validation)).
 - Issues are **grouped by code**. The group header carries the type badge, the code, the code's title and the number of issues in it; click it to fold the group, or use **Expand all / Collapse all**.
 - Each row shows the type badge, the code, the source line where one is known, the code's title, the specific message, and the object ID. A row marked ⊕ can be clicked to select that object — the drawing highlights it and the right panel switches to its Issues tab. An object with no graphics is marked **⚠ no symbol** and is not clickable.
 - **Suggest…**, at the right of each row, builds a question about the finding to paste into Copilot ([4.5](#45-suggest-help-on-a-finding)).
@@ -114,7 +116,7 @@ Two notices can appear above the list:
 
 The currently loaded `DiscProfile.xml` is used for every file in the run — by default the one fetched at startup (2.2), so there is normally nothing to load first. If no profile is loaded, the app asks for confirmation before starting and names what will be skipped — the run then covers the schema and the DEXPI 1.4 model only, and the header says "no profile". A progress line reports each file as it goes, with **Stop** to end the run early and keep what has been done so far.
 
-**Save PNG…**, next to it, renders every `.xml` in a folder and its subfolders and saves each drawing as a `.png` with the same name, next to its source file. The browser asks for permission to write to the folder. Browsers without folder write access download each PNG instead. The PNG uses the same rendering as the drawing toolbar's **Save PNG**, fitted to the whole drawing, and honours the drawing toolbar's current **Profile labels**, **Mixed labels**, **Line Boost** and **Include symbol outlines** settings. Line weights are scaled so they match what you see on screen. A BG image is not included. The file you had open is restored afterwards.
+**Save PNG…**, next to it, renders every `.xml` in a folder and its subfolders and saves each drawing as a `.png` with the same name, next to its source file. The browser asks for permission to write to the folder. Browsers without folder write access download each PNG instead. The PNG uses the same rendering as the drawing toolbar's **PNG** button, fitted to the whole drawing, and honours the drawing toolbar's current **Profile labels**, **Mixed labels**, **Line Boost** and **Include symbol outlines** settings. Line weights are scaled so they match what you see on screen. A BG image is not included. The file you had open is restored afterwards.
 
 **Export Element…** reads every `.xml` in a folder and its subfolders and downloads `<folder>-elements.xlsx` with three sheets:
 
@@ -191,15 +193,21 @@ The drawing number, name and subtitle from the file are shown at the top left of
 
 | Control | What it does |
 |---|---|
-| **Fit** | Fits the whole drawing into the window. |
+| **Fit** | Fits the whole drawing into the window (right-hand end of the toolbar; double-clicking the drawing does the same). |
 | **Reset Z-Order (n)** | Appears once objects have been sent to back; restores the file's original paint order for all of them. |
 | **Line Boost %** | Stroke-width multiplier for connector/centerlines. 100% is unchanged; raise it to bulk up thin lines, e.g. to match the weight of a background reference image. |
 | **Include symbol outlines** | Applies the same Line Boost percentage to symbol outlines as well. Off by default. |
-| **Save PNG** / **Save PDF** | Saves the current view — drawing plus background image, if visible. The PDF is a single full-page image, long edge ≈ 420 mm (A3-ish); DEXPI coordinates are not reliably tied to real-world units, so this is a print-friendly fit, not a to-scale export. The file name is taken from the drawing number. |
 | **Connectivity** | Colour-codes the selected object's network neighbours (see below). Off by default. |
 | **Sub-components** | Makes a selection also highlight every child of the selected object — useful when selecting a container such as a `PipingNetworkSystem`. Off by default. |
 | **Profile labels** / **Mixed labels** | Shown only when a profile is loaded (see 5.6). Only one can be checked at a time. |
-| **BG Image** / **BG Controls** | Reference image behind the drawing (see 5.6). |
+| **BG PNG** / sliders button | Reference image behind the drawing (see 5.7). **BG PNG** is blue while an image is loaded; the sliders button next to it shows or hides the BG controls. |
+| **PNG** / **PDF** / **DXF** | The button group at the right-hand end of the toolbar saves the drawing as a file. The file is named after the loaded Proteus XML file, with the new extension (`FPQ-AKSO-P-XB-20030-01.XML` → `FPQ-AKSO-P-XB-20030-01.png`). The buttons are disabled until a drawing is loaded and while an export runs. |
+
+**Exporting the drawing**
+
+- **PNG** — rasterises the current view (drawing plus background image, if visible) at a fixed long-edge resolution, aspect ratio matching the view.
+- **PDF** — the same rendering as a single full-page image, long edge ≈ 420 mm (A3-ish). Drawing coordinates are not reliably tied to real-world units, so this is a print-friendly fit, not a to-scale export.
+- **DXF** — the whole drawing (not just the current view) as an AutoCAD R12 ASCII DXF with real vector geometry: lines and polylines, circles and arcs, and text with its height, rotation and alignment. Elements are placed on the layers **SYMBOLS**, **LINES** (piping and signal lines), **LABELS** and **HEAT_TRACE**; colours map to the nearest AutoCAD colour and each dash pattern gets its own line type. Units are the drawing's own (the Proteus `<Drawing>` coordinates, millimetres); Y is flipped so the drawing is upright in CAD. The labels are exported as currently shown (**Profile labels** / **Mixed labels**). The background image and the selection / connectivity highlights are left out, and the drawing is exported in full whatever the BG **Blend**. R12 opens in AutoCAD, BricsCAD, LibreCAD, DraftSight, QCAD and ODA viewers.
 
 ### 5.3 Connectivity highlighting
 
@@ -256,21 +264,18 @@ With a profile loaded, two checkboxes appear: **Profile labels** and **Mixed lab
 - **Both unchecked** — the file's own `<Label>` texts (the representation group labels) are drawn where the file puts them, with the text built from their links as described above.
 - **Profile labels** — **only** the profile labels are drawn: every catalogued symbol placement shows the value built from the profile symbol's own `Profile/LabelTemplate`, even for symbols that carry no `<Label>` of their own in the file. None of the file's other `<Label>` texts are drawn, nor their leader lines. Always drawn: Note texts (every reference points at a Note, e.g. `NOTE 13` or a Note's own text), and the leader lines of Note labels and of label symbols (a `<Label ComponentName=...>` that places e.g. ND0048 or ND0248B).
   - Alarm templates (`HH`, `H`, `L`, `LL` with `SignalConveyingFunction:<AlarmValue>`) (profile labels and default labels) are shown only when one of the object's SignalConveyingFunctions has the matching `PortStatusSpecialization` (`StatusHighHighPort`, `StatusHighPort`, `StatusLowPort`, `StatusLowLowPort`). The text follows the profile's template: with the current profile each shows `<level>=<AlarmValue> <unit>`, e.g. `HH=272 barg`; a template with just `'H'` shows `H`.
-- **Mixed labels** — the file's `<Label>` texts that reference at least one of the label symbol's profile label attributes are drawn at the file's position, showing:
-  - only the values of the referenced attributes that are label attributes of that symbol (a reference to a Note or to any other attribute is left out);
-  - between two values, only the literal the profile label allows there: the one that stands between those attributes in the profile's `Profile/LabelTemplate` (for example a space, `x` or `-`). A literal in the file's own text (`String`, or a reference without an `ItemID`) is never shown, so a file separator ` x ` where the profile has `x` shows as `x`. Literals before the first or after the last value (`EL: `, `HH=`) are not shown;
-  - values in the order of the profile template. Values from different template rows are separated by a space.
+- **Mixed labels** — the file's `<Label>` texts are drawn where the file puts them. A `<Label>` text that is a valid representation — it references, with a value, at least one of the label symbol's profile label attributes — is shown **exactly as with both checkboxes unchecked**: its text is never rebuilt from the profile's `Profile/LabelTemplate`. A difference from the profile label therefore stays visible; check **Profile labels** to see what the profile defines. A `<Label>` text that references none of the symbol's label attributes with a value is not drawn.
 
   Each of the symbol's profile labels (one per `Profile/LabelTemplate`) is drawn as the default, as with **Profile labels**, when none of its own attributes is shown by a `<Label>` text of that placement. For example, an instrument whose only `<Label>` text shows `TagType` still gets the profile's `<ProcessPlantIdentificationCode>-<PlantSystemIdentificationCode>` and number labels. Note texts are drawn as in the file, as with **Profile labels**. Leader lines are drawn for the labels shown, for Note labels and for every label symbol. A nested label symbol (e.g. ND0048, ND0248B) is treated as its own placement.
 
-  | File text | Profile template | Shown |
+  | File text | Profile template | Shown with Mixed labels |
   |---|---|---|
-  | `In` + `" x "` + `Out` | `<NominalDiameterRepresentationIn>x<NominalDiameterRepresentationOut>` (ND0077) | `0400x0150` |
-  | `"/"` + `LockMechanism` + `"/"` + `TrimType` | `<TrimType> <LockMechanism>` (ND0029, ND0182A) | `FB KILO` |
+  | `In` + `Out`, no literal between them | `<NominalDiameterRepresentationIn>x<NominalDiameterRepresentationOut>` (ND0077) | as unchecked, e.g. `04000150` (not `0400x0150`) |
+  | `ProcessPlantIdentificationCode` + `PlantSystemIdentificationCode` | `<ProcessPlantIdentificationCode>-<PlantSystemIdentificationCode>` | as unchecked, e.g. `D26` (not `D-26`) |
   | `NoteText` of a Note only | — | not drawn; the symbol shows its profile default label |
 
 
-A numeric attribute with a unit is shown with its unit symbol (`Bar` on a gauge pressure → `barg`, `DegreeCelsius` → `°C`). A `<Label>` text's reference shows what its `DependantAttributeContents` asks for: `Value` the value only (`6`), `Units` the unit only (`barg`), `ValueAndUnits` the value with its unit (`6 barg`). A reference without `DependantAttributeContents` shows set point and alarm values with their unit and other values without. The profile's own set point and alarm labels (`SP = `, `HH=`, `H=`, `L=`, `LL=`) always show the value with its unit, e.g. `SP = 6 barg`, `HH=272 barg`. With **Mixed labels**, a `Units` reference following a `Value` reference to the same attribute is joined to it with a space. An alarm pressure whose unit is not marked gauge or absolute is shown as gauge. A pressure at full vacuum (−1.01325 barg, or 0 in an absolute unit) is shown as `FV`. Whether a pressure is gauge or absolute is taken from the GenericAttribute's `Type` / `TypeURI`, else from the attribute's definition in the loaded DiscProfile.xml, else from the DEXPI 1.4 model.
+A numeric attribute with a unit is shown with its unit symbol (`Bar` on a gauge pressure → `barg`, `DegreeCelsius` → `°C`). A `<Label>` text's reference shows what its `DependantAttributeContents` asks for: `Value` the value only (`6`), `Units` the unit only (`barg`), `ValueAndUnits` the value with its unit (`6 barg`). A reference without `DependantAttributeContents` shows set point and alarm values with their unit and other values without. The profile's own set point and alarm labels (`SP = `, `HH=`, `H=`, `L=`, `LL=`) always show the value with its unit, e.g. `SP = 6 barg`, `HH=272 barg`. An alarm pressure whose unit is not marked gauge or absolute is shown as gauge. A pressure at full vacuum (−1.01325 barg, or 0 in an absolute unit) is shown as `FV`. Whether a pressure is gauge or absolute is taken from the GenericAttribute's `Type` / `TypeURI`, else from the attribute's definition in the loaded DiscProfile.xml, else from the DEXPI 1.4 model.
 
 #### Rotation and mirroring
 
@@ -294,7 +299,7 @@ An equipment box (DiscProfile 0.6.6, ND0300–ND0310) has an 'A' part (`ND03xxA`
 
 ### 5.7 Background image
 
-**BG Image** loads a reference image behind the drawing (pick a `.xml` together with its `.png` to load both); **BG Controls** then exposes:
+**BG PNG** (right-hand end of the drawing toolbar) loads a reference image behind the drawing (pick a `.xml` together with its `.png` to load both); the button turns blue while an image is loaded. The sliders button next to it then shows or hides the BG controls:
 
 | Control | Description |
 |---|---|
@@ -303,11 +308,11 @@ An equipment box (DiscProfile 0.6.6, ND0300–ND0310) has an 'A' part (`ND03xxA`
 | X / Y | Offset from the default (centred) position, **in drawing units** — not screen pixels. |
 | Reset fit | Back to scale 1 and offset 0, i.e. the default placement. |
 | ⤢ Auto-fit to drawing | Finds the Scale / X / Y that lays the drawn lines and symbols over the image's ink and applies it. The % shown after it is the share of the drawing's line samples that land on image ink. |
-| 💾 Save placement | PNG only. Writes the current Scale / X / Y into the PNG's own metadata and saves it under the same file name. When the PNG came from a validated folder or the **BG Image** dialog it is written straight back into that file (the browser asks once for permission); otherwise a Save dialog opens with the same name. Loading the PNG later starts at that placement. |
+| 💾 Save placement | PNG only. Writes the current Scale / X / Y into the PNG's own metadata and saves it under the same file name. When the PNG came from a validated folder or the **BG PNG** dialog it is written straight back into that file (the browser asks once for permission); otherwise a Save dialog opens with the same name. Loading the PNG later starts at that placement. |
 | Clear Default | Shown once a loaded PNG carries an embedded placement; removes it and saves the PNG under the same name. |
 | Remove | Unloads the image. |
 
-Opening a DEXPI file first removes the current background image, then loads the `.png` with the same name, if there is one, with BG Controls open and Blend at 0.35 (image at 65% opacity). The `.png` is found as follows:
+Opening a DEXPI file first removes the current background image, then loads the `.png` with the same name, if there is one, with the BG controls open and Blend at 0.35 (image at 65% opacity). The `.png` is found as follows:
 
 - **Load Proteus XML** — the `.png` picked together with the `.xml`; if none was picked, the same-named `.png` in the last folder given to **Validate…** (used only when exactly one matches).
 - **Open** in the Folder tab or the error explorer — the `.png` next to the file in the validated folder.
@@ -427,7 +432,7 @@ The five DEXPI 2.0-only codes (`SER-FMT-03`, `SER-FMT-05`, `MDL-REF-06`, `PRF-LB
 | `MDL-CLS-03` | Class contradicts other evidence in the file | Class usage | Error | Model + profile | DISC files | ✓ |
 | `MDL-CLS-04` | Type URI unresolvable or echoes the class name | Class usage | Warning | Model + profile | DISC files | ✓ |
 | `MDL-CLS-05` | `ComponentClass` or `ComponentClassURI` missing on an element whose schema type allows them (ShapeCatalogue content and `Symbol` subtypes such as `PipeSlopeSymbol` are not checked) | Class usage | Error | Model | All files | ✓ |
-| `MDL-CMP-01` | Components property not defined for the parent class | Composition | Error | Model (+ profile if DISC) | All files | — |
+| `MDL-CMP-01` | Components property not defined for the parent class. Reported for every plant object nested in an `<InformationFlow>` (SignalConveyingFunction, MeasuringLineFunction, SignalLineFunction have no composition property), e.g. a `<PipingComponent ComponentClass="Flange">` nested in a MeasuringLineFunction. The message says where the object belongs and names the ProcessSignalGeneratingFunction that already points to it with `is located in` (SensingLocation). | Composition | Error | Model (+ profile if DISC) | All files | ✓ |
 | `MDL-CMP-02` | Child class not permitted by the composition property | Composition | Error | Model (+ profile if DISC) | All files | ✓ |
 | `MDL-CMP-03` | Required sub-component missing | Composition | Warning¹ | Model (+ profile if DISC) | All files | ✓ |
 | `MDL-CMP-04` | Container present but empty | Composition | Warning | Model (+ profile if DISC) | All files | — |

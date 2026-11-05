@@ -1371,11 +1371,24 @@ export function symbolLabelLiterals(symbol) {
 // null when the Text has no TextStringFormatSpecification. A reference without
 // DependantAttributeContents gets the schema default "ValueAndUnits"
 // (proteus-4.1.1-disc.xsd).
+// DependantAttributeContents as one of the schema literals "Value" / "Units" /
+// "ValueAndUnits". Missing or empty -> the schema default "ValueAndUnits".
+// Non-schema spellings seen in exported files (e.g. AKSO's singular
+// "ValueAndUnit", "Unit", any letter case) are mapped to the intended literal,
+// so a unit-bearing reference still shows its Core.xml unit symbol (kW).
+function normalizeDependantAttributeContents(raw) {
+    const v = (raw || "").trim().toLowerCase().replace(/[\s_&-]+/g, "");
+    if (!v) return "ValueAndUnits";
+    if (v === "value") return "Value";
+    if (v === "unit" || v === "units") return "Units";
+    if (v === "valueandunit" || v === "valueandunits" || v === "valueunit" || v === "valueunits") return "ValueAndUnits";
+    return raw;
+}
 export function readTextTemplateReferences(textEl) {
     const specEl = directChildrenByTag(textEl, "TextStringFormatSpecification")[0];
     if (!specEl) return null;
     return directChildrenByTag(specEl, "ObjectAttributesReference")
-        .map(ref => ({ attribute: ref.getAttribute("DependantAttribute"), itemId: ref.getAttribute("ItemID"), contents: ref.getAttribute("DependantAttributeContents") || "ValueAndUnits" }))
+        .map(ref => ({ attribute: ref.getAttribute("DependantAttribute"), itemId: ref.getAttribute("ItemID"), contents: normalizeDependantAttributeContents(ref.getAttribute("DependantAttributeContents")) }))
         .filter(r => r.attribute);
 }
 
@@ -1518,90 +1531,32 @@ export function isValidTextTemplateAttribute(textEl, allowedAttrNames, elementBy
 }
 
 // ---------------------------------------------------------------------------
-// "Mixed labels" display value
+// "Mixed labels"
 //
-// Splits a profile LabelTemplate text into literal and token parts, after
-// unwrapping VB-style formulas ("'SP = ' & <SetPoint>") line by line.
-function labelTemplateParts(templateText) {
-    const text = String(templateText || "").split(/\r?\n/).map(unwrapLabelFormula).join("\n");
-    const parts = [];
-    const re = new RegExp(LABEL_TEMPLATE_TOKEN_RE.source, "g");
-    let last = 0, m;
-    while ((m = re.exec(text))) {
-        if (m.index > last) parts.push({ literal: text.slice(last, m.index) });
-        parts.push({ attribute: m[2] });
-        last = re.lastIndex;
-    }
-    if (last < text.length) parts.push({ literal: text.slice(last) });
-    return parts;
-}
-
-// Builds what a real <Label> Text shows when the "Mixed labels"
-// checkbox is on:
-// - only its ObjectAttributesReferences with an ItemID whose DependantAttribute
-//   is one of the label symbol's own LabelTemplate attributes (allowedAttrNames)
-//   are used, each shown as the live value on its ItemID target;
-// - references without an ItemID (literal separators in the file) and the
-//   Text's String are never shown;
-// - between two shown values, the literal that stands right before the second
-//   value's token in the profile's LabelTemplate is inserted (" ", " x ", "/").
-//   Literals before the first or after the last shown token are not.
-// The values are laid out against templateTexts in order; a template takes the
-// remaining values whose attributes it uses. Values from different templates,
-// or not found in any template, are joined with a space.
-// Returns null when the Text references none of allowedAttrNames with a value.
-// Each value is shown as its DependantAttributeContents asks (Value -> the value
-// only, no unit). One value per attribute of an object: a "Units" reference
-// after a "Value" reference to the same attribute is joined to it with a space,
-// any other repeat adds nothing. usedAttributes (optional array) receives the
-// attributes that gave a value - "Mixed labels" hides a profile label only when
-// one of its own attributes is among them.
-export function formatRepresentationGroupLabel(textEl, templateTexts, allowedAttrNames, elementById, decimals = null, usedAttributes = null) {
-    if (!allowedAttrNames) return null;
+// A real <Label> Text is a valid representation for "Mixed labels" when it
+// references, with a value, at least one of the label symbol's own
+// LabelTemplate attributes (allowedAttrNames) through an
+// ObjectAttributesReference with an ItemID. Such a Text is shown exactly as
+// with both label checkboxes unticked (resolveTextTemplateValue()); its text
+// is never rebuilt from the profile LabelTemplate, so a difference from the
+// profile label stays visible (a file label built as In + Out with no
+// literal between them stays "12001000" and does not get the profile's "x").
+// Returns the attributes that gave a value (in reference order, each once);
+// an empty array when the Text references none of allowedAttrNames with a
+// value. "Mixed labels" hides a profile label only when one of its own
+// attributes is among them.
+export function representationGroupAttributes(textEl, allowedAttrNames, elementById, decimals = null) {
+    if (!allowedAttrNames) return [];
     const refs = readTextTemplateReferences(textEl);
-    if (!refs || refs.length === 0) return null;
-    const remaining = [];
-    const seen = new Map();
+    if (!refs || refs.length === 0) return [];
+    const used = [];
     for (const ref of refs) {
-        if (!ref.itemId || !allowedAttrNames.has(ref.attribute)) continue;
+        if (!ref.itemId || !allowedAttrNames.has(ref.attribute) || used.includes(ref.attribute)) continue;
         const value = resolveDependantAttributeValue(ref.itemId, ref.attribute, elementById, decimals, ref.contents);
-        const key = `${ref.itemId}|${ref.attribute}`;
-        const prev = seen.get(key);
-        if (prev) {
-            if (ref.contents === "Units" && prev.contents === "Value" && value && !prev.joined) { prev.entry.value += ` ${value}`; prev.joined = true; }
-            continue;
-        }
         if (value === null || value === "") continue;
-        const entry = { attribute: ref.attribute, value };
-        seen.set(key, { entry, contents: ref.contents, joined: false });
-        remaining.push(entry);
+        used.push(ref.attribute);
     }
-    if (remaining.length === 0) return null;
-    if (usedAttributes) remaining.forEach(v => usedAttributes.push(v.attribute));
-    const segments = [];
-    for (const templateText of templateTexts || []) {
-        if (remaining.length === 0) break;
-        let out = "", emitted = false, pendingLiteral = "";
-        for (const part of labelTemplateParts(templateText)) {
-            if (part.literal !== undefined) { pendingLiteral += part.literal; continue; }
-            const i = remaining.findIndex(v => v.attribute === part.attribute);
-            if (i < 0) { pendingLiteral = ""; continue; }
-            out += (emitted ? pendingLiteral : "") + remaining[i].value;
-            emitted = true;
-            pendingLiteral = "";
-            remaining.splice(i, 1);
-        }
-        if (emitted) segments.push(out);
-    }
-    remaining.forEach(v => segments.push(v.value));
-    return segments.join(" ");
-}
-
-// LabelTemplate texts of one placed profile symbol variant, or of the first
-// variant of `symbol` that has templates when no variant is known.
-function variantLabelTemplateTexts(variant, symbol) {
-    const v = variant?.labelTemplates?.length ? variant : (symbol?.variants || []).find(x => x.labelTemplates?.length);
-    return (v?.labelTemplates || []).map(lt => lt.text);
+    return used;
 }
 
 function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, embeddedShapeMap, dataByObjectId, discProfileLoaded) {
@@ -1741,14 +1696,10 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, embeddedSh
             const labelAllowedLiterals = labelProfileSymbol ? symbolLabelLiterals(labelProfileSymbol)
                 : isDiscProfileLabel ? symbolLabelLiterals(placedProfileSymbol) : null;
             const labelSymbolName = (labelProfileSymbol || placedProfileSymbol)?.name || "";
-            // "Mixed labels": the profile LabelTemplates this Label's
-            // Texts are laid out against, and labelGroupId - the element whose
-            // "lbltpl_" overlays are this label symbol's profile default label (the
-            // nested label-symbol Label itself, else the placed element).
+            // "Mixed labels": labelGroupId - the element whose "lbltpl_" overlays
+            // are this label symbol's profile default label (the nested
+            // label-symbol Label itself, else the placed element).
             const labelElId = labelEl.getAttribute("ID");
-            const labelTemplateTexts = labelProfileSymbol
-                ? variantLabelTemplateTexts(pickVariant(labelProfileSymbol, dataByObjectId.get(labelElId)), labelProfileSymbol)
-                : variantLabelTemplateTexts(placedFromDiscProfile ? placedVariant : null, placedProfileSymbol);
             const labelGroupId = labelProfileSymbol && labelElId ? labelElId : id;
             // A Label that places its own profile label symbol (e.g. ND0048 SpecialItemLabel, ND0248B): its leader
             // line belongs to the symbol and stays visible with "Profile labels" and "Mixed labels".
@@ -1788,14 +1739,16 @@ function buildProteusGraphics(elementById, symbolMap, shapeCatalogue, embeddedSh
                 // is not drawn.
                 const allowedAttrNames = discProfileLoaded ? labelAllowedAttrNames : ANY_LABEL_ATTRIBUTE;
                 const resolvedTemplateValue = resolveTextTemplateValue(textEl, allowedAttrNames, elementById, textDecimals, discProfileLoaded ? labelAllowedLiterals : null);
-                // "Mixed labels" value: only the references to the
-                // label symbol's LabelTemplate attributes, with the template's
-                // in-between literals (formatRepresentationGroupLabel()). null when
-                // the Text references none of them, or no profile is loaded.
-                const repGroupAttrs = [];
-                const repGroupValue = discProfileLoaded
-                    ? formatRepresentationGroupLabel(textEl, labelTemplateTexts, labelAllowedAttrNames, elementById, textDecimals, repGroupAttrs)
-                    : null;
+                // "Mixed labels" value: a Text that is a valid representation
+                // (references, with a value, at least one of the label symbol's
+                // LabelTemplate attributes - representationGroupAttributes()) is shown
+                // exactly as with both checkboxes unticked (resolvedTemplateValue); it
+                // is never rebuilt from the profile LabelTemplate. null when the Text
+                // references none of them with a value, or no profile is loaded.
+                const repGroupAttrs = discProfileLoaded
+                    ? representationGroupAttributes(textEl, labelAllowedAttrNames, elementById, textDecimals)
+                    : [];
+                const repGroupValue = repGroupAttrs.length ? (resolvedTemplateValue ?? "") : null;
                 if (resolvedTemplateValue === null && repGroupValue === null) return;
                 // isNoteText: every ItemID reference of this Text points at a Note (e.g. "NOTE " + LocalNoteIdentifier,
                 // or a Note's own NoteText). Note texts are drawn as in the file with "Profile labels" and "Mixed labels" too.
