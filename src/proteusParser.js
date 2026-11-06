@@ -64,7 +64,7 @@ function ownGenericAttributeValue(el, setName, attrName) {
 // Dash pattern (SVG stroke-dasharray) for an InformationFlow CenterLine whose
 // SignalConveyingFunctionTypeRepresentationAssignmentClass is the plain
 // "SignalConveying" value.
-const SIGNAL_CONVEYING_DASH_ARRAY = "3 2";
+const SIGNAL_CONVEYING_DASH_ARRAY = "3 3"; // 3 mm dash / 3 mm gap, same as dexpiParser.js / DEXPIViewer
 
 function coerceValue(raw, format) {
     if (raw === null || raw === undefined) return null;

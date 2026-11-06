@@ -98,10 +98,17 @@ export function parseStroke(node) {
     const color = aggregatedValue(getData(node, "Color")?.firstElementChild);
     const width = numberFromData(node, "Width", 0.25);
     const dashStyle = refName(valueFromData(node, "DashStyle")) || "Solid";
+    // DEXPI 2.0 DashStyle patterns: dimensionless values x stroke width (mm),
+    // width floored at 0.1 mm - same table as DEXPIViewer / vegarringdal/dexpi-viewer.
+    const w = Math.max(width, 0.1);
     const dashMap = {
-        Solid: "", Dash: `${4 * width} ${2 * width}`, Dot: `${width} ${2 * width}`,
-        DashDot: `${4 * width} ${2 * width} ${width} ${2 * width}`,
-        DashDotDot: `${4 * width} ${2 * width} ${width} ${2 * width} ${width} ${2 * width}`,
+        Solid: "", Dot: `${w} ${2 * w}`, ShortDash: `${2 * w} ${2 * w}`,
+        Dash: `${4 * w} ${2 * w}`, LongDash: `${8 * w} ${3 * w}`,
+        DashShortDash: `${4 * w} ${2 * w} ${2 * w} ${2 * w}`,
+        LongDashShortDash: `${8 * w} ${3 * w} ${2 * w} ${3 * w}`,
+        LongDashShortDashShortDash: `${8 * w} ${3 * w} ${2 * w} ${3 * w} ${2 * w} ${3 * w}`,
+        DashDot: `${4 * w} ${2 * w} ${w} ${2 * w}`,
+        DashDotDot: `${4 * w} ${2 * w} ${w} ${2 * w} ${w} ${2 * w}`,
     };
     return { color: parseColor(color), width, dashArray: dashMap[dashStyle] || "", dashOffset: numberFromData(node, "Offset", 0) };
 }
@@ -390,6 +397,27 @@ export function collectDescendantObjectIds(node, out = new Set()) {
     return out;
 }
 
+// SignalConveyingFunction connector-line representation style (kept in step
+// with DEXPIViewer's dexpiParser.js and this repo's proteusParser.js). When the
+// DiscProfile custom attribute SignalConveyingFunctionTypeRepresentation is
+// given, it wins over the DashStyle written on the drawn Core/Diagram.ConnectorLine:
+//   "SignalConveying"         -> dashed line (SIGNAL_CONVEYING_DASH_ARRAY)
+//   any sub-type listed below -> SOLID line + the sub-type glyph from App.jsx's
+//                                SIGNAL_CONVEYING_MARKS repeated along it
+//                                (e.g. Electrical = italic "E"; Electromagnetic-
+//                                Unguided hides the line, keeping only the glyph)
+const SIGNAL_CONVEYING_DASH_ARRAY = "3 3"; // 3 mm dash / 3 mm gap
+const SIGNAL_CONVEYING_SOLID_TYPES = new Set([
+    "ElectricalSignalConveying",
+    "HydraulicSignalConveying",
+    "BusSignalConveying",
+    "PneumaticSignalConveying",
+    "CapillarySignalConveying",
+    "UndefinedSignalConveying",
+    "ElectromagneticGuidedSignalConveying",
+    "ElectromagneticUnguidedSignalConveying",
+]);
+
 export function collectGraphicalElements(mainDoc, symbolMap, discDoc = null) {
     const nodePosMap = parseNodePositionsById(mainDoc);
     const drawn = [];
@@ -400,8 +428,10 @@ export function collectGraphicalElements(mainDoc, symbolMap, discDoc = null) {
     // Build objectId → Map<propertyName, rawDataValue> for condition evaluation.
     // Only indexed objects (those with an id attribute) are relevant.
     const objectDataMap = new Map();
+    const objectTypeMap = new Map();
     qsa(mainDoc, "Object[id]").forEach(el => {
         const id = el.getAttribute("id");
+        objectTypeMap.set(id, el.getAttribute("type") || "");
         const props = new Map();
         directChildrenByTag(el, "Data").forEach(d => {
             const prop = d.getAttribute("property");
@@ -409,6 +439,25 @@ export function collectGraphicalElements(mainDoc, symbolMap, discDoc = null) {
         });
         if (props.size) objectDataMap.set(id, props);
     });
+
+    // SignalConveyingFunctionTypeRepresentation of a SignalConveyingFunction
+    // (exact type only - not MeasuringLineFunction/SignalLineFunction), as its
+    // bare literal name, or null when absent.
+    function signalConveyingTypeFor(representedId) {
+        if (!representedId) return null;
+        if (objectTypeMap.get(representedId) !== "Plant/Instrumentation.SignalConveyingFunction") return null;
+        const props = objectDataMap.get(representedId);
+        if (!props) return null;
+        const raw = props.get("SignalConveyingFunctionTypeRepresentation")
+            ?? props.get("DiscProfile/SignalConveyingFunctionTypeRepresentation")
+            ?? props.get("Plant/Instrumentation.SignalConveyingFunctionTypeRepresentation")
+            ?? [...props.entries()].find(([k]) => k.endsWith("/SignalConveyingFunctionTypeRepresentation"))?.[1]
+            ?? null;
+        if (raw === null || raw === undefined) return null;
+        if (typeof raw === "string") return raw.split(/[./]/).pop() || null;
+        if (raw?.kind === "DataReference") return raw.value.split(/[./]/).pop() || null;
+        return null;
+    }
 
     // Resolve a raw property value (string or DataReference) to the short symbol code
     // used in variant Condition strings.
@@ -508,7 +557,15 @@ export function collectGraphicalElements(mainDoc, symbolMap, discDoc = null) {
                 const prim = parsePrimitive(el, i);
                 if (!prim) return;
                 if (prim.kind === "connectorLine") {
-                    drawn.push({ kind: "connectorLine", primitive: prim, representedId: localRepresents, elementRole: "connector", key: `${keyPrefix}_cl_${i}` });
+                    const signalConveyingType = signalConveyingTypeFor(localRepresents);
+                    if (signalConveyingType === "SignalConveying") {
+                        prim.stroke = { ...prim.stroke, dashArray: SIGNAL_CONVEYING_DASH_ARRAY };
+                    } else if (SIGNAL_CONVEYING_SOLID_TYPES.has(signalConveyingType)
+                        || objectTypeMap.get(localRepresents) === "Plant/Instrumentation.MeasuringLineFunction") {
+                        // MeasuringLineFunction: always solid, no marks.
+                        prim.stroke = { ...prim.stroke, dashArray: "" };
+                    }
+                    drawn.push({ kind: "connectorLine", primitive: prim, representedId: localRepresents, elementRole: "connector", key: `${keyPrefix}_cl_${i}`, signalConveyingType: signalConveyingType || undefined });
                 } else {
                     drawn.push({ kind: "primitive", primitive: prim, representedId: localRepresents, elementRole: isLabelGroup ? "label" : "symbol", key: `${keyPrefix}_p_${i}` });
                 }
