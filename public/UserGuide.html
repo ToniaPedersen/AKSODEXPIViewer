@@ -71,7 +71,7 @@ footer{margin-top:60px;padding-top:14px;border-top:1px solid var(--line);color:v
 <main>
 <h1 id="dexpi-14-disc-profile-viewer-user-guide">DEXPI 1.4 / DISC Profile Viewer — User Guide</h1>
 <p>A browser-based viewer and validation tool for legacy <strong>DEXPI 1.4 / Proteus 4.1.1</strong> XML files, rendered and checked using <strong>DEXPI 2.x profile</strong> symbols, classes and attributes by way of a loaded <code>DiscProfile.xml</code>.</p>
-<p>Developed by <strong>Tonia Pedersen</strong>. Version <strong>2.10</strong>. See <code>ChangeLog_2.9_to_2.10.md</code> for what changed since 2.9.</p>
+<p>Developed by <strong>Tonia Pedersen</strong>. Version <strong>2.11</strong>. See <code>ChangeLog_2.10_to_2.11.md</code> for what changed since 2.10.</p>
 <hr />
 <hr />
 <h2 id="1-introduction">1. Introduction</h2>
@@ -116,7 +116,7 @@ npm run dev
 <tbody>
 <tr>
 <td><strong>Left panel</strong></td>
-<td>File loading, Run Validation, and the Topology / Validation / Folder tabs.</td>
+<td>File loading, Run Validation, and the Topology / Validation / Folder tabs, plus the Compare tab once a BG image is loaded (see 5.9).</td>
 </tr>
 <tr>
 <td><strong>Centre panel</strong></td>
@@ -124,7 +124,7 @@ npm run dev
 </tr>
 <tr>
 <td><strong>Right panel</strong></td>
-<td>Object / Connections / Issues for the current selection.</td>
+<td>Object / Connections / Issues for the current selection, plus Compare after an image compare has run (see 6.4).</td>
 </tr>
 </tbody>
 </table></div>
@@ -254,7 +254,7 @@ npm run dev
 </tr>
 <tr>
 <td><strong>Line Boost %</strong></td>
-<td>Stroke-width multiplier for connector/centerlines. 100% is unchanged; raise it to bulk up thin lines, e.g. to match the weight of a background reference image.</td>
+<td>Stroke-width multiplier for connector/centerlines. 100% is unchanged; raise it to bulk up thin lines, e.g. to match the weight of a background reference image. Whatever the setting, no line is ever drawn thinner than <strong>1 screen pixel</strong>, so thin lines (0.09–0.25 mm) stay visible at every zoom. Dash lengths follow Line Boost only — the 1-pixel minimum never stretches them.</td>
 </tr>
 <tr>
 <td><strong>Include symbol outlines</strong></td>
@@ -317,49 +317,65 @@ npm run dev
 </tbody>
 </table></div>
 <h3 id="54-signal-conveying-line-styles">5.4 Signal-conveying line styles</h3>
-<p>A <code>SignalConveyingFunction</code> whose signal type resolves from the file is decorated automatically with a repeated mark along its line, independent of the line style encoded in the file's own graphics.</p>
+<p>A signal line's style is taken from its <strong>SignalConveyingFunctionTypeRepresentation</strong> (Proteus: the <code>SignalConveyingFunctionTypeRepresentationAssignmentClass</code> GenericAttribute on the <code>&lt;InformationFlow&gt;</code>; DEXPI 2.0: the <code>DiscProfile/SignalConveyingFunctionTypeRepresentation</code> attribute of the <code>SignalConveyingFunction</code>). When it is given, the representation style <strong>replaces</strong> the line style written in the file's own graphics:</p>
 <div class="tablewrap"><table>
 <thead>
 <tr>
 <th>Signal type</th>
-<th>Line decoration</th>
+<th>Line</th>
+<th>Repeated mark</th>
 </tr>
 </thead>
 <tbody>
 <tr>
+<td><code>SignalConveying</code> (no sub-type)</td>
+<td>dashed, 3 mm dash / 3 mm gap</td>
+<td>—</td>
+</tr>
+<tr>
 <td><code>ElectricalSignalConveying</code></td>
-<td>Repeated italic <strong>E</strong></td>
+<td>solid</td>
+<td>italic <strong>E</strong></td>
 </tr>
 <tr>
 <td><code>HydraulicSignalConveying</code></td>
-<td>Repeated upright <strong>L</strong></td>
+<td>solid</td>
+<td>upright <strong>L</strong></td>
 </tr>
 <tr>
 <td><code>BusSignalConveying</code></td>
-<td>Repeated small circle</td>
+<td>solid</td>
+<td>small circle</td>
 </tr>
 <tr>
 <td><code>PneumaticSignalConveying</code></td>
-<td>Repeated <strong>^</strong> chevron</td>
+<td>solid</td>
+<td><strong>^</strong> chevron</td>
 </tr>
 <tr>
 <td><code>CapillarySignalConveying</code></td>
-<td>Repeated small <strong>x</strong></td>
+<td>solid</td>
+<td>small <strong>x</strong></td>
 </tr>
 <tr>
 <td><code>UndefinedSignalConveying</code></td>
-<td>Repeated <strong>/</strong> slash</td>
+<td>solid</td>
+<td><strong>/</strong> slash</td>
 </tr>
 <tr>
 <td><code>ElectromagneticGuidedSignalConveying</code></td>
-<td>Repeated <strong>∿</strong> squiggle</td>
+<td>solid</td>
+<td><strong>∿</strong> squiggle</td>
 </tr>
 <tr>
 <td><code>ElectromagneticUnguidedSignalConveying</code></td>
-<td>Only the repeated <strong>∿</strong> squiggle — the line itself is hidden, as there is no physical conductor to draw</td>
+<td>hidden (no physical conductor)</td>
+<td><strong>∿</strong> squiggle only</td>
 </tr>
 </tbody>
 </table></div>
+<p>A <code>MeasuringLineFunction</code> line is always solid, with no marks. A signal line without the attribute, or with a value not in the table, keeps the style from the file.</p>
+<p>The marks are about 2.5 mm tall and centred on the line, turned with each segment but never upside down. Letter marks repeat every 6.5 mm starting 2.5 mm from the line's start; bus circles (radius 1.25 mm) every 10 mm starting 5 mm in. A line too short for that gets one mark at its middle. Marks use the line's own colour and weight.</p>
 <p>Selecting a decorated line, or highlighting it through Connectivity mode, recolours the line and its marks together.</p>
 <h3 id="55-heat-trace-overlay">5.5 Heat trace overlay</h3>
 <p>When a profile is loaded, heat-traced items are detected from the <code>HeatTracingType</code> property and drawn with dashed overlays on top of the drawing. No toggle: an item is overlaid when its resolved heat-tracing type is an actual tracing system rather than <code>NoHeatTracingSystem</code>.</p>
@@ -423,6 +439,7 @@ npm run dev
 <li>the alignment is adjusted so the text always grows away from the symbol: Left/Right swap for a mirrored symbol, Top/Bottom swap when the text had to be turned over (at 90° and 180°).</li>
 </ul>
 <p>Character-stacked templates (<code>&lt;NonSasFunction&gt;</code>) keep one upright character per line. The same rule is used by DEXPIViewer and by the label update script.</p>
+<p><strong>Literal text in the symbol itself</strong> — text that is part of a profile symbol's own graphics, such as the <code>TS</code> of ND0227 (Strainer T Temporary) — follows the same rule: it is never drawn with mirrored letters, it reads left to right at 0°/180° and bottom to top at 90°/270°, and its position and alignment follow the rule above. Its size still scales with the symbol placement.</p>
 <h4 id="equipment-boxes">Equipment boxes</h4>
 <p>An equipment box (DiscProfile 0.6.6, ND0300–ND0310) has an 'A' part (<code>ND03xxA</code>, the frame with the captions) and a 'B' part (<code>ND03xxB</code>, the value column) that belongs to the equipment. The value column shows:</p>
 <ul>
@@ -486,6 +503,105 @@ npm run dev
 <blockquote>
 <p>This affects the on-screen draw/click order for the current session only. Nothing is written back to the XML, and it resets when a new file is loaded.</p>
 </blockquote>
+<h3 id="59-image-compare">5.9 Image compare</h3>
+<p><strong>Image compare</strong> checks the drawing against a reference image of the same P&amp;ID (the PNG loaded with <strong>BG PNG</strong>, see 5.7) and lists every place where the two disagree. It runs in the background; the viewer stays usable while it works.</p>
+<p><strong>Running a compare</strong></p>
+<ol>
+<li>Load the drawing and its PNG (picked together, or found next to the file in a validated folder).</li>
+<li>Line the image up with the drawing: <strong>⤢ Auto-fit to drawing</strong> in the BG controls, or adjust Scale / X / Y by hand. <strong>💾 Save placement</strong> keeps the placement in the PNG for next time.</li>
+<li>Click <strong>⇄ Compare</strong> in the BG controls, or <strong>Run compare</strong> in the left panel's <strong>Compare</strong> tab. The left panel switches to the Compare tab when the result is ready.</li>
+</ol>
+<p>The compare uses the placement at the time it runs. If you move the image afterwards, the Compare tab says so — click <strong>Re-run compare</strong> to update. Loading another drawing or image clears the result.</p>
+<p><strong>Findings</strong></p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Finding</th>
+<th>Severity</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>IMG-001</td>
+<td>Missing in DEXPI</td>
+<td>Error</td>
+<td>Ink in the image that no DEXPI object explains (text and very small marks are ignored).</td>
+</tr>
+<tr>
+<td>IMG-002</td>
+<td>Not found in image</td>
+<td>Error</td>
+<td>A DEXPI object with (almost) no matching ink in the image.</td>
+</tr>
+<tr>
+<td>IMG-003</td>
+<td>Partial match</td>
+<td>Warning</td>
+<td>Only part of the object matches the image.</td>
+</tr>
+<tr>
+<td>IMG-004</td>
+<td>Misplaced</td>
+<td>Warning</td>
+<td>The object matches the image, but at another position nearby; the marker arrow points to where it was found.</td>
+</tr>
+<tr>
+<td>IMG-005</td>
+<td>Wrong orientation</td>
+<td>Warning</td>
+<td>The object matches when turned or mirrored.</td>
+</tr>
+<tr>
+<td>IMG-006</td>
+<td>Wrong symbol option</td>
+<td>Error</td>
+<td>The image shows another variant of the symbol.</td>
+</tr>
+<tr>
+<td>IMG-007</td>
+<td>Line style mismatch</td>
+<td>Warning</td>
+<td>Solid in one, dashed in the other.</td>
+</tr>
+<tr>
+<td>IMG-008</td>
+<td>Signal marks not found in image</td>
+<td>Warning</td>
+<td>The DEXPI signal type draws repeated marks (E, L, …) that the image line does not show.</td>
+</tr>
+<tr>
+<td>IMG-009</td>
+<td>Heat tracing not found in image</td>
+<td>Warning</td>
+<td>DEXPI heat tracing (see 5.5) that the image does not show.</td>
+</tr>
+<tr>
+<td>IMG-010</td>
+<td>Heat tracing in image, not in DEXPI</td>
+<td>Warning</td>
+<td>A heat-trace line in the image with no heat tracing in DEXPI.</td>
+</tr>
+<tr>
+<td>IMG-011</td>
+<td>Image shows signal marks, DEXPI has none</td>
+<td>Info</td>
+<td>The image line carries marks, but the DEXPI signal type has none.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Compare tab (left panel)</strong></p>
+<ul>
+<li><strong>Run compare / Re-run compare</strong> and <strong>Auto-fit</strong>, with progress while a job runs.</li>
+<li><strong>Settings</strong>: <em>Match tolerance</em> (how far image ink may be from DEXPI ink and still match, default 0.6 mm), <em>Misplaced search radius</em> (default 5 mm), <em>Required match</em> (share of an object's outline that must lie on image ink, default 80%) and <em>Smallest missing region</em> (default 4 mm).</li>
+<li><strong>View</strong>: <em>Off</em>, <em>Markers</em> (a coloured box per open finding, coloured by code, with an arrow for Misplaced) or <em>Difference</em> (the drawing faded over a difference image: grey = matched, red = image only, pale red = image only but ignored as text / small, blue = DEXPI only).</li>
+<li><strong>Filter</strong> buttons per code with counts, and <strong>Show reviewed</strong>.</li>
+<li>Each finding can be marked <strong>Accept</strong>, <strong>Ignore</strong> or <strong>False positive</strong> and given a <strong>Comment</strong>. Reviewed findings are hidden unless <em>Show reviewed</em> is ticked. Review decisions are kept in the browser per drawing file, so they are still there when the same file is compared again.</li>
+<li><strong>CSV</strong> / <strong>JSON</strong> / <strong>Diff PNG</strong> download the findings with their review status (JSON also holds the settings and placement), or the difference image.</li>
+<li>Clicking a finding (in the list or its marker on the drawing) selects the object and zooms to it.</li>
+</ul>
+<p>The <strong>Compare layer</strong> checkbox in the BG controls shows or hides the markers. Markers and the difference image are never included in PNG / PDF / DXF exports.</p>
 <hr />
 <h2 id="6-right-panel-object-details">6. Right Panel — Object Details</h2>
 <h3 id="61-object-tab">6.1 Object tab</h3>
@@ -551,6 +667,8 @@ npm run dev
 <p>The connectivity map for the selection: <strong>Upstream Node</strong> (blue), <strong>Downstream Node</strong> (green) and <strong>Group</strong> (purple), followed by the structural associations — segment/system containment, logical start/end, and any other association type — each under its own heading. Every entry is clickable.</p>
 <h3 id="63-issues-tab">6.3 Issues tab</h3>
 <p>The validation issues attached to the selected object, with type, code, title and message. Populated as soon as the file is opened and validated; schema findings carry a line number rather than an object, so they appear only in the Validation tab.</p>
+<h3 id="64-compare-tab">6.4 Compare tab</h3>
+<p>Shown once an image compare has run (see 5.9). Lists the compare findings of the selected object — and of its sub-components when <strong>Sub-components</strong> is ticked — with the same Accept / Ignore / False positive buttons and comment as the left panel's Compare tab. The tab title shows how many of them are still open.</p>
 <hr />
 <h2 id="7-how-validation-works">7. How Validation Works</h2>
 <h3 id="71-two-engines-one-vocabulary">7.1 Two engines, one vocabulary</h3>

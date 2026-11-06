@@ -19,7 +19,12 @@ import { buildSuggestion } from "./suggestPrompt.js";
 import { jsPDF } from "jspdf";
 import { suggestedCorrectionFor } from "./suggestedCorrection.js";
 import { svgToDxf } from "./dxfExport.js";
-import { buildCompareGeometry, placementToBgParams } from "./imageCompare.js";
+import { buildCompareGeometry, placementToBgParams, IMG_CODES, DEFAULT_COMPARE_OPTIONS } from "./imageCompare.js";
+
+// Image compare (PNG BG image vs DEXPI drawing) UI - same feature as DEXPIViewer:
+// the Compare button / Compare layer checkbox in BG Controls and the Compare tabs.
+// Auto-fit and Save placement stay available either way.
+const SHOW_IMAGE_COMPARE = true;
 
 // Issue classification codes reported here come from issueCodes.js, shared by xsdValidate.js and rdlValidate.js.
 
@@ -300,7 +305,54 @@ function ellipseArcToPath(cx, cy, rx, ry, startDeg, endDeg, rotation) {
 // as sub-pixel hairlines that look washed out. Thicker widths are kept.
 const MIN_STROKE_PX = 1;
 
-function renderPrimitive(primitive, key, textColorOverride = null, strokeMult = 1, showProfileLabels = false) {
+// Where a symbol's own catalog Text primitive (e.g. ND0227's literal "TS") is
+// drawn on a placed symbol - DISC DEXPI rule 'B' (requirements document ANNEX
+// B: Profile Label Text under Rotation and Mirroring), the same rule
+// proteusParser.js profileLabelPlacement() applies to LabelTemplate overlays
+// and DEXPIViewer applies to both. The text is defined for the symbol at
+// rotation 0, not mirrored, and is always drawn readable: left to right at
+// 0/180, bottom to top at 90/270, never with mirrored glyphs.
+//   * y offset follows the symbol's full rotation;
+//   * x offset follows the readable text direction (mirrored with the symbol,
+//     flipped when the text had to be turned over to stay readable);
+//   * Left/Right and Top/Bottom swap so the text still grows away from its
+//     anchor in the direction the definition intends.
+// Returns the LOCAL anchor (inside the placement's own transform group), the
+// local rotation to apply after the mirror is cancelled, and SVG anchor/baseline.
+function readableAngle(a) {
+    a = ((a % 360) + 360) % 360;
+    if (a >= 90 && a < 270) return a - 180;   // [-90, 90)
+    return a >= 270 ? a - 360 : a;
+}
+function symbolTextPlacement(primitive, placement) {
+    const deg = Math.PI / 180;
+    const R = placement.rotation || 0;
+    const Reff = readableAngle(R);
+    const turnedOver = Math.abs((((Reff - R) % 360) + 360) % 360 - 180) < 0.01;
+    const rx = turnedOver ? -1 : 1;
+    const sx = Math.sign(placement.sx || 1) || 1;
+    const sy = Math.sign(placement.sy || 1) || 1;
+    const rot = (x, y, a) => [x * Math.cos(a * deg) - y * Math.sin(a * deg), x * Math.sin(a * deg) + y * Math.cos(a * deg)];
+    const dot = (p, q) => p[0] * q[0] + p[1] * q[1];
+    const L = ([x, y]) => rot(x * sx * rx, y * sy, R);       // definition frame -> world
+    const t = primitive.rotation || 0;
+    const worldAngle = readableAngle(R + t);
+    const D = rot(1, 0, worldAngle), Dn = rot(0, 1, worldAngle); // text reading / text down directions
+    const ex = L(rot(1, 0, t)), ey = L(rot(0, 1, t));
+    const h = String(primitive.style.horizontal || "").toLowerCase();
+    const v = String(primitive.style.vertical || "").toLowerCase();
+    let anchor = "middle", baseline = "middle";
+    if (h.includes("left")) anchor = dot(ex, D) > 0 ? "start" : "end";
+    else if (h.includes("right")) anchor = dot(ex, D) > 0 ? "end" : "start";
+    if (v.includes("top")) baseline = dot(ey, Dn) > 0 ? "hanging" : "baseline";
+    else if (v.includes("bottom")) baseline = dot(ey, Dn) > 0 ? "baseline" : "hanging";
+    return { x: rx * primitive.position.x, y: primitive.position.y, rotation: worldAngle - R, anchor, baseline, mx: sx, my: sy };
+}
+
+// symbolPlacement ({ rotation, sx, sy }, optional): set by SymbolGraphic for
+// primitives drawn inside a placed symbol's transform group; text primitives
+// then follow symbolTextPlacement() (readable under rotation + mirroring).
+function renderPrimitive(primitive, key, textColorOverride = null, strokeMult = 1, showProfileLabels = false, symbolPlacement = null) {
     const fill = v => v?.style === "Transparent" ? "none" : (v?.color || "none");
     // Non-scaling strokes are in screen px - clamp up to MIN_STROKE_PX (0 stays 0).
     const sw = v => (v > 0 ? Math.max(v * strokeMult, MIN_STROKE_PX) : 0);
@@ -327,6 +379,23 @@ function renderPrimitive(primitive, key, textColorOverride = null, strokeMult = 
         const y0 = baseline === "hanging" ? primitive.position.y
             : baseline === "baseline" ? primitive.position.y - (lines.length - 1) * lineHeight
             : primitive.position.y - (lines.length - 1) * lineHeight / 2;
+        if (symbolPlacement) {
+            // Symbol catalog text: rule 'B' placement, drawn in a nested frame that
+            // cancels the placement's mirror sign (size still scales with the symbol).
+            const sp = symbolTextPlacement(primitive, symbolPlacement);
+            const sy0 = sp.baseline === "hanging" ? 0
+                : sp.baseline === "baseline" ? -(lines.length - 1) * lineHeight
+                : -(lines.length - 1) * lineHeight / 2;
+            const rotPart = sp.rotation ? ` rotate(${sp.rotation})` : "";
+            return (
+                <text key={key} fontFamily={primitive.style.font} fontSize={primitive.style.size} fill={textFill} textAnchor={sp.anchor}
+                    transform={`translate(${sp.x} ${sp.y}) scale(${sp.mx} ${sp.my})${rotPart}`}>
+                    {lines.map((line, i) => (
+                        <tspan key={i} x={0} y={sy0 + i * lineHeight} dominantBaseline={sp.baseline}>{line}</tspan>
+                    ))}
+                </text>
+            );
+        }
         return (
             <text key={key} fontFamily={primitive.style.font} fontSize={primitive.style.size} fill={textFill} textAnchor={anchor} transform={`rotate(${primitive.rotation} ${primitive.position.x} ${primitive.position.y})`}>
                 {lines.map((line, i) => (
@@ -724,7 +793,7 @@ function SymbolGraphic({ el, selected, connHighlight, onSelect, boostPct, boostS
             </g>}
             {hlColor && <g transform={transform} pointerEvents="none">{el.variant.primitives.map((p, i) => highlightPrimitive(p, `hl_${el.key}_${i}`, hlColor))}</g>}
             <g transform={transform} pointerEvents="none">
-                {el.variant.primitives.map((p, i) => renderPrimitive(p, `${el.key}_${i}`, null, symbolStrokeMult))}
+                {el.variant.primitives.map((p, i) => renderPrimitive(p, `${el.key}_${i}`, null, symbolStrokeMult, false, { rotation: el.rotation, sx: el.scaleX * mirror, sy: el.scaleY }))}
                 {hlColor && <rect x={el.variant.minX - 0.8} y={el.variant.minY - 0.8} width={(el.variant.maxX - el.variant.minX) + 1.6} height={(el.variant.maxY - el.variant.minY) + 1.6} fill="none" stroke={hlColor} strokeWidth={0.6} vectorEffect="non-scaling-stroke" />}
             </g>
         </g>
@@ -821,6 +890,21 @@ export default function App() {
     const [fitBusy, setFitBusy] = useState(null);
     const [fitStatus, setFitStatus] = useState(null);
     const fitWorkerRef = useRef(null);
+    // Image compare (PNG BG image vs. DEXPI drawing) - see runImageCompare().
+    // cmp: last result { issues, stats, diffUrl, diffBlob, diffPlacement, placement, ranAt } or null.
+    const [cmp, setCmp] = useState(null);
+    // Running compare job: { phase, done, total } or null (auto-fit keeps its own fitBusy).
+    const [cmpBusy, setCmpBusy] = useState(null);
+    const [cmpView, setCmpView] = useState("markers"); // "off" | "markers" | "diff"
+    const [cmpFilter, setCmpFilter] = useState("All");
+    const [cmpShowReviewed, setCmpShowReviewed] = useState(false);
+    const [cmpSelKey, setCmpSelKey] = useState(null);
+    // Accept / Ignore / False positive decisions per issue key, saved per drawing file.
+    const [cmpDecisions, setCmpDecisions] = useState({});
+    const [cmpOpts, setCmpOpts] = useState({
+        tolMm: DEFAULT_COMPARE_OPTIONS.tolMm, searchMm: DEFAULT_COMPARE_OPTIONS.searchMm,
+        okScore: DEFAULT_COMPARE_OPTIONS.okScore, minRegionMm: DEFAULT_COMPARE_OPTIONS.minRegionMm,
+    });
     // Draw-order override ("Send to Back"): view-only, session-scoped set of represented-object ids moved to the front of the paint order.
     // Reset when a file is (re)loaded. Never written to the parsed model or source XML.
     const [zOrderOverrides, setZOrderOverrides] = useState(new Set());
@@ -1548,8 +1632,9 @@ export default function App() {
         }
     }
 
-    // Auto-fit runs in a module worker (imageCompare.worker.js), which keeps the last decoded image cached.
-    function runFitWorker(payload, onProgress) {
+    // Auto-fit and image compare run in the same module worker (imageCompare.worker.js), which keeps the
+    // last decoded image cached, so an auto-fit followed by a compare only decodes the PNG once.
+    function runFitWorker(payload, onProgress, type = "autofit") {
         return new Promise((resolve, reject) => {
             if (!fitWorkerRef.current) {
                 fitWorkerRef.current = new Worker(new URL("./imageCompare.worker.js", import.meta.url), { type: "module" });
@@ -1562,18 +1647,18 @@ export default function App() {
                 if (!m || m.id !== id) return;
                 if (m.type === "progress") { onProgress?.(m); return; }
                 cleanup();
-                if (m.type === "done") resolve(m.result); else reject(new Error(m.message || "Auto-fit failed."));
+                if (m.type === "done") resolve(m.result); else reject(new Error(m.message || (type === "compare" ? "Image compare failed." : "Auto-fit failed.")));
             };
-            const onErr = (e) => { cleanup(); fitWorkerRef.current = null; reject(new Error(e.message || "The auto-fit worker could not start.")); };
+            const onErr = (e) => { cleanup(); fitWorkerRef.current = null; reject(new Error(e.message || "The image compare / auto-fit worker could not start.")); };
             w.addEventListener("message", onMsg);
             w.addEventListener("error", onErr);
-            w.postMessage({ id, type: "autofit", blob: new Blob([bgImage.sourceBytes]), cacheKey: bgImage.src, ...payload });
+            w.postMessage({ id, type, blob: new Blob([bgImage.sourceBytes]), cacheKey: bgImage.src, ...payload });
         });
     }
 
     // Auto-fit: finds the Scale/X/Y that lays the image over the drawing (uniform scale + offset), then applies it - Save placement stores it.
     async function autoFitBg() {
-        if (!bgImage?.sourceBytes || !compareGeometry || !bgPlacement || !bgImage.naturalWidth || fitBusy) return;
+        if (!bgImage?.sourceBytes || !compareGeometry || !bgPlacement || !bgImage.naturalWidth || fitBusy || cmpBusy) return;
         const src = bgImage.src, natW = bgImage.naturalWidth, natH = bgImage.naturalHeight;
         setFitBusy({ phase: "Starting", done: 0, total: 1 });
         try {
@@ -1585,6 +1670,121 @@ export default function App() {
             alert("Auto-fit failed: " + (err.message || String(err)));
         } finally {
             setFitBusy(null);
+        }
+    }
+
+    // ---------- Image compare (PNG BG image vs DEXPI drawing) ----------------
+    // Review decisions (Accept / Ignore / False positive + comment) are kept per drawing file in localStorage.
+    const cmpDecisionsKey = (fileName) => `aksoDexpiViewer.imgCompare.${fileName || "drawing"}`;
+    function loadCmpDecisions(fileName) {
+        try { return JSON.parse(localStorage.getItem(cmpDecisionsKey(fileName)) || "{}") || {}; } catch { return {}; }
+    }
+    function setCmpDecision(issueKey, patch) {
+        setCmpDecisions(prev => {
+            const cur = prev[issueKey] || {};
+            const nextEntry = { ...cur, ...patch };
+            const next = { ...prev };
+            if (!nextEntry.status && !nextEntry.comment) delete next[issueKey]; else next[issueKey] = nextEntry;
+            try { localStorage.setItem(cmpDecisionsKey(mainFileName), JSON.stringify(next)); } catch { /* storage unavailable */ }
+            return next;
+        });
+    }
+
+    async function runImageCompare() {
+        if (!bgImage?.sourceBytes || !compareGeometry || !bgPlacement || cmpBusy || fitBusy) return;
+        setCmpBusy({ phase: "Starting", done: 0, total: 1 });
+        const placement = { x: bgPlacement.x, y: bgPlacement.y, width: bgPlacement.width, height: bgPlacement.height };
+        try {
+            const res = await runFitWorker({ geometry: compareGeometry, placement, options: cmpOpts }, m => setCmpBusy(m), "compare");
+            const diffUrl = URL.createObjectURL(res.diffBlob);
+            // the difference image is the PNG grid (ceil(W/f) x ceil(H/f)), so it can be a few px wider than the PNG
+            const diffPlacement = {
+                x: placement.x, y: placement.y,
+                width: placement.width * (res.gridW * res.f) / res.W,
+                height: placement.height * (res.gridH * res.f) / res.H,
+            };
+            setCmp(prev => {
+                if (prev?.diffUrl) URL.revokeObjectURL(prev.diffUrl);
+                return { issues: res.issues, stats: res.stats, diffUrl, diffBlob: res.diffBlob, diffPlacement, placement, ranAt: new Date().toISOString() };
+            });
+            setCmpDecisions(loadCmpDecisions(mainFileName));
+            setCmpSelKey(null);
+            setLeftTab("compare");
+            setLeftCollapsed(false);
+        } catch (err) {
+            alert("Image compare failed: " + (err.message || String(err)));
+        } finally {
+            setCmpBusy(null);
+        }
+    }
+
+    // One image compare issue row - used by the Compare list (left panel) and
+    // the selected object's Compare tab (right panel).
+    function renderCmpIssueRow(issue, { showLabel = true } = {}) {
+        const dec = cmpDecisions[issue.key] || {};
+        const sel = issue.key === cmpSelKey;
+        const color = IMG_CODES[issue.code]?.color;
+        const sevKey = String(issue.severity || "").toLowerCase();
+        return (
+            <div key={issue.key} onClick={() => selectCmpIssue(issue)}
+                style={{ padding: "8px 10px", borderBottom: "1px solid #eef2f6", cursor: "pointer", background: sel ? "#f6f8fa" : "white", borderLeft: `3px solid ${color || "#ccc"}`, opacity: dec.status ? 0.6 : 1 }}>
+                <div style={{ display: "flex", gap: 5, alignItems: "center", marginBottom: 3 }}>
+                    <span style={S.badge(SEV_COLORS[sevKey] || "#57606a")}>{SEV_LABELS[sevKey] || issue.severity}</span>
+                    <span style={{ fontSize: 11, fontFamily: "monospace", color: "#555" }}>{issue.code}</span>
+                    <span style={{ fontSize: 12, fontWeight: 600, color }}>{issue.title}</span>
+                </div>
+                {showLabel && issue.label && <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 2, wordBreak: "break-word" }}>{issue.label}</div>}
+                <div style={{ fontSize: 12, color: "#333" }}>{issue.message}</div>
+                <div style={{ display: "flex", gap: 4, marginTop: 5 }} onClick={e => e.stopPropagation()}>
+                    {[["accepted", "Accept"], ["ignored", "Ignore"], ["false-positive", "False positive"]].map(([st, l]) => (
+                        <button key={st} style={{ ...S.btnSmall, fontSize: 11, background: dec.status === st ? "#eaf2ff" : "white", borderColor: dec.status === st ? "#0969da" : "#c7ced6" }}
+                            onClick={() => setCmpDecision(issue.key, { status: dec.status === st ? undefined : st })}>{l}</button>
+                    ))}
+                </div>
+                {(sel || dec.comment) && (
+                    <input style={{ ...S.input, marginTop: 5, fontSize: 12, padding: "3px 6px" }} placeholder="Comment" value={dec.comment || ""}
+                        onClick={e => e.stopPropagation()} onChange={e => setCmpDecision(issue.key, { comment: e.target.value || undefined })} />
+                )}
+            </div>
+        );
+    }
+
+    function zoomToCmpBox(b) {
+        if (!b) return;
+        const cx = (b.minX + b.maxX) / 2, cy = (b.minY + b.maxY) / 2;
+        const aspect = viewBox.w / viewBox.h || 1;
+        let w = Math.max(60, (b.maxX - b.minX) * 4);
+        let h = w / aspect;
+        if (h < (b.maxY - b.minY) * 4) { h = Math.max(60, (b.maxY - b.minY) * 4); w = h * aspect; }
+        setViewBox(clampViewBox({ x: cx - w / 2, y: cy - h / 2, w, h }, fullBounds));
+    }
+
+    function selectCmpIssue(issue) {
+        setCmpSelKey(issue.key);
+        zoomToCmpBox(issue.bbox);
+        if (issue.representedId && parsed?.treeMap?.has(issue.representedId)) handleSelect(issue.representedId);
+    }
+
+    function exportCmp(kind) {
+        if (!cmp) return;
+        const base = `${exportFileBaseName()}-image-compare`;
+        const rows = cmp.issues.map(i => ({
+            code: i.code, title: i.title, severity: i.severity, object: i.label, objectType: i.objectType, objectId: i.representedId || "",
+            x: +((i.bbox.minX + i.bbox.maxX) / 2).toFixed(2), y: +((i.bbox.minY + i.bbox.maxY) / 2).toFixed(2),
+            dxMm: i.dxMm != null ? +i.dxMm.toFixed(2) : "", dyMm: i.dyMm != null ? +i.dyMm.toFixed(2) : "",
+            score: i.score != null ? +Number(i.score).toFixed(3) : "", message: i.message,
+            status: cmpDecisions[i.key]?.status || "open", comment: cmpDecisions[i.key]?.comment || "", key: i.key,
+        }));
+        if (kind === "json") {
+            const doc = { drawing: mainFileName, image: bgImage?.fileName || "", ranAt: cmp.ranAt, placement: cmp.placement, stats: cmp.stats, issues: rows };
+            downloadBlob(new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" }), `${base}.json`);
+        } else if (kind === "csv") {
+            const cols = Object.keys(rows[0] || { code: "" });
+            const esc = v => { const t = String(v ?? ""); return /[",\n\r;]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+            const csv = [cols.join(","), ...rows.map(r => cols.map(c => esc(r[c])).join(","))].join("\r\n");
+            downloadBlob(new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" }), `${base}.csv`);
+        } else if (kind === "png" && cmp.diffBlob) {
+            downloadBlob(cmp.diffBlob, `${base}-difference.png`);
         }
     }
 
@@ -1935,6 +2135,26 @@ export default function App() {
     // Sampled drawing graphics for the auto-fit (imageCompare.js).
     const compareGeometry = useMemo(() => (parsed ? buildCompareGeometry(parsed) : null), [parsed]);
     useEffect(() => () => { fitWorkerRef.current?.terminate(); fitWorkerRef.current = null; }, []);
+    // A new drawing or a new BG image makes the last compare result meaningless.
+    useEffect(() => {
+        setCmp(prev => { if (prev?.diffUrl) URL.revokeObjectURL(prev.diffUrl); return null; });
+        setCmpSelKey(null);
+    }, [parsed, bgImage?.src]);
+    const cmpVisibleIssues = useMemo(() => {
+        if (!cmp) return [];
+        return cmp.issues.filter(i => (cmpFilter === "All" || i.code === cmpFilter) && (cmpShowReviewed || !cmpDecisions[i.key]?.status));
+    }, [cmp, cmpFilter, cmpShowReviewed, cmpDecisions]);
+    const cmpOpenCount = useMemo(() => (cmp ? cmp.issues.filter(i => !cmpDecisions[i.key]?.status).length : 0), [cmp, cmpDecisions]);
+    // Image compare issues of the selected object (and its sub-components when
+    // that highlight option is on) - shown on the right panel's Compare tab.
+    const selectedCmpIssues = useMemo(() => {
+        if (!cmp || !selectedId) return [];
+        const ids = selectedRepresentedIds?.size ? selectedRepresentedIds : new Set([selectedId]);
+        return cmp.issues.filter(i => i.representedId && (ids.has(i.representedId) || i.representedId === selectedId));
+    }, [cmp, selectedId, selectedRepresentedIds]);
+    // The Compare tab is only listed while a BG image or a result exists - fall back to Topology otherwise.
+    useEffect(() => { if (leftTab === "compare" && !bgImage && !cmp) setLeftTab("topology"); }, [leftTab, bgImage, cmp]);
+    const cmpPlacementChanged = !!(cmp && bgPlacement && (Math.abs(cmp.placement.x - bgPlacement.x) > 1e-6 || Math.abs(cmp.placement.y - bgPlacement.y) > 1e-6 || Math.abs(cmp.placement.width - bgPlacement.width) > 1e-6));
     // Tints the overlay a mid-dark blue while preserving the image's luminance (mix-blend-mode "color").
     const BG_TINT_COLOR = "#1e3a5f";
 
@@ -2065,6 +2285,11 @@ export default function App() {
                         <button style={S.tab(leftTab === "folder")} onClick={() => setLeftTab("folder")} title="Findings for every file in the last validated folder, grouped by file.">
                             Folder{folderProgress ? "…" : folderIssues.length ? ` (${folderIssues.length})` : ""}
                         </button>
+                        {SHOW_IMAGE_COMPARE && (bgImage || cmp) && (
+                            <button style={S.tab(leftTab === "compare")} onClick={() => setLeftTab("compare")} title="Image compare: differences between the DEXPI drawing and the loaded BG image (PNG of the same drawing).">
+                                Compare{cmpBusy ? "…" : cmp ? ` (${cmpOpenCount})` : ""}
+                            </button>
+                        )}
                         {/* Config tab hidden: its panel below still works, but nothing switches to it. Restore by putting the tab button back. */}
                     </div>
 
@@ -2365,6 +2590,81 @@ export default function App() {
                     )}
 
                     {/* Not reachable while the Config tab button is hidden. */}
+                    {SHOW_IMAGE_COMPARE && leftTab === "compare" && (
+                        <div style={S.scroll}>
+                            <div style={S.section}>
+                                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                                    <button style={S.btnPrimary} disabled={!!cmpBusy || !!fitBusy || !parsed || !bgImage} onClick={runImageCompare} title="Compare the DEXPI drawing with the BG image at the current placement">
+                                        {cmpBusy ? "Comparing…" : cmp ? "Re-run compare" : "Run compare"}
+                                    </button>
+                                    <button style={S.btn} disabled={!!cmpBusy || !!fitBusy || !parsed || !bgImage?.naturalWidth} onClick={autoFitBg} title="Fit the BG image to the drawing first (then Save placement in BG Controls to keep it)">
+                                        {fitBusy ? "Fitting…" : "Auto-fit"}
+                                    </button>
+                                </div>
+                                {!bgImage && <div style={{ marginTop: 8, fontSize: 12, color: "#888" }}>Load a BG image (PNG of the same drawing) to compare.</div>}
+                                {(cmpBusy || fitBusy) && <div style={{ marginTop: 8, fontSize: 12, color: "#57606a" }}>{(cmpBusy || fitBusy).phase}{(cmpBusy || fitBusy).total > 1 ? ` – ${Math.round(100 * (cmpBusy || fitBusy).done / (cmpBusy || fitBusy).total)}%` : ""}</div>}
+                                {cmpPlacementChanged && <div style={{ marginTop: 8, fontSize: 12, color: "#9a6700" }}>The BG placement changed since this run – re-run to update.</div>}
+                                <details style={{ marginTop: 8, fontSize: 12 }}>
+                                    <summary style={{ cursor: "pointer", color: "#57606a" }}>Settings</summary>
+                                    <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: "4px 8px", alignItems: "center", marginTop: 6 }}>
+                                        <span title="How far image ink may be from DEXPI ink and still count as matching">Match tolerance (mm)</span>
+                                        <input type="number" min={0.1} max={5} step={0.1} value={cmpOpts.tolMm} onChange={e => { const v = parseFloat(e.target.value); if (v > 0) setCmpOpts(o => ({ ...o, tolMm: v })); }} style={S.numBox} />
+                                        <span title="Objects that don't match in place are searched for within this radius (Misplaced)">Misplaced search radius (mm)</span>
+                                        <input type="number" min={0} max={30} step={0.5} value={cmpOpts.searchMm} onChange={e => { const v = parseFloat(e.target.value); if (v >= 0) setCmpOpts(o => ({ ...o, searchMm: v })); }} style={S.numBox} />
+                                        <span title="Share of an object's outline that must lie on image ink">Required match (%)</span>
+                                        <input type="number" min={30} max={100} step={5} value={Math.round(cmpOpts.okScore * 100)} onChange={e => { const v = parseFloat(e.target.value); if (v >= 30 && v <= 100) setCmpOpts(o => ({ ...o, okScore: v / 100 })); }} style={S.numBox} />
+                                        <span title="Smallest unexplained image region reported as Missing in DEXPI">Smallest missing region (mm)</span>
+                                        <input type="number" min={1} max={50} step={1} value={cmpOpts.minRegionMm} onChange={e => { const v = parseFloat(e.target.value); if (v > 0) setCmpOpts(o => ({ ...o, minRegionMm: v })); }} style={S.numBox} />
+                                    </div>
+                                </details>
+                            </div>
+                            {cmp && (
+                                <>
+                                    <div style={S.section}>
+                                        <div style={{ display: "flex", gap: 4, alignItems: "center", fontSize: 12, marginBottom: 8 }}>
+                                            <span style={{ color: "#57606a", marginRight: 2 }}>View</span>
+                                            {[["off", "Off"], ["markers", "Markers"], ["diff", "Difference"]].map(([v, l]) => (
+                                                <button key={v} style={{ ...S.btnSmall, background: cmpView === v ? "#eaf2ff" : "white", borderColor: cmpView === v ? "#0969da" : "#c7ced6" }} onClick={() => setCmpView(v)}>{l}</button>
+                                            ))}
+                                        </div>
+                                        {cmpView === "diff" && (
+                                            <div style={{ fontSize: 11, color: "#57606a", marginBottom: 8, lineHeight: 1.5 }}>
+                                                <span style={{ color: "#969696" }}>■</span> matched &nbsp;
+                                                <span style={{ color: "#dc0000" }}>■</span> image only (missing in DEXPI) &nbsp;
+                                                <span style={{ color: "#f5a0a0" }}>■</span> image only, ignored (text / small) &nbsp;
+                                                <span style={{ color: "#005aff" }}>■</span> DEXPI only
+                                            </div>
+                                        )}
+                                        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                                            {[["All", cmp.issues.length], ...Object.keys(IMG_CODES).filter(c => cmp.stats.counts[c]).map(c => [c, cmp.stats.counts[c]])].map(([c, n]) => (
+                                                <button key={c} onClick={() => setCmpFilter(c)} title={c === "All" ? "All issues" : IMG_CODES[c].title}
+                                                    style={{ ...S.btnSmall, fontSize: 11, background: cmpFilter === c ? "#eaf2ff" : "white", borderColor: cmpFilter === c ? "#0969da" : (IMG_CODES[c]?.color || "#c7ced6"), color: IMG_CODES[c]?.color || "#111" }}>
+                                                    {c === "All" ? "All" : `${c} ${IMG_CODES[c].title}`} ({n})
+                                                </button>
+                                            ))}
+                                        </div>
+                                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, fontSize: 12 }}>
+                                            <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+                                                <input type="checkbox" checked={cmpShowReviewed} onChange={e => setCmpShowReviewed(e.target.checked)} /> Show reviewed
+                                            </label>
+                                            <span style={{ display: "flex", gap: 4 }}>
+                                                <button style={S.btnSmall} onClick={() => exportCmp("csv")} title="Download the issues with their review status as CSV">CSV</button>
+                                                <button style={S.btnSmall} onClick={() => exportCmp("json")} title="Download the issues, settings and placement as JSON">JSON</button>
+                                                <button style={S.btnSmall} onClick={() => exportCmp("png")} title="Download the difference image">Diff PNG</button>
+                                            </span>
+                                        </div>
+                                        <div style={{ fontSize: 11, color: "#888", marginTop: 6 }}>
+                                            {cmp.stats.checked} objects checked · {cmpOpenCount} open · {Math.round(cmp.stats.ms)} ms · {cmp.stats.pxPerMm.toFixed(1)} px/mm
+                                        </div>
+                                    </div>
+                                    {cmpVisibleIssues.length === 0 && <div style={{ padding: 12, color: "#888", fontSize: 12 }}>{cmp.issues.length ? "No open issues for this filter." : "No differences found."}</div>}
+                                    {cmpVisibleIssues.slice(0, 500).map(issue => renderCmpIssueRow(issue))}
+                                    {cmpVisibleIssues.length > 500 && <div style={{ padding: 10, fontSize: 11, color: "#888" }}>Showing the first 500 of {cmpVisibleIssues.length} – use the filters above.</div>}
+                                </>
+                            )}
+                        </div>
+                    )}
+
                     {leftTab === "config" && (
                         <div style={S.scroll}>
                             <div style={S.section}>
@@ -2498,7 +2798,7 @@ export default function App() {
                         <button style={S.btnSmall} onClick={() => setBgImage(b => ({ ...b, scale: 1, offsetX: 0, offsetY: 0 }))} title="Reset to the auto-fit (centered, aspect-correct) placement">Reset fit</button>
                         <button
                             style={{ ...S.btnSmall, borderColor: "#1a7f37", color: "#1a7f37" }}
-                            disabled={!!fitBusy || !parsed || !bgImage.naturalWidth}
+                            disabled={!!fitBusy || !!cmpBusy || !parsed || !bgImage.naturalWidth}
                             onClick={autoFitBg}
                             title="Match the image to the drawing: finds the Scale / X / Y that lays the drawn lines and symbols over the image's ink. Then use Save placement to keep it in the PNG."
                         >
@@ -2521,6 +2821,25 @@ export default function App() {
                             <button style={S.btnSmall} onClick={clearBgDefault} title={`Remove the saved placement from ${bgImage.fileName || "the PNG"} (saved under the same name)`}>
                                 Clear Default
                             </button>
+                        )}
+                        {SHOW_IMAGE_COMPARE && (
+                            <>
+                                <button
+                                    style={{ ...S.btnSmall, borderColor: "#8250df", color: "#8250df" }}
+                                    disabled={!!cmpBusy || !!fitBusy || !parsed}
+                                    onClick={runImageCompare}
+                                    title="Compare the DEXPI drawing with this image at the current placement and list the mismatches in the Compare tab"
+                                >
+                                    {cmpBusy ? "Comparing…" : "⇄ Compare"}
+                                </button>
+                                {cmp && (
+                                    <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }} title="Show or hide the image compare markers / difference image on the drawing">
+                                        <input type="checkbox" checked={cmpView !== "off"} onChange={e => setCmpView(e.target.checked ? "markers" : "off")} />
+                                        Compare layer
+                                    </label>
+                                )}
+                                {cmpBusy && <span style={{ color: "#57606a" }}>{cmpBusy.phase}{cmpBusy.total > 1 ? ` ${Math.round(100 * cmpBusy.done / cmpBusy.total)}%` : ""}</span>}
+                            </>
                         )}
                         <button style={{ ...S.btnSmall, color: "#cf222e" }} onClick={removeBg}>Remove</button>
                     </div>
@@ -2562,15 +2881,19 @@ export default function App() {
                     onDoubleClick={fitDrawingToWindow}
                 >
                     <svg ref={svgElRef} viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`} width="100%" height="100%" style={{ display: "block" }} onAuxClick={e => e.preventDefault()}>
-                        {bgImage && bgPlacement && !batchPng && (
+                        {bgImage && bgPlacement && !batchPng && !(cmp && cmpView === "diff") && (
                             <g style={{ display: bgImage.visible ? "inline" : "none", opacity: bgOpacity, pointerEvents: "none" }}>
                                 <image href={bgImage.src} x={bgPlacement.x} y={bgPlacement.y} width={bgPlacement.width} height={bgPlacement.height} preserveAspectRatio="none" />
                                 <rect x={bgPlacement.x} y={bgPlacement.y} width={bgPlacement.width} height={bgPlacement.height} fill={BG_TINT_COLOR} style={{ mixBlendMode: "color" }} />
                             </g>
                         )}
+                        {/* Image compare "Difference" view: the difference image replaces the BG image and the drawing is faded. */}
+                        {cmp && cmpView === "diff" && !batchPng && (
+                            <image href={cmp.diffUrl} x={cmp.diffPlacement.x} y={cmp.diffPlacement.y} width={cmp.diffPlacement.width} height={cmp.diffPlacement.height} preserveAspectRatio="none" style={{ pointerEvents: "none" }} />
+                        )}
                         {/* data-dxf-root: everything the DXF export reads (drawing + heat-trace overlays); the BG image is outside it. */}
                         <g data-dxf-root="">
-                        <g opacity={drawingOpacity} data-dxf-keep-opacity="">
+                        <g opacity={cmp && cmpView === "diff" && !batchPng ? 0.12 : drawingOpacity} data-dxf-keep-opacity="">
                         {drawnElements
                             // drawnElements: paintOrderElements (so "Send to Back" overrides affect both paint and click order) filtered by the
                             // Profile labels / Mixed labels checkboxes - see its useMemo.
@@ -2606,6 +2929,30 @@ export default function App() {
                             return null;
                         })}</g>}
                         </g>
+                        {/* Image compare markers - one box per open issue, arrow to where a misplaced object matches */}
+                        {cmp && cmpView !== "off" && !batchPng && (
+                            <g>
+                                {cmpVisibleIssues.slice(0, 3000).map(issue => {
+                                    const b = issue.bbox, pad = 1.2;
+                                    const color = IMG_CODES[issue.code]?.color || "#cf222e";
+                                    const sel = issue.key === cmpSelKey;
+                                    const cx = (b.minX + b.maxX) / 2, cy = (b.minY + b.maxY) / 2;
+                                    return (
+                                        <g key={issue.key} style={{ cursor: "pointer" }} onClick={e => { e.stopPropagation(); selectCmpIssue(issue); setRightTab("compare"); setRightCollapsed(false); }}>
+                                            <rect x={b.minX - pad} y={b.minY - pad} width={b.maxX - b.minX + pad * 2} height={b.maxY - b.minY + pad * 2}
+                                                fill={sel ? color : "transparent"} fillOpacity={sel ? 0.12 : 0} stroke={color} strokeWidth={sel ? 2.5 : 1.2}
+                                                strokeDasharray={issue.severity === "Info" ? "4 3" : undefined} vectorEffect="non-scaling-stroke" pointerEvents="all" />
+                                            {issue.dxMm != null && (Math.abs(issue.dxMm) > 0.3 || Math.abs(issue.dyMm) > 0.3) && (
+                                                <>
+                                                    <line x1={cx} y1={cy} x2={cx + issue.dxMm} y2={cy + issue.dyMm} stroke={color} strokeWidth={2} vectorEffect="non-scaling-stroke" />
+                                                    <circle cx={cx + issue.dxMm} cy={cy + issue.dyMm} r={0.6} fill={color} />
+                                                </>
+                                            )}
+                                        </g>
+                                    );
+                                })}
+                            </g>
+                        )}
                     </svg>
                     {showConnectivity && selectedId && (
                         <div style={{ position: "absolute", bottom: 10, left: 10, background: "rgba(255,255,255,0.9)", padding: "5px 10px", borderRadius: 6, border: "1px solid #d0d7de", fontSize: 11, display: "flex", gap: 8 }}>
@@ -2634,6 +2981,7 @@ export default function App() {
                             ["details", "Object"],
                             ["connectivity", "Connections"],
                             ["issues", `Issues${selectedId && issuesByObjectId.has(selectedId) ? ` (${issuesByObjectId.get(selectedId).length})` : ""}`],
+                            ...(SHOW_IMAGE_COMPARE && cmp ? [["compare", `Compare${selectedCmpIssues.length ? ` (${selectedCmpIssues.filter(i => !cmpDecisions[i.key]?.status).length})` : ""}`]] : []),
                         ].map(([t, label]) => (
                             <button key={t} style={S.tab(rightTab === t)} onClick={() => setRightTab(t)}>{label}</button>
                         ))}
@@ -2954,6 +3302,14 @@ export default function App() {
                                         </div>
                                     );
                                 })()}
+                            </div>
+                        )}
+                        {SHOW_IMAGE_COMPARE && rightTab === "compare" && (
+                            <div>
+                                {!cmp ? <div style={{ padding: 12, color: "#888", fontSize: 12 }}>Run the image compare first (Compare tab on the left).</div>
+                                    : !selectedNode ? <div style={{ padding: 12, color: "#888", fontSize: 12 }}>Select an object.</div>
+                                    : selectedCmpIssues.length === 0 ? <div style={{ padding: 12, color: "#888", fontSize: 12 }}>No image compare issues for this object.</div>
+                                    : selectedCmpIssues.map(issue => renderCmpIssueRow(issue, { showLabel: false }))}
                             </div>
                         )}
                         {rightTab === "issues" && (

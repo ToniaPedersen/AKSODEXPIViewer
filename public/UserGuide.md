@@ -2,7 +2,7 @@
 
 A browser-based viewer and validation tool for legacy **DEXPI 1.4 / Proteus 4.1.1** XML files, rendered and checked using **DEXPI 2.x profile** symbols, classes and attributes by way of a loaded `DiscProfile.xml`.
 
-Developed by **Tonia Pedersen**. Version **2.10**. See `ChangeLog_2.9_to_2.10.md` for what changed since 2.9.
+Developed by **Tonia Pedersen**. Version **2.11**. See `ChangeLog_2.10_to_2.11.md` for what changed since 2.10.
 
 ---
 
@@ -75,9 +75,9 @@ To check a whole folder rather than one file, use **Validate…** on the Folder 
 
 | Area | Contents |
 |---|---|
-| **Left panel** | File loading, Run Validation, and the Topology / Validation / Folder tabs. |
+| **Left panel** | File loading, Run Validation, and the Topology / Validation / Folder tabs, plus the Compare tab once a BG image is loaded (see 5.9). |
 | **Centre panel** | The rendered P&ID drawing and its toolbar. |
-| **Right panel** | Object / Connections / Issues for the current selection. |
+| **Right panel** | Object / Connections / Issues for the current selection, plus Compare after an image compare has run (see 6.4). |
 
 The side panels collapse with the `<` / `>` button in their header, giving the drawing the full width.
 
@@ -197,7 +197,7 @@ The drawing number, name and subtitle from the file are shown at the top left of
 |---|---|
 | **Fit** | Fits the whole drawing into the window (right-hand end of the toolbar; double-clicking the drawing does the same). |
 | **Reset Z-Order (n)** | Appears once objects have been sent to back; restores the file's original paint order for all of them. |
-| **Line Boost %** | Stroke-width multiplier for connector/centerlines. 100% is unchanged; raise it to bulk up thin lines, e.g. to match the weight of a background reference image. |
+| **Line Boost %** | Stroke-width multiplier for connector/centerlines. 100% is unchanged; raise it to bulk up thin lines, e.g. to match the weight of a background reference image. Whatever the setting, no line is ever drawn thinner than **1 screen pixel**, so thin lines (0.09–0.25 mm) stay visible at every zoom. Dash lengths follow Line Boost only — the 1-pixel minimum never stretches them. |
 | **Include symbol outlines** | Applies the same Line Boost percentage to symbol outlines as well. Off by default. |
 | **Connectivity** | Colour-codes the selected object's network neighbours (see below). Off by default. |
 | **Sub-components** | Makes a selection also highlight every child of the selected object — useful when selecting a container such as a `PipingNetworkSystem`. Off by default. |
@@ -224,18 +224,23 @@ With **Connectivity** checked, selecting an object colours its neighbours, and a
 
 ### 5.4 Signal-conveying line styles
 
-A `SignalConveyingFunction` whose signal type resolves from the file is decorated automatically with a repeated mark along its line, independent of the line style encoded in the file's own graphics.
+A signal line's style is taken from its **SignalConveyingFunctionTypeRepresentation** (Proteus: the `SignalConveyingFunctionTypeRepresentationAssignmentClass` GenericAttribute on the `<InformationFlow>`; DEXPI 2.0: the `DiscProfile/SignalConveyingFunctionTypeRepresentation` attribute of the `SignalConveyingFunction`). When it is given, the representation style **replaces** the line style written in the file's own graphics:
 
-| Signal type | Line decoration |
-|---|---|
-| `ElectricalSignalConveying` | Repeated italic **E** |
-| `HydraulicSignalConveying` | Repeated upright **L** |
-| `BusSignalConveying` | Repeated small circle |
-| `PneumaticSignalConveying` | Repeated **^** chevron |
-| `CapillarySignalConveying` | Repeated small **x** |
-| `UndefinedSignalConveying` | Repeated **/** slash |
-| `ElectromagneticGuidedSignalConveying` | Repeated **∿** squiggle |
-| `ElectromagneticUnguidedSignalConveying` | Only the repeated **∿** squiggle — the line itself is hidden, as there is no physical conductor to draw |
+| Signal type | Line | Repeated mark |
+|---|---|---|
+| `SignalConveying` (no sub-type) | dashed, 3 mm dash / 3 mm gap | — |
+| `ElectricalSignalConveying` | solid | italic **E** |
+| `HydraulicSignalConveying` | solid | upright **L** |
+| `BusSignalConveying` | solid | small circle |
+| `PneumaticSignalConveying` | solid | **^** chevron |
+| `CapillarySignalConveying` | solid | small **x** |
+| `UndefinedSignalConveying` | solid | **/** slash |
+| `ElectromagneticGuidedSignalConveying` | solid | **∿** squiggle |
+| `ElectromagneticUnguidedSignalConveying` | hidden (no physical conductor) | **∿** squiggle only |
+
+A `MeasuringLineFunction` line is always solid, with no marks. A signal line without the attribute, or with a value not in the table, keeps the style from the file.
+
+The marks are about 2.5 mm tall and centred on the line, turned with each segment but never upside down. Letter marks repeat every 6.5 mm starting 2.5 mm from the line's start; bus circles (radius 1.25 mm) every 10 mm starting 5 mm in. A line too short for that gets one mark at its middle. Marks use the line's own colour and weight.
 
 Selecting a decorated line, or highlighting it through Connectivity mode, recolours the line and its marks together.
 
@@ -291,6 +296,8 @@ A profile label template describes the label for the symbol in its upright, unmi
 
 Character-stacked templates (`<NonSasFunction>`) keep one upright character per line. The same rule is used by DEXPIViewer and by the label update script.
 
+**Literal text in the symbol itself** — text that is part of a profile symbol's own graphics, such as the `TS` of ND0227 (Strainer T Temporary) — follows the same rule: it is never drawn with mirrored letters, it reads left to right at 0°/180° and bottom to top at 90°/270°, and its position and alignment follow the rule above. Its size still scales with the symbol placement.
+
 #### Equipment boxes
 
 An equipment box (DiscProfile 0.6.6, ND0300–ND0310) has an 'A' part (`ND03xxA`, the frame with the captions) and a 'B' part (`ND03xxB`, the value column) that belongs to the equipment. The value column shows:
@@ -329,6 +336,46 @@ Objects are painted in file order, and whatever paints last sits on top for both
 
 > This affects the on-screen draw/click order for the current session only. Nothing is written back to the XML, and it resets when a new file is loaded.
 
+### 5.9 Image compare
+
+**Image compare** checks the drawing against a reference image of the same P&ID (the PNG loaded with **BG PNG**, see 5.7) and lists every place where the two disagree. It runs in the background; the viewer stays usable while it works.
+
+**Running a compare**
+
+1. Load the drawing and its PNG (picked together, or found next to the file in a validated folder).
+2. Line the image up with the drawing: **⤢ Auto-fit to drawing** in the BG controls, or adjust Scale / X / Y by hand. **💾 Save placement** keeps the placement in the PNG for next time.
+3. Click **⇄ Compare** in the BG controls, or **Run compare** in the left panel's **Compare** tab. The left panel switches to the Compare tab when the result is ready.
+
+The compare uses the placement at the time it runs. If you move the image afterwards, the Compare tab says so — click **Re-run compare** to update. Loading another drawing or image clears the result.
+
+**Findings**
+
+| Code | Finding | Severity | Meaning |
+|---|---|---|---|
+| IMG-001 | Missing in DEXPI | Error | Ink in the image that no DEXPI object explains (text and very small marks are ignored). |
+| IMG-002 | Not found in image | Error | A DEXPI object with (almost) no matching ink in the image. |
+| IMG-003 | Partial match | Warning | Only part of the object matches the image. |
+| IMG-004 | Misplaced | Warning | The object matches the image, but at another position nearby; the marker arrow points to where it was found. |
+| IMG-005 | Wrong orientation | Warning | The object matches when turned or mirrored. |
+| IMG-006 | Wrong symbol option | Error | The image shows another variant of the symbol. |
+| IMG-007 | Line style mismatch | Warning | Solid in one, dashed in the other. |
+| IMG-008 | Signal marks not found in image | Warning | The DEXPI signal type draws repeated marks (E, L, …) that the image line does not show. |
+| IMG-009 | Heat tracing not found in image | Warning | DEXPI heat tracing (see 5.5) that the image does not show. |
+| IMG-010 | Heat tracing in image, not in DEXPI | Warning | A heat-trace line in the image with no heat tracing in DEXPI. |
+| IMG-011 | Image shows signal marks, DEXPI has none | Info | The image line carries marks, but the DEXPI signal type has none. |
+
+**Compare tab (left panel)**
+
+- **Run compare / Re-run compare** and **Auto-fit**, with progress while a job runs.
+- **Settings**: *Match tolerance* (how far image ink may be from DEXPI ink and still match, default 0.6 mm), *Misplaced search radius* (default 5 mm), *Required match* (share of an object's outline that must lie on image ink, default 80%) and *Smallest missing region* (default 4 mm).
+- **View**: *Off*, *Markers* (a coloured box per open finding, coloured by code, with an arrow for Misplaced) or *Difference* (the drawing faded over a difference image: grey = matched, red = image only, pale red = image only but ignored as text / small, blue = DEXPI only).
+- **Filter** buttons per code with counts, and **Show reviewed**.
+- Each finding can be marked **Accept**, **Ignore** or **False positive** and given a **Comment**. Reviewed findings are hidden unless *Show reviewed* is ticked. Review decisions are kept in the browser per drawing file, so they are still there when the same file is compared again.
+- **CSV** / **JSON** / **Diff PNG** download the findings with their review status (JSON also holds the settings and placement), or the difference image.
+- Clicking a finding (in the list or its marker on the drawing) selects the object and zooms to it.
+
+The **Compare layer** checkbox in the BG controls shows or hides the markers. Markers and the difference image are never included in PNG / PDF / DXF exports.
+
 ---
 
 ## 6. Right Panel — Object Details
@@ -357,6 +404,10 @@ The connectivity map for the selection: **Upstream Node** (blue), **Downstream N
 ### 6.3 Issues tab
 
 The validation issues attached to the selected object, with type, code, title and message. Populated as soon as the file is opened and validated; schema findings carry a line number rather than an object, so they appear only in the Validation tab.
+
+### 6.4 Compare tab
+
+Shown once an image compare has run (see 5.9). Lists the compare findings of the selected object — and of its sub-components when **Sub-components** is ticked — with the same Accept / Ignore / False positive buttons and comment as the left panel's Compare tab. The tab title shows how many of them are still open.
 
 ---
 
